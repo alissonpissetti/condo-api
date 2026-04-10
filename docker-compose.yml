@@ -1,0 +1,16 @@
+# Opcional: MariaDB local (mesmo driver que mysql:// na API)
+services:
+  mariadb:
+    image: mariadb:11-jammy
+    environment:
+      MARIADB_ROOT_PASSWORD: condo
+      MARIADB_DATABASE: condo
+      MARIADB_USER: condo
+      MARIADB_PASSWORD: condo
+    ports:
+      - '3306:3306'
+    volumes:
+      - condo_mariadb_data:/var/lib/mysql
+
+volumes:
+  condo_mariadb_data:
