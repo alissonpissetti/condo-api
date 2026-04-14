@@ -27,10 +27,20 @@ export class Person {
   @Column({ name: 'address_zip', type: 'varchar', length: 8, nullable: true })
   addressZip: string | null;
 
-  @Column({ name: 'address_street', type: 'varchar', length: 255, nullable: true })
+  @Column({
+    name: 'address_street',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
   addressStreet: string | null;
 
-  @Column({ name: 'address_number', type: 'varchar', length: 32, nullable: true })
+  @Column({
+    name: 'address_number',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
   addressNumber: string | null;
 
   @Column({
@@ -49,7 +59,12 @@ export class Person {
   })
   addressNeighborhood: string | null;
 
-  @Column({ name: 'address_city', type: 'varchar', length: 128, nullable: true })
+  @Column({
+    name: 'address_city',
+    type: 'varchar',
+    length: 128,
+    nullable: true,
+  })
   addressCity: string | null;
 
   @Column({ name: 'address_state', type: 'varchar', length: 2, nullable: true })

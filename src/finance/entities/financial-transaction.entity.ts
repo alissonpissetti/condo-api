@@ -49,6 +49,15 @@ export class FinancialTransaction {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  /** Caminho relativo ao armazenamento do condomínio (ex.: receipts/uuid.pdf). */
+  @Column({
+    name: 'receipt_storage_key',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  receiptStorageKey: string | null;
+
   /** `json` é suportado por PostgreSQL e MySQL/MariaDB (`jsonb` só existe no PG). */
   @Column({ name: 'allocation_rule', type: 'json' })
   allocationRule: AllocationRule;

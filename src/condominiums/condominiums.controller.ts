@@ -45,13 +45,15 @@ export class CondominiumsController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Obter um condomínio (se for dono)' })
+  @ApiOperation({
+    summary: 'Obter um condomínio (titular, gestão ou morador com unidade)',
+  })
   @ApiParam({ name: 'id', format: 'uuid', description: 'ID do condomínio' })
   findOne(
     @CurrentUser() userId: string,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.condominiumsService.findOneForOwner(id, userId);
+    return this.condominiumsService.findOneAccessible(id, userId);
   }
 
   @Patch(':id')

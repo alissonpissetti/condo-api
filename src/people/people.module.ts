@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
+import { PlanningModule } from '../planning/planning.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { MailModule } from '../mail/mail.module';
 import { Unit } from '../units/unit.entity';
@@ -15,6 +16,7 @@ import { UnitPeopleController } from './unit-people.controller';
   imports: [
     TypeOrmModule.forFeature([Person, UnitInvitation, Unit, Grouping]),
     CondominiumsModule,
+    PlanningModule,
     UsersModule,
     MailModule,
   ],

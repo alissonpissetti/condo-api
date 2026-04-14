@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Controller,
-  Get,
-  Param,
-} from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param } from '@nestjs/common';
 import {
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -34,7 +29,9 @@ export class CepController {
   @ApiOkResponse({ type: CepLookupWrapperDto })
   @ApiNotFoundResponse({ description: 'CEP não encontrado' })
   @ApiServiceUnavailableResponse({ description: 'Chave não configurada' })
-  async lookup(@Param('cep') cepRaw: string): Promise<{ data: CepLookupResult }> {
+  async lookup(
+    @Param('cep') cepRaw: string,
+  ): Promise<{ data: CepLookupResult }> {
     const digits = cepRaw.replace(/\D/g, '');
     if (digits.length !== 8) {
       throw new BadRequestException('CEP deve ter 8 dígitos.');

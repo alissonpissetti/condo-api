@@ -4,16 +4,19 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import type { StringValue } from 'ms';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { MailModule } from '../mail/mail.module';
 import { ComteleModule } from '../plugins/comtele/comtele.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LoginSmsChallenge } from './login-sms-challenge.entity';
+import { PasswordResetChallenge } from './password-reset-challenge.entity';
 import { JwtStrategy } from './jwt.strategy';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([LoginSmsChallenge]),
+    TypeOrmModule.forFeature([LoginSmsChallenge, PasswordResetChallenge]),
+    MailModule,
     ComteleModule,
     UsersModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),

@@ -43,7 +43,9 @@ export class FinancialTransactionsController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Criar transação (rateio conforme allocation_rule)' })
+  @ApiOperation({
+    summary: 'Criar transação (rateio conforme allocation_rule)',
+  })
   create(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

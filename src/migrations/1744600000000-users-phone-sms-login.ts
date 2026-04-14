@@ -58,7 +58,9 @@ CREATE TABLE \`login_sms_challenges\` (
       await queryRunner.query('ALTER TABLE "users" DROP COLUMN "phone"');
     } else {
       await queryRunner.query('DROP TABLE IF EXISTS `login_sms_challenges`');
-      await queryRunner.query('ALTER TABLE `users` DROP INDEX `UQ_users_phone`');
+      await queryRunner.query(
+        'ALTER TABLE `users` DROP INDEX `UQ_users_phone`',
+      );
       await queryRunner.query('ALTER TABLE `users` DROP COLUMN `phone`');
     }
   }

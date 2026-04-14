@@ -56,6 +56,15 @@ export class UsersService {
     return this.usersRepo.findOne({ where: { id } });
   }
 
+  async setPassword(userId: string, plainPassword: string): Promise<void> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Utilizador não encontrado.');
+    }
+    user.passwordHash = await bcrypt.hash(plainPassword, 10);
+    await this.usersRepo.save(user);
+  }
+
   async getMe(userId: string): Promise<{
     id: string;
     email: string;
@@ -264,7 +273,7 @@ export class UsersService {
     if (!person && fullNameIn) {
       await this.assertPersonEmailFree(user.email, null);
       const cpfNorm =
-        p.cpf === undefined ? null : normalizeCpf(p.cpf) ?? null;
+        p.cpf === undefined ? null : (normalizeCpf(p.cpf) ?? null);
       if (p.cpf !== undefined && p.cpf.trim() && !cpfNorm) {
         throw new BadRequestException('CPF inválido.');
       }

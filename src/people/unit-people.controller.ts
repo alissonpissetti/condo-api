@@ -58,6 +58,22 @@ export class UnitPeopleController {
     );
   }
 
+  @Get('invitations')
+  @ApiOperation({ summary: 'Listar convites pendentes para a unidade' })
+  listInvitations(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('groupingId', ParseUUIDPipe) groupingId: string,
+    @Param('unitId', ParseUUIDPipe) unitId: string,
+  ) {
+    return this.peopleService.listPendingInvitations(
+      condominiumId,
+      groupingId,
+      unitId,
+      userId,
+    );
+  }
+
   @Post('assign')
   @ApiOperation({
     summary: 'Associar proprietário / responsável ou enviar convite',

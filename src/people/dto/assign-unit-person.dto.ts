@@ -35,7 +35,8 @@ export class AssignUnitPersonDto {
   email?: string;
 
   @ApiProperty({
-    description: 'Nome completo da pessoa (obrigatório para cadastro e boletos).',
+    description:
+      'Nome completo da pessoa (obrigatório para cadastro e boletos).',
     example: 'Maria Silva',
   })
   @IsString()

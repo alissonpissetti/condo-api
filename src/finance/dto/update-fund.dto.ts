@@ -1,5 +1,18 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsDateString, IsOptional, IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsBoolean,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  Matches,
+  Min,
+  MinLength,
+} from 'class-validator';
+import type { AllocationRule } from '../allocation.types';
+
+const YM = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export class UpdateFundDto {
   @ApiPropertyOptional()
@@ -11,10 +24,37 @@ export class UpdateFundDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
-  isTemporary?: boolean;
+  isPermanent?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsDateString()
-  endsAt?: string | null;
+  @IsObject()
+  allocationRule?: AllocationRule;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  permanentMonthlyDebitCents?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  termTotalPerUnitCents?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  termInstallmentCount?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Matches(YM, { message: 'termFirstMonthYm must be YYYY-MM' })
+  termFirstMonthYm?: string;
 }

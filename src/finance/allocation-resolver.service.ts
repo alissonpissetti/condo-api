@@ -29,9 +29,7 @@ export class AllocationResolverService {
         return units;
       }
       case 'all_units_except': {
-        const all = new Set(
-          await this.allUnitIdsInCondominium(condominiumId),
-        );
+        const all = new Set(await this.allUnitIdsInCondominium(condominiumId));
         for (const id of rule.excludeUnitIds) {
           if (!all.has(id)) {
             throw new BadRequestException(

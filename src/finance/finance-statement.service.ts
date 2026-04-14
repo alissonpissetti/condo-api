@@ -63,7 +63,10 @@ export class FinanceStatementService {
 
     const fromStr = from.trim().slice(0, 10);
     const toStr = to.trim().slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromStr) || !/^\d{4}-\d{2}-\d{2}$/.test(toStr)) {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(fromStr) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(toStr)
+    ) {
       throw new BadRequestException('from and to must be YYYY-MM-DD');
     }
 

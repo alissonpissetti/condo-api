@@ -12,6 +12,7 @@ import { createHash, randomBytes } from 'crypto';
 import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { MailService } from '../mail/mail.service';
 import { CondominiumsService } from '../condominiums/condominiums.service';
+import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { Unit } from '../units/unit.entity';
 import { UsersService } from '../users/users.service';
@@ -41,21 +42,23 @@ export class PeopleService {
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
     private readonly condominiumsService: CondominiumsService,
+    private readonly governanceService: GovernanceService,
     private readonly usersService: UsersService,
     private readonly mailService: MailService,
     private readonly config: ConfigService,
   ) {}
 
-  private async loadUnitForOwner(
+  private async loadUnitForManagement(
     condominiumId: string,
     groupingId: string,
     unitId: string,
     userId: string,
   ): Promise<{ unit: Unit; condominiumName: string }> {
-    const condominium = await this.condominiumsService.assertOwner(
-      condominiumId,
-      userId,
-    );
+    await this.governanceService.assertManagement(condominiumId, userId);
+    const condominium = await this.condominiumsService.findById(condominiumId);
+    if (!condominium) {
+      throw new NotFoundException('Condomínio não encontrado.');
+    }
     const grouping = await this.groupingRepo.findOne({
       where: { id: groupingId, condominiumId },
     });
@@ -102,7 +105,7 @@ export class PeopleService {
     cpfRaw?: string,
     emailRaw?: string,
   ) {
-    await this.loadUnitForOwner(condominiumId, groupingId, unitId, userId);
+    await this.loadUnitForManagement(condominiumId, groupingId, unitId, userId);
     const cpf = normalizeCpf(cpfRaw);
     const email = normalizeEmail(emailRaw);
     if (!cpf && !email) {
@@ -193,7 +196,7 @@ export class PeopleService {
     userId: string,
     dto: AssignUnitPersonDto,
   ) {
-    const { unit, condominiumName } = await this.loadUnitForOwner(
+    const { unit, condominiumName } = await this.loadUnitForManagement(
       condominiumId,
       groupingId,
       unitId,
@@ -471,5 +474,24 @@ export class PeopleService {
       personId: person.id,
       unitId: unit.id,
     };
+  }
+
+  async listPendingInvitations(
+    condominiumId: string,
+    groupingId: string,
+    unitId: string,
+    userId: string,
+  ) {
+    const { unit } = await this.loadUnitForManagement(
+      condominiumId,
+      groupingId,
+      unitId,
+      userId,
+    );
+    return this.invitationRepo.find({
+      where: { unitId: unit.id, consumedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+      relations: { person: true },
+    });
   }
 }

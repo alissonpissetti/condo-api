@@ -7,10 +7,14 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Min,
   MinLength,
 } from 'class-validator';
 import type { AllocationRule } from '../allocation.types';
+
+const RECEIPT_KEY_RE =
+  /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class CreateTransactionDto {
   @ApiProperty({ enum: ['expense', 'income'] })
@@ -40,6 +44,17 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsUUID()
   fundId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Chave retornada por POST /condominiums/:id/transaction-receipts (opcional).',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(RECEIPT_KEY_RE, {
+    message: 'receiptStorageKey inválida',
+  })
+  receiptStorageKey?: string;
 
   @ApiProperty({
     description: 'Regra de rateio (none só para receita sem repartição)',

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,6 +15,8 @@ import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { FinancialFundsService } from './financial-funds.service';
+import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
+import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 
 @Injectable()
 export class FinancialTransactionsService {
@@ -24,6 +27,7 @@ export class FinancialTransactionsService {
     private readonly condominiumsService: CondominiumsService,
     private readonly allocationResolver: AllocationResolverService,
     private readonly fundsService: FinancialFundsService,
+    @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
   ) {}
 
   async findAll(
@@ -75,6 +79,12 @@ export class FinancialTransactionsService {
     if (dto.fundId) {
       await this.fundsService.findOne(condominiumId, dto.fundId, userId);
     }
+    if (dto.receiptStorageKey) {
+      await this.storage.assertReceiptExists(
+        condominiumId,
+        dto.receiptStorageKey,
+      );
+    }
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
       dto.allocationRule,
@@ -84,17 +94,44 @@ export class FinancialTransactionsService {
     return this.findOne(condominiumId, id, userId);
   }
 
+  /**
+   * Cria transação sem `assertOwner` (fechamento automático / jobs).
+   * Valida fundo e regra de alocação como em `create`.
+   */
+  async createInternal(
+    condominiumId: string,
+    dto: CreateTransactionDto,
+  ): Promise<FinancialTransaction> {
+    this.validateAllocationForKind(dto.kind, dto.allocationRule);
+    if (!isAllocationRule(dto.allocationRule)) {
+      throw new BadRequestException('Invalid allocation rule');
+    }
+    if (dto.fundId) {
+      await this.fundsService.findOneInCondominium(condominiumId, dto.fundId);
+    }
+    const unitIds = await this.allocationResolver.resolveUnitIds(
+      condominiumId,
+      dto.allocationRule,
+    );
+    const shares = this.buildShares(dto.kind, dto.amountCents, unitIds);
+    const id = await this.persistTransaction(condominiumId, dto, shares);
+    const t = await this.txRepo.findOne({
+      where: { id, condominiumId },
+      relations: { fund: true, unitShares: { unit: true } },
+    });
+    if (!t) {
+      throw new NotFoundException('Transaction not found');
+    }
+    return t;
+  }
+
   async update(
     condominiumId: string,
     transactionId: string,
     userId: string,
     dto: UpdateTransactionDto,
   ): Promise<FinancialTransaction> {
-    const existing = await this.findOne(
-      condominiumId,
-      transactionId,
-      userId,
-    );
+    const existing = await this.findOne(condominiumId, transactionId, userId);
     const kind = dto.kind ?? existing.kind;
     const amountCents = dto.amountCents ?? Number(existing.amountCents);
     const allocationRule = dto.allocationRule ?? existing.allocationRule;
@@ -104,6 +141,28 @@ export class FinancialTransactionsService {
     this.validateAllocationForKind(kind, allocationRule);
     if (dto.fundId !== undefined && dto.fundId !== null) {
       await this.fundsService.findOne(condominiumId, dto.fundId, userId);
+    }
+    if (dto.receiptStorageKey !== undefined) {
+      if (dto.receiptStorageKey === null) {
+        await this.storage.deleteReceipt(
+          condominiumId,
+          existing.receiptStorageKey,
+        );
+      } else {
+        await this.storage.assertReceiptExists(
+          condominiumId,
+          dto.receiptStorageKey,
+        );
+        if (
+          existing.receiptStorageKey &&
+          existing.receiptStorageKey !== dto.receiptStorageKey
+        ) {
+          await this.storage.deleteReceipt(
+            condominiumId,
+            existing.receiptStorageKey,
+          );
+        }
+      }
     }
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
@@ -122,9 +181,11 @@ export class FinancialTransactionsService {
       existing.title = dto.title ?? existing.title;
       existing.description =
         dto.description !== undefined ? dto.description : existing.description;
-      existing.fundId =
-        dto.fundId !== undefined ? dto.fundId : existing.fundId;
+      existing.fundId = dto.fundId !== undefined ? dto.fundId : existing.fundId;
       existing.allocationRule = allocationRule;
+      if (dto.receiptStorageKey !== undefined) {
+        existing.receiptStorageKey = dto.receiptStorageKey;
+      }
       await manager.save(existing);
       for (const row of shares) {
         await manager.save(
@@ -144,7 +205,8 @@ export class FinancialTransactionsService {
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    await this.findOne(condominiumId, transactionId, userId);
+    const t = await this.findOne(condominiumId, transactionId, userId);
+    await this.storage.deleteReceipt(condominiumId, t.receiptStorageKey);
     await this.txRepo.delete(transactionId);
   }
 
@@ -196,6 +258,7 @@ export class FinancialTransactionsService {
         title: dto.title,
         description: dto.description ?? null,
         allocationRule: dto.allocationRule,
+        receiptStorageKey: dto.receiptStorageKey ?? null,
       });
       const saved = await manager.save(tx);
       for (const row of shares) {

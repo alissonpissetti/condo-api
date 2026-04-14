@@ -23,8 +23,26 @@ export class SmsLoginRequestAcceptedDto {
   ok: true;
 
   @ApiProperty({
-    example:
-      'Se existir conta para este número, enviamos um código por SMS.',
+    example: 'Se existir conta para este número, enviamos um código por SMS.',
   })
   message: string;
+}
+
+export class PasswordResetRequestAcceptedDto {
+  @ApiProperty({ example: true })
+  ok: true;
+
+  @ApiProperty({
+    example:
+      'Se existir conta, enviamos um código por email ou SMS (conforme escolheu).',
+  })
+  message: string;
+}
+
+export class PasswordResetVerifyResponseDto {
+  @ApiProperty({
+    description:
+      'Token de uso único (curta duração) para concluir a alteração de senha.',
+  })
+  reset_token: string;
 }

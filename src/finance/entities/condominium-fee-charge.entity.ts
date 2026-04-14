@@ -1,0 +1,75 @@
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  Unique,
+  UpdateDateColumn,
+} from 'typeorm';
+import { Condominium } from '../../condominiums/condominium.entity';
+import { Unit } from '../../units/unit.entity';
+import { FinancialTransaction } from './financial-transaction.entity';
+
+export type CondominiumFeeChargeStatus = 'open' | 'paid';
+
+@Entity('condominium_fee_charges')
+@Unique('UQ_fee_charge_condo_ym_unit', [
+  'condominiumId',
+  'competenceYm',
+  'unitId',
+])
+export class CondominiumFeeCharge {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'condominium_id' })
+  condominiumId: string;
+
+  @ManyToOne(() => Condominium, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'condominium_id' })
+  condominium: Condominium;
+
+  @Column({ name: 'competence_ym', type: 'varchar', length: 7 })
+  competenceYm: string;
+
+  @Column({ name: 'unit_id' })
+  unitId: string;
+
+  @ManyToOne(() => Unit, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'unit_id' })
+  unit: Unit;
+
+  /**
+   * Valor devido após homogeneizar por agrupamento (máximo das cotas brutas
+   * entre unidades do mesmo grupo).
+   */
+  @Column({ name: 'amount_due_cents', type: 'bigint' })
+  amountDueCents: string;
+
+  @Column({ name: 'due_on', type: 'date' })
+  dueOn: Date;
+
+  @Column({ type: 'varchar', length: 16 })
+  status: CondominiumFeeChargeStatus;
+
+  @Column({ name: 'paid_at', type: 'date', nullable: true })
+  paidAt: Date | null;
+
+  @Column({ name: 'income_transaction_id', nullable: true })
+  incomeTransactionId: string | null;
+
+  @ManyToOne(() => FinancialTransaction, {
+    onDelete: 'SET NULL',
+    nullable: true,
+  })
+  @JoinColumn({ name: 'income_transaction_id' })
+  incomeTransaction: FinancialTransaction | null;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+}

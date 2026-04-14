@@ -52,4 +52,41 @@ export class MailService {
       text,
     });
   }
+
+  async sendPasswordResetCode(to: string, code: string): Promise<void> {
+    const subject = 'Código para redefinir a sua senha — Meu Condomínio';
+    const text = `O seu código para redefinir a senha: ${code}\n\nNão o partilhe. Válido por 10 minutos.\n\nSe não pediu esta alteração, ignore este email.`;
+
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    if (!host) {
+      this.logger.warn(
+        `[e-mail não configurado — defina SMTP_HOST] Código para ${to}\n${text}`,
+      );
+      return;
+    }
+
+    const port = parseInt(this.config.get<string>('SMTP_PORT', '587'), 10);
+    const secure =
+      this.config.get<string>('SMTP_SECURE', 'false').toLowerCase() === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
+    const from = this.config.get<string>(
+      'EMAIL_FROM',
+      user ?? 'noreply@localhost',
+    );
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    await transporter.sendMail({
+      from,
+      to,
+      subject,
+      text,
+    });
+  }
 }

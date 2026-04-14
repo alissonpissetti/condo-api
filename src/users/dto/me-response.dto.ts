@@ -48,7 +48,8 @@ export class MeResponseDto {
   email: string;
 
   @ApiPropertyOptional({
-    description: 'E.164 BR; null em contas antigas até atualizarem em Meus dados',
+    description:
+      'E.164 BR; null em contas antigas até atualizarem em Meus dados',
     example: '5561999988888',
   })
   phone: string | null;
