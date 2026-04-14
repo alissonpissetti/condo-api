@@ -13,7 +13,7 @@ import { PlanningPollOption } from './planning-poll-option.entity';
 import { PlanningPoll } from './planning-poll.entity';
 
 @Entity('planning_poll_votes')
-@Unique('UQ_poll_unit_vote', ['pollId', 'unitId'])
+@Unique('UQ_poll_unit_option', ['pollId', 'unitId', 'optionId'])
 export class PlanningPollVote {
   @PrimaryGeneratedColumn('uuid')
   id: string;

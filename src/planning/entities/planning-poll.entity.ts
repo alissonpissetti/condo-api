@@ -12,6 +12,7 @@ import { Condominium } from '../../condominiums/condominium.entity';
 import { User } from '../../users/user.entity';
 import { AssemblyType } from '../enums/assembly-type.enum';
 import { PlanningPollStatus } from '../enums/planning-poll-status.enum';
+import { PlanningPollAttachment } from './planning-poll-attachment.entity';
 import { PlanningPollOption } from './planning-poll-option.entity';
 
 @Entity('planning_polls')
@@ -44,6 +45,9 @@ export class PlanningPoll {
   @Column({ name: 'assembly_type', type: 'varchar', length: 16 })
   assemblyType: AssemblyType;
 
+  @Column({ name: 'allow_multiple', type: 'boolean', default: false })
+  allowMultiple: boolean;
+
   @Column({ name: 'decided_option_id', type: 'varchar', length: 36, nullable: true })
   decidedOptionId: string | null;
 
@@ -56,6 +60,9 @@ export class PlanningPoll {
 
   @OneToMany(() => PlanningPollOption, (o) => o.poll, { cascade: ['insert'] })
   options: PlanningPollOption[];
+
+  @OneToMany(() => PlanningPollAttachment, (a) => a.poll)
+  attachments: PlanningPollAttachment[];
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

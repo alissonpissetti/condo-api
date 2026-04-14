@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { CondominiumsService } from '../condominiums/condominiums.service';
+import { GovernanceService } from '../planning/governance.service';
 import { CreateGroupingDto } from './dto/create-grouping.dto';
 import { UpdateGroupingDto } from './dto/update-grouping.dto';
 import { Grouping } from './grouping.entity';
@@ -15,15 +15,34 @@ export class GroupingsService {
   constructor(
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
-    private readonly condominiumsService: CondominiumsService,
+    private readonly governanceService: GovernanceService,
   ) {}
 
   async findAll(condominiumId: string, userId: string): Promise<Grouping[]> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governanceService.assertManagement(condominiumId, userId);
     return this.groupingRepo.find({
       where: { condominiumId },
       order: { createdAt: 'ASC' },
     });
+  }
+
+  /**
+   * Um único round-trip: agrupamentos com unidades (e titular/responsável).
+   */
+  async findAllWithUnits(
+    condominiumId: string,
+    userId: string,
+  ): Promise<Grouping[]> {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    return this.groupingRepo
+      .createQueryBuilder('g')
+      .leftJoinAndSelect('g.units', 'u')
+      .leftJoinAndSelect('u.ownerPerson', 'op')
+      .leftJoinAndSelect('u.responsiblePerson', 'rp')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .orderBy('g.createdAt', 'ASC')
+      .addOrderBy('u.createdAt', 'ASC')
+      .getMany();
   }
 
   async create(
@@ -31,7 +50,7 @@ export class GroupingsService {
     userId: string,
     dto: CreateGroupingDto,
   ): Promise<Grouping> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governanceService.assertManagement(condominiumId, userId);
     const grouping = this.groupingRepo.create({
       condominiumId,
       name: dto.name,
@@ -44,7 +63,7 @@ export class GroupingsService {
     groupingId: string,
     userId: string,
   ): Promise<Grouping> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governanceService.assertManagement(condominiumId, userId);
     const g = await this.groupingRepo.findOne({
       where: { id: groupingId, condominiumId },
     });

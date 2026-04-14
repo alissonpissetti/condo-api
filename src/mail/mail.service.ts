@@ -10,6 +10,13 @@ export type UnitPersonInviteMail = {
   unitIdentifier: string;
 };
 
+export type CondominiumMemberInviteMail = {
+  to: string;
+  inviteLink: string;
+  condominiumName: string;
+  unitIdentifier: string;
+};
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -24,6 +31,45 @@ export class MailService {
     if (!host) {
       this.logger.warn(
         `[e-mail não configurado — defina SMTP_HOST] Convite para ${params.to}\n${text}`,
+      );
+      return;
+    }
+
+    const port = parseInt(this.config.get<string>('SMTP_PORT', '587'), 10);
+    const secure =
+      this.config.get<string>('SMTP_SECURE', 'false').toLowerCase() === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
+    const from = this.config.get<string>(
+      'EMAIL_FROM',
+      user ?? 'noreply@localhost',
+    );
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    await transporter.sendMail({
+      from,
+      to: params.to,
+      subject,
+      text,
+    });
+  }
+
+  async sendCondominiumMemberInvite(
+    params: CondominiumMemberInviteMail,
+  ): Promise<void> {
+    const subject = `Convite — ${params.condominiumName} · unidade ${params.unitIdentifier}`;
+    const text = `Foi convidado como responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nPara criar a sua conta e confirmar a associação à unidade, abra:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
+
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    if (!host) {
+      this.logger.warn(
+        `[e-mail não configurado — defina SMTP_HOST] Convite membro para ${params.to}\n${text}`,
       );
       return;
     }

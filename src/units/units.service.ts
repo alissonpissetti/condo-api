@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { CondominiumsService } from '../condominiums/condominiums.service';
+import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
@@ -14,7 +14,7 @@ export class UnitsService {
     private readonly unitRepo: Repository<Unit>,
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
-    private readonly condominiumsService: CondominiumsService,
+    private readonly governanceService: GovernanceService,
   ) {}
 
   private async assertGroupingInCondo(
@@ -22,7 +22,7 @@ export class UnitsService {
     groupingId: string,
     userId: string,
   ): Promise<Grouping> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governanceService.assertManagement(condominiumId, userId);
     const grouping = await this.groupingRepo.findOne({
       where: { id: groupingId, condominiumId },
     });

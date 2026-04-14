@@ -1,11 +1,16 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class InvitePreviewResponseDto {
+  @ApiProperty({ enum: ['unit', 'condominium'] })
+  inviteKind: 'unit' | 'condominium';
+
   @ApiProperty()
   condominiumName: string;
 
-  @ApiProperty()
-  unitIdentifier: string;
+  @ApiPropertyOptional({
+    description: 'Preenchido em convites de unidade (titular/responsável).',
+  })
+  unitIdentifier?: string;
 
   @ApiProperty({ description: 'Email parcialmente mascarado' })
   emailMasked: string;

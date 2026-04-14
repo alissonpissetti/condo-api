@@ -20,6 +20,7 @@ import { GovernanceRole } from './enums/governance-role.enum';
 import { DocumentStorageHelper } from './document-storage.helper';
 import { GovernanceService } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
+import { stripPollBodyToPlainText } from './poll-body-sanitize';
 
 @Injectable()
 export class PlanningDocumentsService {
@@ -84,8 +85,19 @@ export class PlanningDocumentsService {
     for (const r of raw) {
       counts[r.optionId] = Number(r.cnt);
     }
+    const unitsRow = await this.voteRepo
+      .createQueryBuilder('v')
+      .select('COUNT(DISTINCT v.unitId)', 'cnt')
+      .where('v.pollId = :pollId', { pollId: poll.id })
+      .getRawOne<{ cnt: string }>();
+    const unitsVoted = Number(unitsRow?.cnt ?? 0);
 
-    const pdfBuffer = await this.buildPdfBuffer(condo.name, poll, counts);
+    const pdfBuffer = await this.buildPdfBuffer(
+      condo.name,
+      poll,
+      counts,
+      unitsVoted,
+    );
 
     const storageKey = await this.storage.savePdf(condominiumId, pdfBuffer);
     const title = `Ata — ${poll.title}`.slice(0, 500);
@@ -110,6 +122,7 @@ export class PlanningDocumentsService {
     condominiumName: string,
     poll: PlanningPoll,
     counts: Record<string, number>,
+    unitsVoted: number,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ margin: 50 });
@@ -125,17 +138,25 @@ export class PlanningDocumentsService {
       doc.text(
         `Tipo: ${poll.assemblyType === AssemblyType.Election ? 'Eleição' : 'Ordinária'}`,
       );
+      doc.text(
+        `Modo de voto: ${poll.allowMultiple ? 'Múltipla escolha' : 'Escolha única'}`,
+      );
       doc.text(`Abertura: ${poll.opensAt.toISOString()}`);
       doc.text(`Encerramento: ${poll.closesAt.toISOString()}`);
       if (poll.body) {
-        doc.moveDown();
-        doc.text('Texto:');
-        doc.text(poll.body, { width: 500 });
+        const plain = stripPollBodyToPlainText(poll.body);
+        if (plain) {
+          doc.moveDown();
+          doc.text('Texto:');
+          doc.text(plain, { width: 500 });
+        }
       }
       doc.moveDown();
-      doc.text('Resultado da votação (por opção):');
+      doc.text(`Unidades que participaram na votação: ${unitsVoted}`);
+      doc.moveDown();
+      doc.text('Resultado da votação (marcações por opção):');
       for (const o of poll.options ?? []) {
-        doc.text(`- ${o.label}: ${counts[o.id] ?? 0} voto(s)`);
+        doc.text(`- ${o.label}: ${counts[o.id] ?? 0}`);
       }
       doc.moveDown();
       doc.fontSize(9).text(

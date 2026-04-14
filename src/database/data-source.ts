@@ -19,6 +19,11 @@ import { TransactionReceipt1744970000000 } from '../migrations/1744970000000-tra
 import { CondominiumFees1744980000000 } from '../migrations/1744980000000-condominium-fees';
 import { DropFeeAdjustment1744990000000 } from '../migrations/1744990000000-drop-fee-adjustment';
 import { PlanningGovernanceDocuments1750000000000 } from '../migrations/1750000000000-planning-governance-documents';
+import { PlanningPollMultipleChoice1750050000000 } from '../migrations/1750050000000-planning-poll-multiple-choice';
+import { PlanningPollAttachments1750100000000 } from '../migrations/1750100000000-planning-poll-attachments';
+import { CondominiumInvitations1750150000000 } from '../migrations/1750150000000-condominium-invitations';
+import { CondominiumInvitationsUnit1750160000000 } from '../migrations/1750160000000-condominium-invitations-unit';
+import { CondominiumInvitationPlainToken1750170000000 } from '../migrations/1750170000000-condominium-invitation-plain-token';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -63,6 +68,11 @@ export const AppDataSource = new DataSource({
     CondominiumFees1744980000000,
     DropFeeAdjustment1744990000000,
     PlanningGovernanceDocuments1750000000000,
+    PlanningPollMultipleChoice1750050000000,
+    PlanningPollAttachments1750100000000,
+    CondominiumInvitations1750150000000,
+    CondominiumInvitationsUnit1750160000000,
+    CondominiumInvitationPlainToken1750170000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

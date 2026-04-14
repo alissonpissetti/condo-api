@@ -9,7 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
-import { IsNull, QueryFailedError, Repository } from 'typeorm';
+import { IsNull, Not, QueryFailedError, Repository } from 'typeorm';
 import { MailService } from '../mail/mail.service';
 import { CondominiumsService } from '../condominiums/condominiums.service';
 import { GovernanceService } from '../planning/governance.service';
@@ -18,6 +18,8 @@ import { Unit } from '../units/unit.entity';
 import { UsersService } from '../users/users.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { AssignUnitPersonDto } from './dto/assign-unit-person.dto';
+import { CreateCondominiumInviteDto } from './dto/create-condominium-invite.dto';
+import { CondominiumInvitation } from './condominium-invitation.entity';
 import { Person } from './person.entity';
 import { UnitInvitation } from './unit-invitation.entity';
 import { applyPersonAddressToEntity } from './apply-person-address';
@@ -37,6 +39,8 @@ export class PeopleService {
     private readonly personRepo: Repository<Person>,
     @InjectRepository(UnitInvitation)
     private readonly invitationRepo: Repository<UnitInvitation>,
+    @InjectRepository(CondominiumInvitation)
+    private readonly condominiumInvitationRepo: Repository<CondominiumInvitation>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
     @InjectRepository(Grouping)
@@ -314,14 +318,7 @@ export class PeopleService {
       });
       await this.invitationRepo.save(inv);
 
-      const base = this.config
-        .get<string>('INVITE_PUBLIC_URL')
-        ?.replace(/\/$/, '');
-      const port = this.config.get<string>('PORT', '3000');
-      const apiOrigin = `http://localhost:${port}`;
-      const inviteLink = base
-        ? `${base}?inviteToken=${plainToken}`
-        : `${apiOrigin}/invitations/${plainToken}`;
+      const inviteLink = this.buildInvitePublicLink(plainToken);
 
       const roleDescription =
         role === 'both'
@@ -376,7 +373,8 @@ export class PeopleService {
 
   async getInvitePreview(plainToken: string) {
     const tokenHash = createHash('sha256').update(plainToken).digest('hex');
-    const inv = await this.invitationRepo.findOne({
+
+    const unitInv = await this.invitationRepo.findOne({
       where: { tokenHash },
       relations: [
         'person',
@@ -385,44 +383,86 @@ export class PeopleService {
         'unit.grouping.condominium',
       ],
     });
-    if (!inv) {
+
+    if (unitInv) {
+      if (unitInv.consumedAt) {
+        throw new GoneException('Este convite já foi utilizado.');
+      }
+      if (unitInv.expiresAt.getTime() < Date.now()) {
+        throw new GoneException('Convite expirado.');
+      }
+
+      const condoName =
+        unitInv.unit?.grouping?.condominium?.name ?? '(condomínio)';
+      const roles: string[] = [];
+      if (unitInv.asOwner) {
+        roles.push('proprietário');
+      }
+      if (unitInv.asResponsible) {
+        roles.push('responsável');
+      }
+
+      return {
+        inviteKind: 'unit' as const,
+        condominiumName: condoName,
+        unitIdentifier: unitInv.unit.identifier,
+        emailMasked: this.maskEmail(unitInv.email),
+        roles,
+        expiresAt: unitInv.expiresAt.toISOString(),
+        pendingRegistration: !unitInv.person.userId,
+      };
+    }
+
+    const condoInv = await this.condominiumInvitationRepo.findOne({
+      where: { tokenHash },
+      relations: ['person', 'condominium', 'unit', 'unit.grouping'],
+    });
+    if (!condoInv) {
       throw new NotFoundException('Convite inválido.');
     }
-    if (inv.consumedAt) {
+    if (condoInv.consumedAt) {
       throw new GoneException('Este convite já foi utilizado.');
     }
-    if (inv.expiresAt.getTime() < Date.now()) {
+    if (condoInv.expiresAt.getTime() < Date.now()) {
       throw new GoneException('Convite expirado.');
     }
 
-    const condoName = inv.unit?.grouping?.condominium?.name ?? '(condomínio)';
-    const roles: string[] = [];
-    if (inv.asOwner) {
-      roles.push('proprietário');
-    }
-    if (inv.asResponsible) {
-      roles.push('responsável');
-    }
-
     return {
-      condominiumName: condoName,
-      unitIdentifier: inv.unit.identifier,
-      emailMasked: this.maskEmail(inv.email),
-      roles,
-      expiresAt: inv.expiresAt.toISOString(),
-      pendingRegistration: !inv.person.userId,
+      inviteKind: 'condominium' as const,
+      condominiumName: condoInv.condominium.name,
+      unitIdentifier: condoInv.unit.identifier,
+      emailMasked: this.maskEmail(condoInv.email),
+      roles: ['responsável pela unidade'],
+      expiresAt: condoInv.expiresAt.toISOString(),
+      pendingRegistration: !condoInv.person.userId,
     };
   }
 
   async acceptInvite(plainToken: string, dto: AcceptInviteDto) {
     const tokenHash = createHash('sha256').update(plainToken).digest('hex');
-    const inv = await this.invitationRepo.findOne({
+
+    const unitInv = await this.invitationRepo.findOne({
       where: { tokenHash },
       relations: ['person', 'unit', 'unit.grouping'],
     });
-    if (!inv) {
-      throw new NotFoundException('Convite inválido.');
+
+    if (unitInv) {
+      return this.acceptUnitInvitation(unitInv, dto);
     }
+
+    const condoInv = await this.condominiumInvitationRepo.findOne({
+      where: { tokenHash },
+      relations: ['person', 'condominium', 'unit'],
+    });
+
+    if (condoInv) {
+      return this.acceptCondominiumInvitation(condoInv, dto);
+    }
+
+    throw new NotFoundException('Convite inválido.');
+  }
+
+  private async acceptUnitInvitation(inv: UnitInvitation, dto: AcceptInviteDto) {
     if (inv.consumedAt) {
       throw new GoneException('Este convite já foi utilizado.');
     }
@@ -476,6 +516,276 @@ export class PeopleService {
     };
   }
 
+  private async acceptCondominiumInvitation(
+    inv: CondominiumInvitation,
+    dto: AcceptInviteDto,
+  ) {
+    if (inv.consumedAt) {
+      throw new GoneException('Este convite já foi utilizado.');
+    }
+    if (inv.expiresAt.getTime() < Date.now()) {
+      throw new GoneException('Convite expirado.');
+    }
+
+    const existingUser = await this.usersService.findByEmail(inv.email);
+    if (existingUser) {
+      throw new ConflictException(
+        'Já existe uma conta com este email. Inicie sessão; peça ao administrador para voltar a enviar o convite ou associe-se ao condomínio pela gestão de participantes.',
+      );
+    }
+
+    const person = inv.person;
+    if (person.userId) {
+      throw new ConflictException(
+        'Esta ficha de pessoa já tem utilizador associado.',
+      );
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const user = await this.usersService.create({
+      email: inv.email,
+      passwordHash,
+    });
+
+    person.userId = user.id;
+    if (dto.fullName?.trim()) {
+      person.fullName = dto.fullName.trim();
+    }
+    await this.personRepo.save(person);
+
+    const unit = inv.unit;
+    unit.responsiblePersonId = person.id;
+    await this.unitRepo.save(unit);
+
+    inv.consumedAt = new Date();
+    await this.condominiumInvitationRepo.save(inv);
+
+    return {
+      message: 'Conta criada. Ficou como responsável pela unidade indicada.',
+      userId: user.id,
+      personId: person.id,
+      condominiumId: inv.condominiumId,
+      unitId: unit.id,
+    };
+  }
+
+  async lookupEmailForCondominiumInvite(
+    condominiumId: string,
+    userId: string,
+    emailRaw?: string,
+  ) {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    const email = normalizeEmail(emailRaw);
+    if (!email) {
+      throw new BadRequestException('Indique o email na query (?email=).');
+    }
+
+    const person = await this.personRepo.findOne({ where: { email } });
+    if (person) {
+      if (person.userId) {
+        return {
+          found: true,
+          fullName: person.fullName,
+          hasUserAccount: true,
+          canInvite: false,
+          message:
+            'Esta pessoa já tem conta. Pode associá-la a uma unidade ou adicionar como participante com permissões adequadas.',
+        };
+      }
+      return {
+        found: true,
+        fullName: person.fullName,
+        hasUserAccount: false,
+        canInvite: true,
+      };
+    }
+
+    const user = await this.usersService.findByEmail(email);
+    if (user) {
+      const byUser = await this.personRepo.findOne({
+        where: { userId: user.id },
+      });
+      return {
+        found: true,
+        fullName: byUser?.fullName ?? null,
+        hasUserAccount: true,
+        canInvite: false,
+        message:
+          'Já existe utilizador com este email. Use a gestão de unidades ou participantes para dar acesso ao condomínio.',
+      };
+    }
+
+    return {
+      found: false,
+      fullName: null,
+      hasUserAccount: false,
+      canInvite: true,
+      message: 'Indique o nome completo para enviar o convite.',
+    };
+  }
+
+  async listPendingCondominiumInvitations(
+    condominiumId: string,
+    userId: string,
+  ) {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    const rows = await this.condominiumInvitationRepo.find({
+      where: { condominiumId, consumedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+      relations: { person: true, unit: { grouping: true } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      email: r.email,
+      expiresAt: r.expiresAt.toISOString(),
+      createdAt: r.createdAt.toISOString(),
+      personFullName: r.person.fullName,
+      pendingRegistration: !r.person.userId,
+      groupingName: r.unit.grouping.name,
+      unitIdentifier: r.unit.identifier,
+      inviteUrl: this.tryBuildInvitePublicLink(r.inviteTokenPlain),
+    }));
+  }
+
+  async listHistoricCondominiumInvitations(
+    condominiumId: string,
+    userId: string,
+  ) {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    const rows = await this.condominiumInvitationRepo.find({
+      where: { condominiumId, consumedAt: Not(IsNull()) },
+      order: { consumedAt: 'DESC' },
+      relations: { person: true, unit: { grouping: true } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      email: r.email,
+      createdAt: r.createdAt.toISOString(),
+      acceptedAt: r.consumedAt!.toISOString(),
+      expiresAt: r.expiresAt.toISOString(),
+      personFullName: r.person.fullName,
+      groupingName: r.unit.grouping.name,
+      unitIdentifier: r.unit.identifier,
+    }));
+  }
+
+  async deleteCondominiumInvitation(
+    condominiumId: string,
+    invitationId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    const inv = await this.condominiumInvitationRepo.findOne({
+      where: { id: invitationId, condominiumId },
+    });
+    if (!inv) {
+      throw new NotFoundException('Convite não encontrado.');
+    }
+    if (inv.consumedAt) {
+      throw new BadRequestException(
+        'Não é possível remover um convite já aceite.',
+      );
+    }
+    await this.condominiumInvitationRepo.remove(inv);
+  }
+
+  async createCondominiumInvitation(
+    condominiumId: string,
+    userId: string,
+    dto: CreateCondominiumInviteDto,
+  ) {
+    const { unit, condominiumName } = await this.loadUnitForManagement(
+      condominiumId,
+      dto.groupingId,
+      dto.unitId,
+      userId,
+    );
+
+    const email = normalizeEmail(dto.email);
+    if (!email) {
+      throw new BadRequestException('Email inválido.');
+    }
+
+    let person = await this.personRepo.findOne({ where: { email } });
+
+    if (!person) {
+      const existingUser = await this.usersService.findByEmail(email);
+      if (existingUser) {
+        throw new BadRequestException(
+          'Já existe conta com este email. Não é possível enviar convite de primeiro registo; associe a pessoa pelo painel de unidades ou participantes.',
+        );
+      }
+      const fullName = dto.fullName?.trim() ?? '';
+      if (fullName.length < 2) {
+        throw new BadRequestException(
+          'Nome completo obrigatório para convidar um email que ainda não está no sistema.',
+        );
+      }
+      person = this.personRepo.create({
+        email,
+        fullName,
+        cpf: null,
+        phone: null,
+      });
+      try {
+        person = await this.personRepo.save(person);
+      } catch (e) {
+        if (e instanceof QueryFailedError) {
+          throw new ConflictException(
+            'Email ou dados em conflito com outra ficha de pessoa.',
+          );
+        }
+        throw e;
+      }
+    } else {
+      if (person.userId) {
+        throw new BadRequestException(
+          'Esta pessoa já tem utilizador. Não envie convite de registo; associe-a a uma unidade ou como participante.',
+        );
+      }
+    }
+
+    await this.condominiumInvitationRepo.delete({
+      condominiumId,
+      email,
+      consumedAt: IsNull(),
+    });
+
+    const plainToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(plainToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+
+    const inv = this.condominiumInvitationRepo.create({
+      tokenHash,
+      inviteTokenPlain: plainToken,
+      email,
+      condominiumId,
+      personId: person.id,
+      unitId: unit.id,
+      invitedByUserId: userId,
+      expiresAt,
+      createdAt: new Date(),
+    });
+    await this.condominiumInvitationRepo.save(inv);
+
+    const inviteLink = this.buildInvitePublicLink(plainToken);
+
+    await this.mailService.sendCondominiumMemberInvite({
+      to: email,
+      inviteLink,
+      condominiumName,
+      unitIdentifier: unit.identifier,
+    });
+
+    return {
+      outcome: 'invite_sent' as const,
+      personId: person.id,
+      email,
+      unitId: unit.id,
+      inviteUrl: inviteLink,
+    };
+  }
+
   async listPendingInvitations(
     condominiumId: string,
     groupingId: string,
@@ -490,8 +800,42 @@ export class PeopleService {
     );
     return this.invitationRepo.find({
       where: { unitId: unit.id, consumedAt: IsNull() },
-      order: { createdAt: 'DESC' },
       relations: { person: true },
+      order: { createdAt: 'DESC' },
     });
+  }
+
+  /**
+   * URL do frontend: `FRONTEND_PUBLIC_URL/invitations/{token}` (igual ao e-mail).
+   * Exige configuração; usado ao criar convite e a enviar e-mail.
+   */
+  private buildInvitePublicLink(plainToken: string): string {
+    const base = this.requireFrontendPublicBase();
+    return `${base}/invitations/${encodeURIComponent(plainToken)}`;
+  }
+
+  /** Listagem: não falha se a env estiver em falta (o link fica null). */
+  private tryBuildInvitePublicLink(
+    plainToken: string | null | undefined,
+  ): string | null {
+    if (plainToken == null || plainToken === '') {
+      return null;
+    }
+    const raw = this.config.get<string>('FRONTEND_PUBLIC_URL')?.trim();
+    if (!raw) {
+      return null;
+    }
+    const base = raw.replace(/\/$/, '');
+    return `${base}/invitations/${encodeURIComponent(plainToken)}`;
+  }
+
+  private requireFrontendPublicBase(): string {
+    const raw = this.config.get<string>('FRONTEND_PUBLIC_URL')?.trim();
+    if (!raw) {
+      throw new BadRequestException(
+        'FRONTEND_PUBLIC_URL não está definida. Configure a URL base do frontend (ex.: http://localhost:4200).',
+      );
+    }
+    return raw.replace(/\/$/, '');
   }
 }

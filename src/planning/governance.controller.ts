@@ -6,12 +6,14 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -45,6 +47,26 @@ export class GovernanceController {
   ) {
     await this.governance.assertManagement(condominiumId, userId);
     return this.governance.listParticipants(condominiumId);
+  }
+
+  @Get('participants/lookup-user')
+  @ApiOperation({
+    summary: 'Resolver e-mail para userId (atribuir síndico/admin)',
+    description:
+      'A conta tem de existir e estar ligada ao condomínio (titular, participante ou unidade).',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiQuery({ name: 'email', required: true })
+  lookupParticipantUser(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Query('email') email?: string,
+  ) {
+    return this.governance.lookupUserForGovernanceRole(
+      condominiumId,
+      userId,
+      email ?? '',
+    );
   }
 
   @Post('participants')

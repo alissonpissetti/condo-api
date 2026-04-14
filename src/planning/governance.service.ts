@@ -8,8 +8,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import { Condominium } from '../condominiums/condominium.entity';
-import { Grouping } from '../groupings/grouping.entity';
 import { Unit } from '../units/unit.entity';
+import { Person } from '../people/person.entity';
+import { normalizeEmail } from '../people/people.utils';
+import { UsersService } from '../users/users.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { GovernanceAuditLog } from './entities/governance-audit-log.entity';
@@ -29,10 +31,11 @@ export class GovernanceService {
     private readonly condoRepo: Repository<Condominium>,
     @InjectRepository(GovernanceAuditLog)
     private readonly auditRepo: Repository<GovernanceAuditLog>,
-    @InjectRepository(Grouping)
-    private readonly groupingRepo: Repository<Grouping>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
+    @InjectRepository(Person)
+    private readonly personRepo: Repository<Person>,
+    private readonly usersService: UsersService,
   ) {}
 
   async getCondominiumOrThrow(condominiumId: string): Promise<Condominium> {
@@ -114,6 +117,7 @@ export class GovernanceService {
     if (
       access.kind === 'participant' &&
       (access.role === GovernanceRole.Syndic ||
+        access.role === GovernanceRole.SubSyndic ||
         access.role === GovernanceRole.Admin)
     ) {
       return access;
@@ -152,6 +156,7 @@ export class GovernanceService {
     if (
       access?.kind === 'participant' &&
       (access.role === GovernanceRole.Syndic ||
+        access.role === GovernanceRole.SubSyndic ||
         access.role === GovernanceRole.Admin)
     ) {
       return;
@@ -213,6 +218,50 @@ export class GovernanceService {
     });
   }
 
+  /**
+   * Resolve conta por e-mail para atribuir papéis: tem de existir utilizador
+   * e vínculo ao condomínio (titular, participante ou morador por unidade).
+   */
+  async lookupUserForGovernanceRole(
+    condominiumId: string,
+    actorUserId: string,
+    emailRaw: string,
+  ) {
+    await this.assertCanManageRoles(condominiumId, actorUserId);
+    const email = normalizeEmail(emailRaw);
+    if (!email) {
+      throw new BadRequestException('Indique um e-mail válido.');
+    }
+    const condo = await this.getCondominiumOrThrow(condominiumId);
+    const user = await this.usersService.findByEmail(email);
+    if (!user) {
+      throw new NotFoundException(
+        'Nenhuma conta com este e-mail. A pessoa precisa de registo (ex.: convite) antes de receber um papel.',
+      );
+    }
+    const hasStake =
+      condo.ownerId === user.id ||
+      (await this.participantRepo.exist({
+        where: { condominiumId, userId: user.id },
+      })) ||
+      (await this.hasPersonLinkToCondominium(condominiumId, user.id));
+    if (!hasStake) {
+      throw new BadRequestException(
+        'Esta conta ainda não está ligada a este condomínio. Use convites ou associe a pessoa a uma unidade.',
+      );
+    }
+    const person = await this.personRepo.findOne({
+      where: { userId: user.id },
+    });
+    return {
+      userId: user.id,
+      email: user.email,
+      personId: person?.id ?? null,
+      fullName: person?.fullName ?? null,
+      isOwner: condo.ownerId === user.id,
+    };
+  }
+
   async createParticipant(
     condominiumId: string,
     actorUserId: string,
@@ -227,9 +276,24 @@ export class GovernanceService {
       );
     }
 
+    if (dto.role === GovernanceRole.Member) {
+      throw new BadRequestException(
+        'O papel de membro é atribuído automaticamente ao aceitar o convite de onboarding; não pode ser criado aqui.',
+      );
+    }
+
     if (dto.role === GovernanceRole.Syndic) {
       const olds = await this.participantRepo.find({
         where: { condominiumId, role: GovernanceRole.Syndic },
+      });
+      if (olds.length > 0) {
+        await this.participantRepo.remove(olds);
+      }
+    }
+
+    if (dto.role === GovernanceRole.SubSyndic) {
+      const olds = await this.participantRepo.find({
+        where: { condominiumId, role: GovernanceRole.SubSyndic },
       });
       if (olds.length > 0) {
         await this.participantRepo.remove(olds);
@@ -298,6 +362,39 @@ export class GovernanceService {
         action: 'participant_removed',
         performedByUserId: actorUserId,
         payload: { participantId, userId: row.userId, role: row.role },
+      }),
+    );
+  }
+
+  /**
+   * Garante participação como membro (onboarding por convite ao condomínio).
+   * Não confere permissões de gestão.
+   */
+  async ensureMemberParticipant(
+    condominiumId: string,
+    userId: string,
+    personId: string,
+  ): Promise<void> {
+    await this.ensureBootstrapParticipants(condominiumId);
+    let row = await this.participantRepo.findOne({
+      where: {
+        condominiumId,
+        userId,
+        role: GovernanceRole.Member,
+      },
+    });
+    if (row) {
+      row.personId = personId;
+      await this.participantRepo.save(row);
+      return;
+    }
+    await this.participantRepo.save(
+      this.participantRepo.create({
+        id: randomUUID(),
+        condominiumId,
+        userId,
+        personId,
+        role: GovernanceRole.Member,
       }),
     );
   }

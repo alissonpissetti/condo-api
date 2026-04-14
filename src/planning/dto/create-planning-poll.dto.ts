@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsOptional,
@@ -25,10 +27,12 @@ export class CreatePlanningPollDto {
   @MaxLength(512)
   title: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'HTML rico (sanitizado no servidor).',
+  })
   @IsOptional()
   @IsString()
-  @MaxLength(20000)
+  @MaxLength(100000)
   body?: string;
 
   @ApiProperty()
@@ -43,9 +47,18 @@ export class CreatePlanningPollDto {
   @IsEnum(AssemblyType)
   assemblyType: AssemblyType;
 
+  @ApiPropertyOptional({
+    description: 'Se verdadeiro, cada unidade pode assinalar várias opções.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  allowMultiple?: boolean;
+
   @ApiProperty({ type: [PlanningPollOptionInputDto] })
   @IsArray()
   @ArrayMinSize(2)
+  @ArrayMaxSize(24)
   @ValidateNested({ each: true })
   @Type(() => PlanningPollOptionInputDto)
   options: PlanningPollOptionInputDto[];

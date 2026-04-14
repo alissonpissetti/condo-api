@@ -124,7 +124,7 @@ Cada unidade pode ter **proprietário** e **responsável** (pessoas distintas, p
    - Se **não existir**, o campo **`email` é obrigatório**: cria-se a ficha `people`, gera-se convite e envia-se e-mail (a unidade só é atualizada quando o convite for aceite).  
 3. **Convite (público):** `GET /invitations/:token` (pré-visualização) e `POST /invitations/accept/:token` com `{"password":"...","fullName":"..."?}` — cria utilizador, liga à ficha e aplica os papéis na unidade.
 
-Configure `INVITE_PUBLIC_URL` para o URL do **frontend** de cadastro (o email inclui `?inviteToken=...`). Sem SMTP (`SMTP_HOST`), o link é registado nos **logs** da API.
+Configure `FRONTEND_PUBLIC_URL` com a URL base do **frontend** (ex.: `http://localhost:4200`). Os convites usam `{FRONTEND_PUBLIC_URL}/invitations/{token}` (a app redireciona para o registo). Sem SMTP (`SMTP_HOST`), o link é registado nos **logs** da API.
 
 Não é possível apagar o último agrupamento de um condomínio.
 

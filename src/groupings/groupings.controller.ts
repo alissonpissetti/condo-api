@@ -57,6 +57,24 @@ export class GroupingsController {
     return this.groupingsService.findAll(condominiumId, userId);
   }
 
+  @Get('with-units')
+  @ApiOperation({
+    summary: 'Listar agrupamentos com unidades (árvore do condomínio)',
+    description:
+      'Uma resposta agregada para o painel; evita N+1 pedidos por agrupamento.',
+  })
+  @ApiParam({
+    name: 'condominiumId',
+    format: 'uuid',
+    description: 'ID do condomínio',
+  })
+  findAllWithUnits(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+  ) {
+    return this.groupingsService.findAllWithUnits(condominiumId, userId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Obter um agrupamento' })
   @ApiParam({
