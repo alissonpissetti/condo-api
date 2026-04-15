@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
@@ -96,6 +99,30 @@ export class UnitPeopleController {
       unitId,
       userId,
       dto,
+    );
+  }
+
+  @Delete('responsible')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Remover responsável pela unidade',
+    description:
+      'Limpa o vínculo do responsável (ex.: inquilino). O proprietário, se existir, não é alterado.',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'groupingId', format: 'uuid' })
+  @ApiParam({ name: 'unitId', format: 'uuid' })
+  clearResponsible(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('groupingId', ParseUUIDPipe) groupingId: string,
+    @Param('unitId', ParseUUIDPipe) unitId: string,
+  ) {
+    return this.peopleService.clearResponsibleFromUnit(
+      condominiumId,
+      groupingId,
+      unitId,
+      userId,
     );
   }
 }

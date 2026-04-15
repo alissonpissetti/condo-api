@@ -15,6 +15,7 @@ import { Repository } from 'typeorm';
 import { normalizeBrCellphone } from '../lib/phone-br';
 import { MailService } from '../mail/mail.service';
 import { ComteleService } from '../plugins/comtele/comtele.service';
+import { SaasPlansService } from '../platform/saas-plans.service';
 import { UsersService } from '../users/users.service';
 import { LoginSmsChallenge } from './login-sms-challenge.entity';
 import { PasswordResetChallenge } from './password-reset-challenge.entity';
@@ -33,6 +34,7 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
   constructor(
+    private readonly saasPlans: SaasPlansService,
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly comtele: ComteleService,
@@ -58,10 +60,12 @@ export class AuthService {
       throw new ConflictException('Phone already registered');
     }
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
       email: dto.email,
       passwordHash,
       phone: phoneNorm,
+      planId,
     });
     return {
       id: user.id,

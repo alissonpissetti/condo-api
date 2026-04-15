@@ -6,6 +6,7 @@ import type { StringValue } from 'ms';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MailModule } from '../mail/mail.module';
 import { ComteleModule } from '../plugins/comtele/comtele.module';
+import { SaasPlansModule } from '../platform/saas-plans.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -19,6 +20,7 @@ import { JwtStrategy } from './jwt.strategy';
     MailModule,
     ComteleModule,
     UsersModule,
+    SaasPlansModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

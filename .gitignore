@@ -3,5 +3,11 @@ node_modules
 dist/
 build/
 
+# Segredos e ambiente local — nunca versionar (use só .env.example no repositório).
+.env
+.env.local
+.env.*.local
+!.env.example
+
 # Arquivos enviados (comprovantes, etc.) — local por padrão; use STORAGE_PATH
 /storage

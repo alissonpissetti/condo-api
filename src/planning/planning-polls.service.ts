@@ -20,10 +20,15 @@ import { PlanningPollOption } from './entities/planning-poll-option.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
 import { PlanningPoll } from './entities/planning-poll.entity';
 import { AssemblyType } from './enums/assembly-type.enum';
+import { GovernanceRole } from './enums/governance-role.enum';
 import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import { GovernanceService } from './governance.service';
 import { PollAttachmentStorageHelper } from './poll-attachment-storage.helper';
 import { sanitizePollBodyRich } from './poll-body-sanitize';
+import {
+  normalizeMulterOriginalName,
+  repairMojibakeUtf8Filename,
+} from './upload-filename-encoding.util';
 
 @Injectable()
 export class PlanningPollsService {
@@ -56,6 +61,9 @@ export class PlanningPollsService {
     }
     if (poll.attachments?.length) {
       poll.attachments.sort((a, b) => a.sortOrder - b.sortOrder);
+      for (const a of poll.attachments) {
+        a.originalFilename = repairMojibakeUtf8Filename(a.originalFilename);
+      }
     }
   }
 
@@ -217,7 +225,11 @@ export class PlanningPollsService {
       .where('a.pollId = :pid', { pid: poll.id })
       .getRawOne<{ m: string | null }>();
     const nextOrder = Number(maxRow?.m ?? -1) + 1;
-    const orig = (file.originalname || 'anexo').trim().slice(0, 500);
+    const orig = normalizeMulterOriginalName(
+      file.originalname || 'anexo',
+    )
+      .trim()
+      .slice(0, 500);
     const att = this.attachmentRepo.create({
       id: randomUUID(),
       pollId: poll.id,
@@ -270,7 +282,11 @@ export class PlanningPollsService {
       condominiumId,
       att.storageKey,
     );
-    return { buffer, contentType, filename: att.originalFilename };
+    return {
+      buffer,
+      contentType,
+      filename: repairMojibakeUtf8Filename(att.originalFilename),
+    };
   }
 
   async open(condominiumId: string, pollId: string, userId: string) {
@@ -337,6 +353,35 @@ export class PlanningPollsService {
       .getRawOne<{ cnt: string }>();
     const unitsVoted = Number(unitsRow?.cnt ?? 0);
     const optionSelections = Object.values(counts).reduce((a, b) => a + b, 0);
+
+    const voteRows = await this.voteRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.unit', 'u')
+      .innerJoinAndSelect('v.option', 'o')
+      .where('v.pollId = :pid', { pid: poll.id })
+      .orderBy('u.identifier', 'ASC')
+      .addOrderBy('o.sortOrder', 'ASC')
+      .addOrderBy('o.label', 'ASC')
+      .getMany();
+    const byUnit = new Map<
+      string,
+      { unitId: string; identifier: string; choices: { id: string; label: string }[] }
+    >();
+    for (const row of voteRows) {
+      const uid = row.unitId;
+      if (!byUnit.has(uid)) {
+        byUnit.set(uid, {
+          unitId: uid,
+          identifier: row.unit.identifier,
+          choices: [],
+        });
+      }
+      byUnit.get(uid)!.choices.push({
+        id: row.option.id,
+        label: row.option.label,
+      });
+    }
+
     return {
       pollId: poll.id,
       status: poll.status,
@@ -349,7 +394,27 @@ export class PlanningPollsService {
       unitsVoted,
       /** Soma das marcações por opção (numa pauta multi, pode exceder o nº de unidades). */
       totalOptionSelections: optionSelections,
+      /** Uma linha por unidade que votou; cada unidade só tem um registo de voto (substituído ao reenviar). */
+      votesByUnit: [...byUnit.values()],
     };
+  }
+
+  /**
+   * Titular do condomínio ou síndico (participante): podem registar voto em nome
+   * da própria unidade ou de qualquer outra; fora do prazo de votação quando aplicável.
+   * (Subsíndico/admin seguem regras de morador neste fluxo.)
+   */
+  private async canVoteForAnyUnit(
+    condominiumId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const access = await this.governance.resolveAccess(condominiumId, userId);
+    if (access?.kind === 'owner') {
+      return true;
+    }
+    return (
+      access?.kind === 'participant' && access.role === GovernanceRole.Syndic
+    );
   }
 
   private async assertUserRepresentsUnit(
@@ -381,13 +446,33 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
+    const extendedUnitVote = await this.canVoteForAnyUnit(
+      condominiumId,
+      userId,
+    );
     const now = new Date();
-    if (poll.status !== PlanningPollStatus.Open) {
-      throw new BadRequestException('A pauta não está aberta para votação.');
+
+    if (!extendedUnitVote) {
+      if (poll.status !== PlanningPollStatus.Open) {
+        throw new BadRequestException('A pauta não está aberta para votação.');
+      }
+      if (now < poll.opensAt || now > poll.closesAt) {
+        throw new BadRequestException('Fora do período de votação.');
+      }
+    } else {
+      // Titular/síndico: sem restrição de opensAt/closesAt; podem votar a qualquer momento
+      // enquanto a pauta não estiver decidida.
+      if (
+        poll.status !== PlanningPollStatus.Draft &&
+        poll.status !== PlanningPollStatus.Open &&
+        poll.status !== PlanningPollStatus.Closed
+      ) {
+        throw new BadRequestException(
+          'Como titular ou síndico, só é possível registar votos em rascunho, com votação aberta ou encerrada (antes da deliberação final).',
+        );
+      }
     }
-    if (now < poll.opensAt || now > poll.closesAt) {
-      throw new BadRequestException('Fora do período de votação.');
-    }
+
     const unit = await this.unitRepo.findOne({
       where: { id: dto.unitId },
     });
@@ -400,8 +485,13 @@ export class PlanningPollsService {
     if (!g) {
       throw new ForbiddenException('Unidade não pertence a este condomínio.');
     }
-    await this.assertUserRepresentsUnit(unit, userId);
-    const optionIds = dto.optionIds;
+    if (!extendedUnitVote) {
+      await this.assertUserRepresentsUnit(unit, userId);
+    }
+    const optionIds = this.uniqueOptionIdsInOrder(dto.optionIds);
+    if (optionIds.length === 0) {
+      throw new BadRequestException('Indique pelo menos uma opção de voto.');
+    }
     if (!poll.allowMultiple && optionIds.length !== 1) {
       throw new BadRequestException(
         'Esta pauta aceita apenas uma opção por unidade.',
@@ -429,6 +519,19 @@ export class PlanningPollsService {
     return { ok: true };
   }
 
+  /** Uma opção por entrada; sem duplicados (cada unidade só tem um voto substituível). */
+  private uniqueOptionIdsInOrder(raw: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of raw) {
+      const t = id?.trim();
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  }
+
   async myVotableUnits(
     condominiumId: string,
     userId: string,
@@ -445,7 +548,11 @@ export class PlanningPollsService {
     const units = await this.unitRepo.find({
       where: { groupingId: In(gids) },
       relations: { ownerPerson: true, responsiblePerson: true },
+      order: { identifier: 'ASC' },
     });
+    if (await this.canVoteForAnyUnit(condominiumId, userId)) {
+      return units.map((u) => ({ id: u.id, identifier: u.identifier }));
+    }
     const out: { id: string; identifier: string }[] = [];
     for (const u of units) {
       try {

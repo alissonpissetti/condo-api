@@ -15,6 +15,7 @@ import { CondominiumsService } from '../condominiums/condominiums.service';
 import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { Unit } from '../units/unit.entity';
+import { SaasPlansService } from '../platform/saas-plans.service';
 import { UsersService } from '../users/users.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { AssignUnitPersonDto } from './dto/assign-unit-person.dto';
@@ -35,6 +36,7 @@ type UnitPersonRole = AssignUnitPersonDto['role'];
 @Injectable()
 export class PeopleService {
   constructor(
+    private readonly saasPlans: SaasPlansService,
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     @InjectRepository(UnitInvitation)
@@ -371,6 +373,26 @@ export class PeopleService {
     return { outcome: 'linked' as const, personId: person.id };
   }
 
+  /** Remove apenas o responsável pela unidade (proprietário mantém-se, se houver). */
+  async clearResponsibleFromUnit(
+    condominiumId: string,
+    groupingId: string,
+    unitId: string,
+    userId: string,
+  ): Promise<void> {
+    const { unit } = await this.loadUnitForManagement(
+      condominiumId,
+      groupingId,
+      unitId,
+      userId,
+    );
+    // `save()` com `responsiblePerson` carregado pode repor o FK; `update()` aplica só a coluna.
+    await this.unitRepo.update(
+      { id: unit.id },
+      { responsiblePersonId: null },
+    );
+  }
+
   async getInvitePreview(plainToken: string) {
     const tokenHash = createHash('sha256').update(plainToken).digest('hex');
 
@@ -484,10 +506,18 @@ export class PeopleService {
       );
     }
 
+    if (!dto.password || dto.password.length < 8) {
+      throw new BadRequestException(
+        'Senha obrigatória (mínimo 8 caracteres) para criar a conta.',
+      );
+    }
+
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
       email: inv.email,
       passwordHash,
+      planId,
     });
 
     person.userId = user.id;
@@ -527,24 +557,59 @@ export class PeopleService {
       throw new GoneException('Convite expirado.');
     }
 
+    const person = inv.person;
     const existingUser = await this.usersService.findByEmail(inv.email);
+
     if (existingUser) {
+      if (!person.userId) {
+        person.userId = existingUser.id;
+        if (!person.email) {
+          person.email = existingUser.email;
+        }
+        await this.personRepo.save(person);
+      }
+      if (person.userId !== existingUser.id) {
+        throw new ConflictException(
+          'Este convite não corresponde à conta associada a este email.',
+        );
+      }
+      const unit = inv.unit;
+      unit.responsiblePersonId = person.id;
+      await this.unitRepo.save(unit);
+      if (dto.fullName?.trim()) {
+        person.fullName = dto.fullName.trim();
+        await this.personRepo.save(person);
+      }
+      inv.consumedAt = new Date();
+      await this.condominiumInvitationRepo.save(inv);
+      return {
+        message:
+          'Associação confirmada. Ficou como responsável pela unidade indicada.',
+        userId: existingUser.id,
+        personId: person.id,
+        condominiumId: inv.condominiumId,
+        unitId: unit.id,
+      };
+    }
+
+    if (person.userId) {
       throw new ConflictException(
-        'Já existe uma conta com este email. Inicie sessão; peça ao administrador para voltar a enviar o convite ou associe-se ao condomínio pela gestão de participantes.',
+        'Esta ficha de pessoa já tem utilizador associado. Inicie sessão com essa conta para aceitar convites futuros.',
       );
     }
 
-    const person = inv.person;
-    if (person.userId) {
-      throw new ConflictException(
-        'Esta ficha de pessoa já tem utilizador associado.',
+    if (!dto.password || dto.password.length < 8) {
+      throw new BadRequestException(
+        'Senha obrigatória (mínimo 8 caracteres) para criar a conta.',
       );
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
       email: inv.email,
       passwordHash,
+      planId,
     });
 
     person.userId = user.id;
@@ -587,9 +652,9 @@ export class PeopleService {
           found: true,
           fullName: person.fullName,
           hasUserAccount: true,
-          canInvite: false,
+          canInvite: true,
           message:
-            'Esta pessoa já tem conta. Pode associá-la a uma unidade ou adicionar como participante com permissões adequadas.',
+            'Esta pessoa já tem conta. Pode enviar o convite: receberá um link para aceitar e ficar como responsável pela unidade.',
         };
       }
       return {
@@ -609,9 +674,9 @@ export class PeopleService {
         found: true,
         fullName: byUser?.fullName ?? null,
         hasUserAccount: true,
-        canInvite: false,
+        canInvite: true,
         message:
-          'Já existe utilizador com este email. Use a gestão de unidades ou participantes para dar acesso ao condomínio.',
+          'Já existe utilizador com este email. Pode enviar o convite; a pessoa confirma pelo link com a conta existente.',
       };
     }
 
@@ -711,10 +776,38 @@ export class PeopleService {
     if (!person) {
       const existingUser = await this.usersService.findByEmail(email);
       if (existingUser) {
-        throw new BadRequestException(
-          'Já existe conta com este email. Não é possível enviar convite de primeiro registo; associe a pessoa pelo painel de unidades ou participantes.',
-        );
+        person = await this.personRepo.findOne({
+          where: { userId: existingUser.id },
+        });
+        if (!person) {
+          const fullName = dto.fullName?.trim() ?? '';
+          if (fullName.length < 2) {
+            throw new BadRequestException(
+              'Nome completo obrigatório para convidar esta conta (criação da ficha de pessoa ligada ao utilizador).',
+            );
+          }
+          person = this.personRepo.create({
+            email: existingUser.email,
+            fullName,
+            userId: existingUser.id,
+            cpf: null,
+            phone: null,
+          });
+          try {
+            person = await this.personRepo.save(person);
+          } catch (e) {
+            if (e instanceof QueryFailedError) {
+              throw new ConflictException(
+                'Dados em conflito ao criar ficha de pessoa.',
+              );
+            }
+            throw e;
+          }
+        }
       }
+    }
+
+    if (!person) {
       const fullName = dto.fullName?.trim() ?? '';
       if (fullName.length < 2) {
         throw new BadRequestException(
@@ -738,12 +831,14 @@ export class PeopleService {
         throw e;
       }
     } else {
-      if (person.userId) {
-        throw new BadRequestException(
-          'Esta pessoa já tem utilizador. Não envie convite de registo; associe-a a uma unidade ou como participante.',
-        );
+      const fn = dto.fullName?.trim();
+      if (fn && fn.length >= 2) {
+        person.fullName = fn;
+        await this.personRepo.save(person);
       }
     }
+
+    const hasUserAccount = !!person.userId;
 
     await this.condominiumInvitationRepo.delete({
       condominiumId,
@@ -775,6 +870,7 @@ export class PeopleService {
       inviteLink,
       condominiumName,
       unitIdentifier: unit.identifier,
+      existingAccount: hasUserAccount,
     });
 
     return {

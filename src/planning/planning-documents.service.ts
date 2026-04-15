@@ -17,6 +17,7 @@ import { CondominiumDocumentKind } from './enums/condominium-document-kind.enum'
 import { CondominiumDocumentStatus } from './enums/condominium-document-status.enum';
 import { AssemblyType } from './enums/assembly-type.enum';
 import { GovernanceRole } from './enums/governance-role.enum';
+import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import { DocumentStorageHelper } from './document-storage.helper';
 import { GovernanceService } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
@@ -118,6 +119,21 @@ export class PlanningDocumentsService {
     );
   }
 
+  private formatDateTimePtBr(d: Date): string {
+    try {
+      return d.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'America/Sao_Paulo',
+      });
+    } catch {
+      return d.toISOString();
+    }
+  }
+
   private buildPdfBuffer(
     condominiumName: string,
     poll: PlanningPoll,
@@ -125,44 +141,175 @@ export class PlanningDocumentsService {
     unitsVoted: number,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
-      const doc = new PDFDocument({ margin: 50 });
+      const doc = new PDFDocument({
+        margin: 56,
+        size: 'A4',
+        info: {
+          Title: `Ata — ${poll.title}`.slice(0, 200),
+          Author: condominiumName.slice(0, 120),
+        },
+      });
       const chunks: Buffer[] = [];
+      const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
       doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
-      doc.fontSize(16).text('Ata de assembleia (rascunho)', { underline: true });
-      doc.moveDown();
-      doc.fontSize(11);
-      doc.text(`Condomínio: ${condominiumName}`);
-      doc.text(`Título da pauta: ${poll.title}`);
+
+      const assemblyKind =
+        poll.assemblyType === AssemblyType.Election
+          ? 'Assembleia Geral para fins eleitorais'
+          : 'Assembleia Geral Ordinária (ou extraordinária, conforme convocação)';
+
+      const voteMode = poll.allowMultiple
+        ? 'Escolha múltipla por unidade (várias opções podem ser assinaladas por fração)'
+        : 'Escolha única por unidade (uma opção por fração)';
+
+      const decidedOption =
+        poll.decidedOptionId && poll.status === PlanningPollStatus.Decided
+          ? poll.options?.find((o) => o.id === poll.decidedOptionId)
+          : null;
+
+      const totalMarks = Object.values(counts).reduce((a, b) => a + b, 0);
+
+      doc.font('Helvetica-Bold').fontSize(13).text('ATA DE ASSEMBLEIA', {
+        align: 'center',
+      });
+      doc.moveDown(0.35);
+      doc
+        .font('Helvetica')
+        .fontSize(9.5)
+        .fillColor('#333333')
+        .text(
+          'Rascunho para conferência, retificação e assinaturas. A versão definitiva, quando lavrada e publicada, constitui o registro formal da deliberação.',
+          { align: 'center', width: contentWidth },
+        );
+      doc.fillColor('#000000');
+      doc.moveDown(1.2);
+
+      doc.font('Helvetica-Bold').fontSize(11).text('I — IDENTIFICAÇÃO');
+      doc.moveDown(0.4);
+      doc.font('Helvetica').fontSize(10.5);
       doc.text(
-        `Tipo: ${poll.assemblyType === AssemblyType.Election ? 'Eleição' : 'Ordinária'}`,
+        `Fica lavrada a presente ata referente à deliberação da seguinte matéria no âmbito do condomínio identificado, nos termos da legislação aplicável e da convenção do condomínio, quando houver.`,
+        { width: contentWidth, align: 'justify' },
       );
+      doc.moveDown(0.5);
+      doc.text(`Condomínio: ${condominiumName}`, { width: contentWidth });
+      doc.text(`Natureza da assembleia: ${assemblyKind}`, { width: contentWidth });
+      doc.text(`Identificação da pauta / matéria: ${poll.title}`, {
+        width: contentWidth,
+      });
       doc.text(
-        `Modo de voto: ${poll.allowMultiple ? 'Múltipla escolha' : 'Escolha única'}`,
+        `Período convocado para votação (referência): de ${this.formatDateTimePtBr(poll.opensAt)} a ${this.formatDateTimePtBr(poll.closesAt)}.`,
+        { width: contentWidth, align: 'justify' },
       );
-      doc.text(`Abertura: ${poll.opensAt.toISOString()}`);
-      doc.text(`Encerramento: ${poll.closesAt.toISOString()}`);
+      doc.moveDown(0.85);
+
+      doc.font('Helvetica-Bold').fontSize(11).text('II — DA MATÉRIA EM DELIBERAÇÃO');
+      doc.moveDown(0.4);
+      doc.font('Helvetica').fontSize(10.5);
+      doc.text(
+        'Objeto: apreciação e deliberação da matéria constante do título desta ata, conforme opções de voto abaixo relacionadas.',
+        { width: contentWidth, align: 'justify' },
+      );
+      doc.moveDown(0.45);
       if (poll.body) {
         const plain = stripPollBodyToPlainText(poll.body);
         if (plain) {
-          doc.moveDown();
-          doc.text('Texto:');
-          doc.text(plain, { width: 500 });
+          doc.font('Helvetica-Bold').text('Ementa / fundamentação (resumo):');
+          doc.moveDown(0.25);
+          doc.font('Helvetica').text(plain, {
+            width: contentWidth,
+            align: 'justify',
+          });
+          doc.moveDown(0.5);
         }
       }
-      doc.moveDown();
-      doc.text(`Unidades que participaram na votação: ${unitsVoted}`);
-      doc.moveDown();
-      doc.text('Resultado da votação (marcações por opção):');
-      for (const o of poll.options ?? []) {
-        doc.text(`- ${o.label}: ${counts[o.id] ?? 0}`);
-      }
-      doc.moveDown();
-      doc.fontSize(9).text(
-        'Documento gerado automaticamente para circulação e reconhecimento dos responsáveis. A versão lavrada deve ser anexada ao sistema.',
-        { width: 500 },
+
+      doc.font('Helvetica-Bold').fontSize(11).text('III — DO PROCESSO DE VOTAÇÃO');
+      doc.moveDown(0.4);
+      doc.font('Helvetica').fontSize(10.5);
+      doc.text(
+        `A votação foi realizada por unidade autônoma (fração), no modo: ${voteMode}. Cada unidade possui, no máximo, um registro de voto vigente; eventual novo registro substitui o anterior.`,
+        { width: contentWidth, align: 'justify' },
       );
+      doc.moveDown(0.85);
+
+      doc.font('Helvetica-Bold').fontSize(11).text('IV — DA APURAÇÃO');
+      doc.moveDown(0.4);
+      doc.font('Helvetica').fontSize(10.5);
+      doc.text(
+        `Participaram da votação, nesta apuração, ${unitsVoted} unidade(s) distinta(s), perfazendo ${totalMarks} marcação(ões) nas opções, conforme quadro resumo:`,
+        { width: contentWidth, align: 'justify' },
+      );
+      doc.moveDown(0.45);
+      let n = 1;
+      for (const o of [...(poll.options ?? [])].sort(
+        (a, b) => a.sortOrder - b.sortOrder,
+      )) {
+        const c = counts[o.id] ?? 0;
+        doc.text(`${n}. ${o.label} — ${c} voto(s) / marcação(ões).`, {
+          width: contentWidth,
+        });
+        n += 1;
+      }
+      doc.moveDown(0.85);
+
+      doc.font('Helvetica-Bold').fontSize(11).text('V — DA DELIBERAÇÃO');
+      doc.moveDown(0.4);
+      doc.font('Helvetica').fontSize(10.5);
+      if (decidedOption) {
+        doc.text(
+          'Ante o resultado do escrutínio e nos termos legais e convencionais aplicáveis, a assembleia, por meio dos votos registrados e da formalização abaixo, DELIBERA o seguinte:',
+          { width: contentWidth, align: 'justify' },
+        );
+        doc.moveDown(0.5);
+        doc
+          .font('Helvetica-Bold')
+          .text(`« ${decidedOption.label} »`, {
+            width: contentWidth,
+            align: 'justify',
+          });
+        doc.moveDown(0.5);
+        doc.font('Helvetica').text(
+          'A deliberação acima corresponde à opção assim consignada pelo órgão competente para registro da decisão nesta pauta, devendo a presente ata ser juntada aos livros e registros do condomínio, na forma da lei.',
+          { width: contentWidth, align: 'justify' },
+        );
+      } else {
+        doc.text(
+          'A deliberação final será consignada na versão definitiva desta ata, após encerramento do processo de votação, eventual homologação e escolha da opção vencedora nos termos estatutários e legais. Enquanto não formalizada, o quadro da Seção IV subsiste apenas como resumo do escrutínio.',
+          { width: contentWidth, align: 'justify' },
+        );
+      }
+      doc.moveDown(1);
+
+      doc
+        .font('Helvetica')
+        .fontSize(9)
+        .fillColor('#444444')
+        .text(
+          `Documento gerado eletronicamente em ${this.formatDateTimePtBr(new Date())}, para fins de rascunho. Substitui-se por via definitiva assinada pelos responsáveis.`,
+          { width: contentWidth, align: 'justify' },
+        );
+      doc.fillColor('#000000');
+      doc.moveDown(1.2);
+
+      doc.font('Helvetica-Bold').fontSize(10).text('Assinaturas (preencher na via definitiva)');
+      doc.moveDown(0.75);
+      doc.font('Helvetica').fontSize(10);
+      doc.text('______________________________________________');
+      doc.text('Presidente da assembleia');
+      doc.text('Nome completo: _________________________________');
+      doc.text('CPF: ___________________________________________');
+      doc.moveDown(0.9);
+      doc.text('______________________________________________');
+      doc.text('Secretário(a) da assembleia');
+      doc.text('Nome completo: _________________________________');
+      doc.text('CPF: ___________________________________________');
+      doc.moveDown(0.9);
+      doc.text('Local e data: __________________________________');
+
       doc.end();
     });
   }

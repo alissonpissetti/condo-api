@@ -43,11 +43,13 @@ export class UsersService {
     email: string;
     passwordHash: string;
     phone?: string | null;
+    planId: number;
   }): Promise<User> {
     const user = this.usersRepo.create({
       email: data.email.trim().toLowerCase(),
       passwordHash: data.passwordHash,
       phone: data.phone ?? null,
+      planId: data.planId,
     });
     return this.usersRepo.save(user);
   }

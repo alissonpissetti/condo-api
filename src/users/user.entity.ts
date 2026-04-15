@@ -2,8 +2,11 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { SaasPlan } from '../platform/entities/saas-plan.entity';
 
 @Entity('users')
 export class User {
@@ -22,4 +25,15 @@ export class User {
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
+
+  /** Administrador global da plataforma (painel SaaS / condo-adm). */
+  @Column({ name: 'platform_admin', default: false })
+  platformAdmin: boolean;
+
+  @Column({ name: 'plan_id', nullable: true })
+  planId: number | null;
+
+  @ManyToOne(() => SaasPlan, (p) => p.users, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'plan_id' })
+  plan: SaasPlan | null;
 }

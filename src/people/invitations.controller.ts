@@ -11,9 +11,9 @@ export class InvitationsController {
 
   @Post('accept/:token')
   @ApiOperation({
-    summary: 'Aceitar convite e criar utilizador',
+    summary: 'Aceitar convite (registo ou conta existente)',
     description:
-      'Cria a conta com o email do convite, associa à ficha de pessoa e define proprietário/responsável na unidade.',
+      'Convite ao condomínio: se já existir conta com o email do convite, associa a unidade sem nova senha; caso contrário cria utilizador com a palavra-passe enviada. Convites de unidade (outro fluxo) seguem regra própria.',
   })
   @ApiParam({ name: 'token', description: 'Token recebido no link do convite' })
   accept(@Param('token') token: string, @Body() dto: AcceptInviteDto) {

@@ -24,6 +24,16 @@ import { PlanningPollAttachments1750100000000 } from '../migrations/175010000000
 import { CondominiumInvitations1750150000000 } from '../migrations/1750150000000-condominium-invitations';
 import { CondominiumInvitationsUnit1750160000000 } from '../migrations/1750160000000-condominium-invitations-unit';
 import { CondominiumInvitationPlainToken1750170000000 } from '../migrations/1750170000000-condominium-invitation-plain-token';
+import { UsersPlatformAdmin1750200000000 } from '../migrations/1750200000000-users-platform-admin';
+import { SaasBilling1750210000000 } from '../migrations/1750210000000-saas-billing';
+import { SaasPlans1750220000000 } from '../migrations/1750220000000-saas-plans';
+import { SaasUserVouchers1750230000000 } from '../migrations/1750230000000-saas-user-vouchers';
+import { SaasVouchersCatalog1750240000000 } from '../migrations/1750240000000-saas-vouchers-catalog';
+import { SaasBillingDueDay1750250000000 } from '../migrations/1750250000000-saas-billing-due-day';
+import { CondominiumSaasPlan1750260000000 } from '../migrations/1750260000000-condominium-saas-plan';
+import { SaasPlanCatalogBlurb1750270000000 } from '../migrations/1750270000000-saas-plan-catalog-blurb';
+import { SaasPlanPeriodsChangeRequests1750280000000 } from '../migrations/1750280000000-saas-plan-periods-change-requests';
+import { SaasPlanUnitPriceTiers1750290000000 } from '../migrations/1750290000000-saas-plan-unit-price-tiers';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -31,6 +41,10 @@ import { FinancialTransaction } from '../finance/entities/financial-transaction.
 import { TransactionUnitShare } from '../finance/entities/transaction-unit-share.entity';
 import { FundMonthlyAccrual } from '../finance/entities/fund-monthly-accrual.entity';
 import { CondominiumFeeCharge } from '../finance/entities/condominium-fee-charge.entity';
+import { SaasCharge } from '../platform/entities/saas-charge.entity';
+import { SaasCondominiumBilling } from '../platform/entities/saas-condominium-billing.entity';
+import { SaasPlan } from '../platform/entities/saas-plan.entity';
+import { SaasVoucher } from '../platform/entities/saas-voucher.entity';
 import { User } from '../users/user.entity';
 import { resolveTypeOrmConnectionOptions } from './connection-credentials';
 
@@ -54,6 +68,10 @@ export const AppDataSource = new DataSource({
     TransactionUnitShare,
     FundMonthlyAccrual,
     CondominiumFeeCharge,
+    SaasCondominiumBilling,
+    SaasCharge,
+    SaasPlan,
+    SaasVoucher,
   ],
   migrations: [
     InitialSchema1744300000000,
@@ -73,6 +91,16 @@ export const AppDataSource = new DataSource({
     CondominiumInvitations1750150000000,
     CondominiumInvitationsUnit1750160000000,
     CondominiumInvitationPlainToken1750170000000,
+    UsersPlatformAdmin1750200000000,
+    SaasBilling1750210000000,
+    SaasPlans1750220000000,
+    SaasUserVouchers1750230000000,
+    SaasVouchersCatalog1750240000000,
+    SaasBillingDueDay1750250000000,
+    CondominiumSaasPlan1750260000000,
+    SaasPlanCatalogBlurb1750270000000,
+    SaasPlanPeriodsChangeRequests1750280000000,
+    SaasPlanUnitPriceTiers1750290000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

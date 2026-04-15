@@ -44,6 +44,8 @@ Nesse caso pode usar, por exemplo:
 cp .env.example .env
 ```
 
+O ficheiro **`.env` está no `.gitignore`** e não deve ser commitado (credenciais SMTP, JWT, API keys, etc.). Só o **`.env.example`** serve de modelo no repositório. Se alguma credencial chegou a ir parar ao GitHub, altere-a na origem (painel de e-mail, etc.).
+
 Ajuste `JWT_SECRET` em produção. Sem `DATABASE_URL`, a API usa **MySQL** com as variáveis `DB_HOST`, `DB_PORT` (padrão `3306`), `DB_USER`, `DB_PASSWORD`, `DB_NAME`. Para PostgreSQL sem URL, defina `DB_DRIVER=postgres` e use porta `5432` nos `DB_*`.
 
 **Sincronização do schema (`synchronize`):** por omissão fica **ligada em desenvolvimento** (`NODE_ENV` diferente de `production`) e **desligada em produção**. Defina `DB_SYNCHRONIZE=false` no `.env` quando passar a usar só **migrations**, para o TypeORM não competir com o DDL versionado.

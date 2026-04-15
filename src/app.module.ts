@@ -12,6 +12,7 @@ import { FinanceModule } from './finance/finance.module';
 import { PlanningModule } from './planning/planning.module';
 import { StorageModule } from './storage/storage.module';
 import { UnitsModule } from './units/units.module';
+import { PlatformModule } from './platform/platform.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -45,6 +46,7 @@ import { UsersModule } from './users/users.module';
     UnitsModule,
     FinanceModule,
     PlanningModule,
+    PlatformModule,
   ],
 })
 export class AppModule {}
