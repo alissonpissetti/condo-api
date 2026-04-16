@@ -13,7 +13,7 @@ import type { AllocationRule } from '../allocation.types';
 import { FinancialFund } from './financial-fund.entity';
 import { TransactionUnitShare } from './transaction-unit-share.entity';
 
-export type FinancialTransactionKind = 'expense' | 'income';
+export type FinancialTransactionKind = 'expense' | 'income' | 'investment';
 
 @Entity('financial_transactions')
 export class FinancialTransaction {
@@ -34,6 +34,10 @@ export class FinancialTransaction {
   @JoinColumn({ name: 'fund_id' })
   fund: FinancialFund | null;
 
+  /**
+   * expense | income | investment (aplicação de capital; rateio como despesa).
+   * No saldo do fundo: receita soma; despesa e aplicação subtraem.
+   */
   @Column({ type: 'varchar', length: 16 })
   kind: FinancialTransactionKind;
 
@@ -61,6 +65,15 @@ export class FinancialTransaction {
   /** `json` é suportado por PostgreSQL e MySQL/MariaDB (`jsonb` só existe no PG). */
   @Column({ name: 'allocation_rule', type: 'json' })
   allocationRule: AllocationRule;
+
+  /** Agrupa parcelas criadas em lote (mesmo UUID em todas as transações da série). */
+  @Column({
+    name: 'recurring_series_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  recurringSeriesId: string | null;
 
   @OneToMany(() => TransactionUnitShare, (s) => s.transaction)
   unitShares: TransactionUnitShare[];

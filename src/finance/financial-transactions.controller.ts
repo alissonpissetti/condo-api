@@ -20,6 +20,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
+import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { FinancialTransactionsService } from './financial-transactions.service';
 
@@ -52,6 +53,37 @@ export class FinancialTransactionsController {
     @Body() dto: CreateTransactionDto,
   ) {
     return this.txService.create(condominiumId, userId, dto);
+  }
+
+  @Patch('recurring-series/:seriesId')
+  @ApiOperation({
+    summary:
+      'Atualizar todas as transações da série (título base, rateio, tipo, etc.)',
+  })
+  @ApiParam({ name: 'seriesId', format: 'uuid' })
+  updateRecurringSeries(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('seriesId', ParseUUIDPipe) seriesId: string,
+    @Body() dto: UpdateRecurringSeriesDto,
+  ) {
+    return this.txService.updateRecurringSeries(
+      condominiumId,
+      seriesId,
+      userId,
+      dto,
+    );
+  }
+
+  @Delete('recurring-series/:seriesId')
+  @ApiOperation({ summary: 'Excluir todas as transações da série recorrente' })
+  @ApiParam({ name: 'seriesId', format: 'uuid' })
+  removeRecurringSeries(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('seriesId', ParseUUIDPipe) seriesId: string,
+  ) {
+    return this.txService.removeRecurringSeries(condominiumId, seriesId, userId);
   }
 
   @Get(':transactionId')

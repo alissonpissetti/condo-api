@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
 import { Grouping } from '../groupings/grouping.entity';
+import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { Unit } from '../units/unit.entity';
 import { AllocationResolverService } from './allocation-resolver.service';
 import { CondominiumFeesController } from './condominium-fees.controller';
@@ -14,11 +15,13 @@ import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { FinanceMonthCronService } from './finance-month-cron.service';
 import { FinanceStatementController } from './finance-statement.controller';
 import { FinanceStatementService } from './finance-statement.service';
+import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
 import { FinancialFundsController } from './financial-funds.controller';
 import { FinancialFundsService } from './financial-funds.service';
 import { FinancialTransactionsController } from './financial-transactions.controller';
 import { FinancialTransactionsService } from './financial-transactions.service';
 import { FundAccrualService } from './fund-accrual.service';
+import { FundBalanceService } from './fund-balance.service';
 import { TransactionReceiptsController } from './transaction-receipts.controller';
 
 @Module({
@@ -31,6 +34,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       CondominiumFeeCharge,
       Unit,
       Grouping,
+      CondominiumParticipant,
     ]),
     CondominiumsModule,
   ],
@@ -47,7 +51,9 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FinancialTransactionsService,
     FinanceStatementService,
     FundAccrualService,
+    FundBalanceService,
     CondominiumFeesService,
+    MonthlyTransparencyPdfService,
     FinanceMonthCronService,
   ],
 })

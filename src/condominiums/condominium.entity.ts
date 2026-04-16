@@ -46,6 +46,46 @@ export class Condominium {
   @OneToMany(() => Grouping, (g) => g.condominium)
   groupings: Grouping[];
 
+  /** Chave PIX do condomínio (receitas / taxa); usada no PDF de transparência. */
+  @Column({ name: 'billing_pix_key', type: 'varchar', length: 255, nullable: true })
+  billingPixKey: string | null;
+
+  /** Nome do beneficiário (máx. 25 caracteres, regra PIX). */
+  @Column({
+    name: 'billing_pix_beneficiary_name',
+    type: 'varchar',
+    length: 25,
+    nullable: true,
+  })
+  billingPixBeneficiaryName: string | null;
+
+  /** Cidade do beneficiário (máx. 15 caracteres, regra PIX). */
+  @Column({
+    name: 'billing_pix_city',
+    type: 'varchar',
+    length: 15,
+    nullable: true,
+  })
+  billingPixCity: string | null;
+
+  /** WhatsApp para envio de comprovantes (texto livre, ex.: 41 99989-7602). Se vazio, usa telefone da ficha do síndico. */
+  @Column({
+    name: 'syndic_whatsapp_for_receipts',
+    type: 'varchar',
+    length: 40,
+    nullable: true,
+  })
+  syndicWhatsappForReceipts: string | null;
+
+  /** Logo da gestão (imagem) para PDFs de transparência; chave no armazenamento do condomínio. */
+  @Column({
+    name: 'management_logo_storage_key',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  managementLogoStorageKey: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

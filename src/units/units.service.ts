@@ -9,6 +9,13 @@ import { Unit } from './unit.entity';
 
 @Injectable()
 export class UnitsService {
+  private static normalizeMemberDisplayLabel(
+    value: string | null | undefined,
+  ): string | null {
+    const t = (value ?? '').trim();
+    return t.length ? t : null;
+  }
+
   constructor(
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
@@ -57,6 +64,12 @@ export class UnitsService {
       identifier: dto.identifier,
       floor: dto.floor ?? null,
       notes: dto.notes ?? null,
+      ownerDisplayName: UnitsService.normalizeMemberDisplayLabel(
+        dto.ownerDisplayName,
+      ),
+      responsibleDisplayName: UnitsService.normalizeMemberDisplayLabel(
+        dto.responsibleDisplayName,
+      ),
     });
     return this.unitRepo.save(unit);
   }
@@ -94,6 +107,16 @@ export class UnitsService {
     }
     if (dto.notes !== undefined) {
       unit.notes = dto.notes;
+    }
+    if (dto.ownerDisplayName !== undefined) {
+      unit.ownerDisplayName = UnitsService.normalizeMemberDisplayLabel(
+        dto.ownerDisplayName,
+      );
+    }
+    if (dto.responsibleDisplayName !== undefined) {
+      unit.responsibleDisplayName = UnitsService.normalizeMemberDisplayLabel(
+        dto.responsibleDisplayName,
+      );
     }
     return this.unitRepo.save(unit);
   }

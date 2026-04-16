@@ -12,6 +12,9 @@ import type { ReceiptStoragePort } from './receipt-storage.port';
 const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
+const MANAGEMENT_LOGO_KEY_RE =
+  /^management-logo\/logo\.(png|jpg|jpeg|webp)$/i;
+
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -41,6 +44,11 @@ export class LocalStorageService implements ReceiptStoragePort {
   isValidReceiptKey(key: string | null | undefined): boolean {
     if (!key || typeof key !== 'string') return false;
     return RECEIPT_KEY_RE.test(key);
+  }
+
+  isValidManagementLogoKey(key: string | null | undefined): boolean {
+    if (!key || typeof key !== 'string') return false;
+    return MANAGEMENT_LOGO_KEY_RE.test(key);
   }
 
   async saveTransactionReceipt(
@@ -108,6 +116,75 @@ export class LocalStorageService implements ReceiptStoragePort {
     relativeKey: string | null | undefined,
   ): Promise<void> {
     if (!relativeKey || !this.isValidReceiptKey(relativeKey)) return;
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    try {
+      await fs.unlink(abs);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async saveManagementLogo(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    const ext = MIME_EXT[mimeType];
+    if (!ext || ext === 'pdf') {
+      throw new BadRequestException(
+        'Logo: use imagem PNG, JPG ou WEBP.',
+      );
+    }
+    const maxBytes = 2 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('Logo muito grande (máx. 2 MB).');
+    }
+    const logoDirAbs = path.join(
+      this.root,
+      condominiumId,
+      'management-logo',
+    );
+    await fs.mkdir(logoDirAbs, { recursive: true });
+    try {
+      const existing = await fs.readdir(logoDirAbs);
+      for (const f of existing) {
+        await fs.unlink(path.join(logoDirAbs, f)).catch(() => undefined);
+      }
+    } catch {
+      /* ignore */
+    }
+    const relativeKey = `management-logo/logo.${ext}`;
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    await fs.writeFile(abs, buffer);
+    return relativeKey;
+  }
+
+  async readManagementLogo(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    if (!this.isValidManagementLogoKey(relativeKey)) {
+      throw new BadRequestException('Chave de logo inválida.');
+    }
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    let buffer: Buffer;
+    try {
+      buffer = await fs.readFile(abs);
+    } catch {
+      throw new NotFoundException('Logo não encontrada.');
+    }
+    const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'png';
+    const contentType = EXT_MIME[ext] ?? 'application/octet-stream';
+    return { buffer, contentType };
+  }
+
+  async deleteManagementLogo(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void> {
+    if (!relativeKey || !this.isValidManagementLogoKey(relativeKey)) {
+      return;
+    }
     const abs = this.absolutePath(condominiumId, relativeKey);
     try {
       await fs.unlink(abs);

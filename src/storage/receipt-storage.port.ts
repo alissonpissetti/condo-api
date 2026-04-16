@@ -17,4 +17,20 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+
+  /** Logo da gestão (PNG/JPG/WebP), uma por condomínio. */
+  isValidManagementLogoKey(key: string | null | undefined): boolean;
+  saveManagementLogo(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string>;
+  readManagementLogo(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string }>;
+  deleteManagementLogo(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void>;
 }

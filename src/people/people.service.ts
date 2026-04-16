@@ -92,6 +92,19 @@ export class PeopleService {
     }
   }
 
+  /** Ao ligar uma ficha real, remove rótulos livres do mesmo papel (evita duplicar no PDF). */
+  private clearDisplayNamesWhenLinkingPerson(
+    unit: Unit,
+    role: UnitPersonRole,
+  ): void {
+    if (role === 'owner' || role === 'both') {
+      unit.ownerDisplayName = null;
+    }
+    if (role === 'responsible' || role === 'both') {
+      unit.responsibleDisplayName = null;
+    }
+  }
+
   private maskEmail(email: string): string {
     const [local, domain] = email.split('@');
     if (!domain) {
@@ -264,6 +277,7 @@ export class PeopleService {
           await this.personRepo.save(linked);
         }
         this.applyRoleToUnit(unit, linked.id, role);
+        this.clearDisplayNamesWhenLinkingPerson(unit, role);
         await this.unitRepo.save(unit);
         return {
           outcome: 'linked_existing_user' as const,
@@ -368,6 +382,7 @@ export class PeopleService {
     await this.personRepo.save(person);
 
     this.applyRoleToUnit(unit, person.id, role);
+    this.clearDisplayNamesWhenLinkingPerson(unit, role);
     await this.unitRepo.save(unit);
 
     return { outcome: 'linked' as const, personId: person.id };
@@ -389,7 +404,7 @@ export class PeopleService {
     // `save()` com `responsiblePerson` carregado pode repor o FK; `update()` aplica só a coluna.
     await this.unitRepo.update(
       { id: unit.id },
-      { responsiblePersonId: null },
+      { responsiblePersonId: null, responsibleDisplayName: null },
     );
   }
 
@@ -529,9 +544,11 @@ export class PeopleService {
     const unit = inv.unit;
     if (inv.asOwner) {
       unit.ownerPersonId = person.id;
+      unit.ownerDisplayName = null;
     }
     if (inv.asResponsible) {
       unit.responsiblePersonId = person.id;
+      unit.responsibleDisplayName = null;
     }
     await this.unitRepo.save(unit);
 
@@ -575,6 +592,7 @@ export class PeopleService {
       }
       const unit = inv.unit;
       unit.responsiblePersonId = person.id;
+      unit.responsibleDisplayName = null;
       await this.unitRepo.save(unit);
       if (dto.fullName?.trim()) {
         person.fullName = dto.fullName.trim();
@@ -620,6 +638,7 @@ export class PeopleService {
 
     const unit = inv.unit;
     unit.responsiblePersonId = person.id;
+    unit.responsibleDisplayName = null;
     await this.unitRepo.save(unit);
 
     inv.consumedAt = new Date();

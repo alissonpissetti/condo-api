@@ -9,6 +9,10 @@ import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import PDFDocument = require('pdfkit');
+import {
+  installPlatformWatermarkUnderAllContent,
+  stampPlatformFooterOnAllPages,
+} from '../common/pdf-branding';
 import { PublishElectionDocumentDto } from './dto/publish-document.dto';
 import { CondominiumDocument } from './entities/condominium-document.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
@@ -141,14 +145,17 @@ export class PlanningDocumentsService {
     unitsVoted: number,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
+      const margin = 56;
       const doc = new PDFDocument({
-        margin: 56,
         size: 'A4',
+        bufferPages: true,
+        margins: { top: margin, bottom: 72, left: margin, right: margin },
         info: {
           Title: `Ata — ${poll.title}`.slice(0, 200),
           Author: condominiumName.slice(0, 120),
         },
       });
+      installPlatformWatermarkUnderAllContent(doc);
       const chunks: Buffer[] = [];
       const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
@@ -310,6 +317,7 @@ export class PlanningDocumentsService {
       doc.moveDown(0.9);
       doc.text('Local e data: __________________________________');
 
+      stampPlatformFooterOnAllPages(doc);
       doc.end();
     });
   }

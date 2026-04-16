@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,10 +9,17 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiParam,
   ApiTags,
@@ -92,6 +100,65 @@ export class CondominiumsController {
     await this.condominiumsService.findOneForOwner(id, userId);
     const had = Object.prototype.hasOwnProperty.call(body, 'code');
     return this.saasVouchers.patchCondominiumVoucherCode(id, body.code, had);
+  }
+
+  @Post(':id/management-logo')
+  @ApiOperation({
+    summary: 'Enviar logo da gestão (PNG/JPG/WebP) para PDFs de transparência',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }),
+  )
+  uploadManagementLogo(
+    @CurrentUser() userId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Envie uma imagem.');
+    }
+    return this.condominiumsService.uploadManagementLogo(
+      id,
+      userId,
+      file.buffer,
+      file.mimetype,
+    );
+  }
+
+  @Delete(':id/management-logo')
+  @ApiOperation({ summary: 'Remover logo da gestão' })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  deleteManagementLogo(
+    @CurrentUser() userId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.condominiumsService.deleteManagementLogo(id, userId);
+  }
+
+  @Get(':id/management-logo')
+  @ApiOperation({
+    summary: 'Descarregar logo da gestão (pré-visualização autenticada)',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  async getManagementLogoFile(
+    @CurrentUser() userId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    const { buffer, contentType } =
+      await this.condominiumsService.readManagementLogoForOwner(id, userId);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(buffer);
   }
 
   @Get(':id')

@@ -1,8 +1,13 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsUUID } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsUUID } from 'class-validator';
 
 export class SettleFeeChargeDto {
-  @ApiProperty({ format: 'uuid' })
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Opcional. Se omitido, quita sem vincular transação de receita (use o comprovante em PDF).',
+  })
+  @IsOptional()
   @IsUUID()
-  incomeTransactionId: string;
+  incomeTransactionId?: string;
 }

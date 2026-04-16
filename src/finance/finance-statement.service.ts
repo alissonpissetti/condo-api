@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CondominiumsService } from '../condominiums/condominiums.service';
+import { formatDateOnlyYmdUtc } from './date-only.util';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 
@@ -119,10 +120,7 @@ export class FinanceStatementService {
         kind: t.kind,
         title: t.title,
         amountCents: t.amountCents,
-        occurredOn:
-          t.occurredOn instanceof Date
-            ? t.occurredOn.toISOString().slice(0, 10)
-            : String(t.occurredOn).slice(0, 10),
+        occurredOn: formatDateOnlyYmdUtc(t.occurredOn),
         fundId: t.fundId,
         fundName: t.fund?.name ?? null,
       })),

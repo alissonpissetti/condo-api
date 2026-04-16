@@ -45,6 +45,19 @@ export class Unit {
   @JoinColumn({ name: 'responsible_person_id' })
   responsiblePerson: Person | null;
 
+  /** Rótulo livre (ex.: PDF transparência) quando não há proprietário na base. */
+  @Column({ name: 'owner_display_name', type: 'varchar', length: 255, nullable: true })
+  ownerDisplayName: string | null;
+
+  /** Rótulo livre quando não há responsável identificado na base. */
+  @Column({
+    name: 'responsible_display_name',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  responsibleDisplayName: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

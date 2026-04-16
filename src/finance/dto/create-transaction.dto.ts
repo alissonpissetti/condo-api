@@ -17,9 +17,9 @@ const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class CreateTransactionDto {
-  @ApiProperty({ enum: ['expense', 'income'] })
-  @IsEnum(['expense', 'income'])
-  kind: 'expense' | 'income';
+  @ApiProperty({ enum: ['expense', 'income', 'investment'] })
+  @IsEnum(['expense', 'income', 'investment'])
+  kind: 'expense' | 'income' | 'investment';
 
   @ApiProperty({ example: 150_00, description: 'Valor total em centavos' })
   @IsInt()
@@ -62,4 +62,12 @@ export class CreateTransactionDto {
   })
   @IsObject()
   allocationRule: AllocationRule;
+
+  @ApiPropertyOptional({
+    description:
+      'Opcional. Mesmo UUID em todas as parcelas de uma série recorrente (gerado no cliente).',
+  })
+  @IsOptional()
+  @IsUUID()
+  recurringSeriesId?: string;
 }

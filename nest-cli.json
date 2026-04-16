@@ -4,7 +4,14 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "outDir": "build"
+    "outDir": "build",
+    "assets": [
+      {
+        "include": "assets/**/*",
+        "outDir": "build",
+        "watchAssets": true
+      }
+    ]
   }
 }
 

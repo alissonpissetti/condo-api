@@ -15,6 +15,18 @@ export function firstDayOfCompetenceYm(ym: string): string {
   return `${ym}-01`;
 }
 
+/** Último dia do mês **anterior** à competência AAAA-MM (saldo inicial típico antes desse mês). */
+export function lastDayBeforeCompetenceYm(ym: string): string {
+  const [ys, ms] = ym.split('-');
+  const y = Number(ys);
+  const m = Number(ms);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    throw new Error('Invalid competence ym');
+  }
+  const last = new Date(Date.UTC(y, m - 1, 0));
+  return last.toISOString().slice(0, 10);
+}
+
 /**
  * Vencimento padrão: dia 10 do mês seguinte à competência.
  * Ex.: competência 2026-03 → 2026-04-10

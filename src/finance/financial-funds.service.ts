@@ -12,6 +12,7 @@ import { CreateFundDto } from './dto/create-fund.dto';
 import { UpdateFundDto } from './dto/update-fund.dto';
 import { FinancialFund } from './entities/financial-fund.entity';
 import { addMonthsYm } from './fund-month.util';
+import { FundBalanceService } from './fund-balance.service';
 
 @Injectable()
 export class FinancialFundsService {
@@ -20,17 +21,42 @@ export class FinancialFundsService {
     private readonly fundRepo: Repository<FinancialFund>,
     private readonly condominiumsService: CondominiumsService,
     private readonly allocationResolver: AllocationResolverService,
+    private readonly fundBalance: FundBalanceService,
   ) {}
 
   async findAll(
     condominiumId: string,
     userId: string,
-  ): Promise<FinancialFund[]> {
+  ): Promise<
+    Array<
+      Omit<FinancialFund, 'condominium'> & {
+        accumulatedBalanceCents: string;
+      }
+    >
+  > {
     await this.condominiumsService.assertOwner(condominiumId, userId);
-    return this.fundRepo.find({
+    const funds = await this.fundRepo.find({
       where: { condominiumId },
       order: { createdAt: 'DESC' },
     });
+    const balances =
+      await this.fundBalance.totalBalanceCentsByFundId(condominiumId);
+    /** Objeto explícito: `{ ...entidade }` pode omitir campos do TypeORM no JSON. */
+    return funds.map((f) => ({
+      id: f.id,
+      condominiumId: f.condominiumId,
+      name: f.name,
+      isPermanent: f.isPermanent,
+      allocationRule: f.allocationRule,
+      permanentMonthlyDebitCents: f.permanentMonthlyDebitCents,
+      termTotalPerUnitCents: f.termTotalPerUnitCents,
+      termInstallmentCount: f.termInstallmentCount,
+      termMonthlyPerUnitCents: f.termMonthlyPerUnitCents,
+      periodStartYm: f.periodStartYm,
+      periodEndYm: f.periodEndYm,
+      createdAt: f.createdAt,
+      accumulatedBalanceCents: (balances.get(f.id) ?? 0n).toString(),
+    }));
   }
 
   async create(

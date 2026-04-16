@@ -42,8 +42,9 @@ export class CondominiumFeeCharge {
   unit: Unit;
 
   /**
-   * Valor devido após homogeneizar por agrupamento (máximo das cotas brutas
-   * entre unidades do mesmo grupo).
+   * Valor devido após homogeneizar por tipo de unidade (máximo das cotas brutas
+   * entre unidades com o mesmo nome de agrupamento normalizado; se o nome for
+   * vazio, por `grouping_id`).
    */
   @Column({ name: 'amount_due_cents', type: 'bigint' })
   amountDueCents: string;

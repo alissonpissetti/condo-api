@@ -34,6 +34,11 @@ import { CondominiumSaasPlan1750260000000 } from '../migrations/1750260000000-co
 import { SaasPlanCatalogBlurb1750270000000 } from '../migrations/1750270000000-saas-plan-catalog-blurb';
 import { SaasPlanPeriodsChangeRequests1750280000000 } from '../migrations/1750280000000-saas-plan-periods-change-requests';
 import { SaasPlanUnitPriceTiers1750290000000 } from '../migrations/1750290000000-saas-plan-unit-price-tiers';
+import { TransactionRecurringSeries1750300000000 } from '../migrations/1750300000000-transaction-recurring-series';
+import { CondominiumBillingContact1750310000000 } from '../migrations/1750310000000-condominium-billing-contact';
+import { CondominiumManagementLogo1750320000000 } from '../migrations/1750320000000-condominium-management-logo';
+import { UnitMemberDisplayNames1750330000000 } from '../migrations/1750330000000-unit-member-display-names';
+import { DropCondominiumDocumentMembersNote1750350000000 } from '../migrations/1750350000000-drop-condominium-document-members-note';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -73,6 +78,7 @@ export const AppDataSource = new DataSource({
     SaasPlan,
     SaasVoucher,
   ],
+  /** Cada migration em `src/migrations` precisa ser importada e incluída aqui; o CLI não varre a pasta sozinho. */
   migrations: [
     InitialSchema1744300000000,
     UnitPersonsAndInvitations1744500000000,
@@ -101,6 +107,11 @@ export const AppDataSource = new DataSource({
     SaasPlanCatalogBlurb1750270000000,
     SaasPlanPeriodsChangeRequests1750280000000,
     SaasPlanUnitPriceTiers1750290000000,
+    TransactionRecurringSeries1750300000000,
+    CondominiumBillingContact1750310000000,
+    CondominiumManagementLogo1750320000000,
+    UnitMemberDisplayNames1750330000000,
+    DropCondominiumDocumentMembersNote1750350000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

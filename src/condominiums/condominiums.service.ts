@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,6 +14,8 @@ import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import { Condominium } from './condominium.entity';
 import { CreateCondominiumDto } from './dto/create-condominium.dto';
 import { UpdateCondominiumDto } from './dto/update-condominium.dto';
+import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
+import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 
 export type CondominiumListItem = {
   id: string;
@@ -29,6 +32,13 @@ export type CondominiumListItem = {
   hasSyndic: boolean;
   /** Nome da pessoa (perfil); nunca e-mail. */
   syndicName: string | null;
+  /** Só no detalhe GET :id (titular / acesso). */
+  billingPixKey?: string | null;
+  billingPixBeneficiaryName?: string | null;
+  billingPixCity?: string | null;
+  syndicWhatsappForReceipts?: string | null;
+  /** Só no detalhe GET :id — existe logo se não for null. */
+  managementLogoStorageKey?: string | null;
 };
 
 @Injectable()
@@ -42,6 +52,7 @@ export class CondominiumsService {
     private readonly participantRepo: Repository<CondominiumParticipant>,
     private readonly dataSource: DataSource,
     private readonly saasPlans: SaasPlansService,
+    @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
   ) {}
 
   async assertOwner(
@@ -154,7 +165,25 @@ export class CondominiumsService {
     if (!c) {
       throw new NotFoundException('Condominium not found');
     }
-    return c;
+    const full = await this.condoRepo.findOne({
+      where: { id },
+      select: {
+        id: true,
+        billingPixKey: true,
+        billingPixBeneficiaryName: true,
+        billingPixCity: true,
+        syndicWhatsappForReceipts: true,
+        managementLogoStorageKey: true,
+      },
+    });
+    return {
+      ...c,
+      billingPixKey: full?.billingPixKey ?? null,
+      billingPixBeneficiaryName: full?.billingPixBeneficiaryName ?? null,
+      billingPixCity: full?.billingPixCity ?? null,
+      syndicWhatsappForReceipts: full?.syndicWhatsappForReceipts ?? null,
+      managementLogoStorageKey: full?.managementLogoStorageKey ?? null,
+    };
   }
 
   async findById(condominiumId: string): Promise<Condominium | null> {
@@ -224,11 +253,114 @@ export class CondominiumsService {
       }
       condo.saasPlanId = p.id;
     }
+    if (dto.billingPixKey !== undefined) {
+      condo.billingPixKey = dto.billingPixKey?.trim() || null;
+    }
+    if (dto.billingPixBeneficiaryName !== undefined) {
+      condo.billingPixBeneficiaryName =
+        dto.billingPixBeneficiaryName?.trim() || null;
+    }
+    if (dto.billingPixCity !== undefined) {
+      condo.billingPixCity = dto.billingPixCity?.trim() || null;
+    }
+    if (dto.syndicWhatsappForReceipts !== undefined) {
+      condo.syndicWhatsappForReceipts =
+        dto.syndicWhatsappForReceipts?.trim() || null;
+    }
     return this.condoRepo.save(condo);
+  }
+
+  /**
+   * Texto para WhatsApp de comprovantes: campo do condomínio ou telefone da ficha do síndico.
+   */
+  async resolveSyndicWhatsappDisplay(condominiumId: string): Promise<string | null> {
+    const condo = await this.condoRepo.findOne({ where: { id: condominiumId } });
+    if (!condo) {
+      return null;
+    }
+    const override = condo.syndicWhatsappForReceipts?.trim();
+    if (override) {
+      return override;
+    }
+    const syndics = await this.participantRepo.find({
+      where: { condominiumId, role: GovernanceRole.Syndic },
+      relations: { person: true },
+      order: { createdAt: 'ASC' },
+      take: 1,
+    });
+    const raw = syndics[0]?.person?.phone?.trim();
+    if (!raw) {
+      return null;
+    }
+    return this.formatBrazilPhoneHint(raw);
+  }
+
+  private formatBrazilPhoneHint(phone: string): string {
+    const d = phone.replace(/\D/g, '');
+    if (d.length === 11) {
+      return `${d.slice(0, 2)} ${d.slice(2, 7)}-${d.slice(7)}`;
+    }
+    if (d.length === 10) {
+      return `${d.slice(0, 2)} ${d.slice(2, 6)}-${d.slice(6)}`;
+    }
+    return phone.trim();
   }
 
   async remove(id: string, userId: string): Promise<void> {
     await this.findOneForOwner(id, userId);
     await this.condoRepo.delete(id);
+  }
+
+  async uploadManagementLogo(
+    condominiumId: string,
+    userId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<{ managementLogoStorageKey: string }> {
+    const condo = await this.findOneForOwner(condominiumId, userId);
+    if (condo.managementLogoStorageKey) {
+      await this.storage.deleteManagementLogo(
+        condominiumId,
+        condo.managementLogoStorageKey,
+      );
+    }
+    const key = await this.storage.saveManagementLogo(
+      condominiumId,
+      buffer,
+      mimeType,
+    );
+    condo.managementLogoStorageKey = key;
+    await this.condoRepo.save(condo);
+    return { managementLogoStorageKey: key };
+  }
+
+  async deleteManagementLogo(
+    condominiumId: string,
+    userId: string,
+  ): Promise<void> {
+    const condo = await this.findOneForOwner(condominiumId, userId);
+    if (!condo.managementLogoStorageKey) {
+      return;
+    }
+    await this.storage.deleteManagementLogo(
+      condominiumId,
+      condo.managementLogoStorageKey,
+    );
+    condo.managementLogoStorageKey = null;
+    await this.condoRepo.save(condo);
+  }
+
+  async readManagementLogoForOwner(
+    condominiumId: string,
+    userId: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    const condo = await this.findOneForOwner(condominiumId, userId);
+    if (!condo.managementLogoStorageKey) {
+      throw new NotFoundException('Logo não configurada.');
+    }
+    return this.storage.readManagementLogo(
+      condominiumId,
+      condo.managementLogoStorageKey,
+    );
   }
 }

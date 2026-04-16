@@ -10,6 +10,9 @@ import type { ReceiptStoragePort } from './receipt-storage.port';
 const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
+const MANAGEMENT_LOGO_KEY_RE =
+  /^management-logo\/logo\.(png|jpg|jpeg|webp)$/i;
+
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -70,6 +73,11 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
   isValidReceiptKey(key: string | null | undefined): boolean {
     if (!key || typeof key !== 'string') return false;
     return RECEIPT_KEY_RE.test(key);
+  }
+
+  isValidManagementLogoKey(key: string | null | undefined): boolean {
+    if (!key || typeof key !== 'string') return false;
+    return MANAGEMENT_LOGO_KEY_RE.test(key);
   }
 
   async saveTransactionReceipt(
@@ -167,6 +175,88 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     });
     if (!res.ok && res.status !== 404) {
       /*404 = já removido */
+    }
+  }
+
+  async saveManagementLogo(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    this.ensureReady();
+    const ext = MIME_EXT[mimeType];
+    if (!ext || ext === 'pdf') {
+      throw new BadRequestException(
+        'Logo: use imagem PNG, JPG ou WEBP.',
+      );
+    }
+    const maxBytes = 2 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('Logo muito grande (máx. 2 MB).');
+    }
+    for (const oldExt of ['png', 'jpg', 'jpeg', 'webp']) {
+      const oldKey = `management-logo/logo.${oldExt}`;
+      await this.deleteManagementLogo(condominiumId, oldKey);
+    }
+    const relativeKey = `management-logo/logo.${ext}`;
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: this.authHeader,
+        'Content-Type': mimeType,
+      },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Falha ao enviar logo ao Nextcloud (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  async readManagementLogo(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string }> {
+    this.ensureReady();
+    if (!this.isValidManagementLogoKey(relativeKey)) {
+      throw new BadRequestException('Chave de logo inválida.');
+    }
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      headers: { Authorization: this.authHeader },
+    });
+    if (!res.ok) {
+      throw new NotFoundException('Logo não encontrada.');
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'png';
+    const contentType =
+      res.headers.get('content-type') ??
+      EXT_MIME[ext] ??
+      'application/octet-stream';
+    return { buffer, contentType };
+  }
+
+  async deleteManagementLogo(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void> {
+    if (!relativeKey || !this.isValidManagementLogoKey(relativeKey)) {
+      return;
+    }
+    this.ensureReady();
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: this.authHeader },
+    });
+    if (!res.ok && res.status !== 404) {
+      /* ignore */
     }
   }
 

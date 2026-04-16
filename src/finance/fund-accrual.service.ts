@@ -1,10 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AllocationResolverService } from './allocation-resolver.service';
 import { isAllocationRule } from './allocation.types';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { FinancialFund } from './entities/financial-fund.entity';
+import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { FinancialTransactionsService } from './financial-transactions.service';
 import { lastDayOfCompetenceYm, ymCompare } from './finance-competence.util';
@@ -18,6 +19,8 @@ export class FundAccrualService {
     private readonly fundRepo: Repository<FinancialFund>,
     @InjectRepository(FundMonthlyAccrual)
     private readonly accrualRepo: Repository<FundMonthlyAccrual>,
+    @InjectRepository(FinancialTransaction)
+    private readonly txRepo: Repository<FinancialTransaction>,
     private readonly allocationResolver: AllocationResolverService,
     private readonly txService: FinancialTransactionsService,
   ) {}
@@ -37,6 +40,34 @@ export class FundAccrualService {
     for (const fund of funds) {
       await this.ensureSingleFundAccrual(condominiumId, fund, competenceYm);
     }
+  }
+
+  /**
+   * Apaga despesas de mensalidade de fundo geradas pelo fechamento (`FundMonthlyAccrual`)
+   * para a competência. As linhas em `fund_monthly_accruals` somem em cascata.
+   *
+   * Usado na **regeneração** de cobranças: assim os rateios são refeitos com a regra
+   * atual do fundo e com as unidades nos agrupamentos atuais.
+   */
+  async removeAccrualsForCompetence(
+    condominiumId: string,
+    competenceYm: string,
+  ): Promise<void> {
+    const accruals = await this.accrualRepo.find({
+      where: { competenceYm },
+      relations: { fund: true },
+    });
+    const txIds = [
+      ...new Set(
+        accruals
+          .filter((a) => a.fund?.condominiumId === condominiumId)
+          .map((a) => a.transactionId),
+      ),
+    ];
+    if (txIds.length === 0) {
+      return;
+    }
+    await this.txRepo.delete({ id: In(txIds) });
   }
 
   private async ensureSingleFundAccrual(
