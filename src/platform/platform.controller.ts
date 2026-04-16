@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -99,6 +102,18 @@ export class PlatformController {
   })
   setDefaultPlan(@Param('planId', ParseIntPipe) planId: number) {
     return this.saasPlans.setDefaultPlan(planId);
+  }
+
+  @Delete('plans/:planId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary:
+      'Remover plano (apenas se não estiver atribuído a condomínios nem referenciado noutros registos)',
+  })
+  async deletePlan(
+    @Param('planId', ParseIntPipe) planId: number,
+  ): Promise<void> {
+    await this.saasPlans.deletePlan(planId);
   }
 
   @Get('condominiums/:id/plan-pricing')

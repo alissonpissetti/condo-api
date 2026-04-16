@@ -8,6 +8,8 @@ import { DataSource, Repository } from 'typeorm';
 import { Condominium } from '../condominiums/condominium.entity';
 import { Unit } from '../units/unit.entity';
 import { User } from '../users/user.entity';
+import { CondominiumSaasPlanPeriod } from './entities/condominium-saas-plan-period.entity';
+import { SaasPlanChangeRequest } from './entities/saas-plan-change-request.entity';
 import type { CreateSaasPlanDto } from './dto/create-saas-plan.dto';
 import type { PatchSaasPlanDto } from './dto/patch-saas-plan.dto';
 import { SaasPlan } from './entities/saas-plan.entity';
@@ -28,6 +30,12 @@ export class SaasPlansService {
     private readonly condoRepo: Repository<Condominium>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+    @InjectRepository(CondominiumSaasPlanPeriod)
+    private readonly condoPlanPeriodRepo: Repository<CondominiumSaasPlanPeriod>,
+    @InjectRepository(SaasPlanChangeRequest)
+    private readonly planChangeReqRepo: Repository<SaasPlanChangeRequest>,
     private readonly dataSource: DataSource,
     private readonly vouchers: SaasVoucherService,
   ) {}
@@ -184,6 +192,51 @@ export class SaasPlansService {
   /**
    * Define o plano padrão para novos registos. Garante um único `is_default`.
    */
+  /**
+   * Remove o plano se não houver condomínios com este plano nem outras referências
+   * que impeçam o DELETE (histórico de períodos, titulares, pedidos de mudança).
+   * O plano padrão não pode ser removido.
+   */
+  async deletePlan(id: number): Promise<void> {
+    const row = await this.getPlan(id);
+    if (row.isDefault) {
+      throw new BadRequestException(
+        'Não é possível remover o plano padrão. Defina outro plano como padrão primeiro.',
+      );
+    }
+    const condoCount = await this.condoRepo.count({
+      where: { saasPlanId: id },
+    });
+    if (condoCount > 0) {
+      throw new BadRequestException(
+        `Este plano está atribuído a ${condoCount} condomínio(s). Altere o plano desses condomínios antes de remover.`,
+      );
+    }
+    const periodCount = await this.condoPlanPeriodRepo.count({
+      where: { saasPlanId: id },
+    });
+    if (periodCount > 0) {
+      throw new BadRequestException(
+        'Este plano consta no histórico de períodos SaaS de condomínios. Não pode ser removido.',
+      );
+    }
+    const userCount = await this.userRepo.count({ where: { planId: id } });
+    if (userCount > 0) {
+      throw new BadRequestException(
+        `Este plano está atribuído a ${userCount} titular(es). Altere o plano desses utilizadores antes de remover.`,
+      );
+    }
+    const changeReqCount = await this.planChangeReqRepo.count({
+      where: { requestedPlanId: id },
+    });
+    if (changeReqCount > 0) {
+      throw new BadRequestException(
+        'Existem pedidos de alteração de plano que referenciam este plano como destino.',
+      );
+    }
+    await this.planRepo.delete(id);
+  }
+
   async setDefaultPlan(id: number): Promise<SaasPlan> {
     await this.getPlan(id);
     await this.dataSource.transaction(async (em) => {
