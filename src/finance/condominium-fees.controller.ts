@@ -26,6 +26,7 @@ import {
 } from './condominium-fees.service';
 import { CompetenceYmDto } from './dto/competence-ym.dto';
 import { SettleFeeChargeDto } from './dto/settle-fee-charge.dto';
+import { UpdateFeeChargesDueDateDto } from './dto/update-fee-charges-due-date.dto';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
 
 @ApiTags('Financeiro — taxas condominiais')
@@ -86,6 +87,25 @@ export class CondominiumFeesController {
       condominiumId,
       userId,
       body.competenceYm,
+    );
+  }
+
+  @Post('update-due-date')
+  @ApiOperation({
+    summary:
+      'Alterar a data de vencimento de uma ou mais cobranças da competência (gestão apenas).',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  updateChargesDueDate(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() body: UpdateFeeChargesDueDateDto,
+  ): Promise<CondominiumFeeChargeView[]> {
+    return this.feesService.updateChargesDueDate(
+      condominiumId,
+      userId,
+      body.chargeIds,
+      body.dueOn,
     );
   }
 

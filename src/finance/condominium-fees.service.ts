@@ -291,6 +291,57 @@ export class CondominiumFeesService {
     return this.toView(fresh);
   }
 
+  /**
+   * Atualiza em massa a data de vencimento de uma ou mais cobranças da competência.
+   * Só pode ser executada por quem tem papel de gestão e apenas em cobranças
+   * pertencentes ao condomínio informado. A data é gravada como coluna `date`
+   * (meio-dia UTC do calendário civil).
+   */
+  async updateChargesDueDate(
+    condominiumId: string,
+    userId: string,
+    chargeIds: string[],
+    dueOnYmd: string,
+  ): Promise<CondominiumFeeChargeView[]> {
+    await this.governance.assertManagement(condominiumId, userId);
+
+    if (!Array.isArray(chargeIds) || chargeIds.length === 0) {
+      throw new BadRequestException('chargeIds is required');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueOnYmd?.trim() ?? '')) {
+      throw new BadRequestException('dueOn must be in AAAA-MM-DD format');
+    }
+
+    const uniqueIds = Array.from(new Set(chargeIds));
+    const charges = await this.chargeRepo.find({
+      where: uniqueIds.map((id) => ({ id, condominiumId })),
+    });
+
+    if (charges.length !== uniqueIds.length) {
+      const found = new Set(charges.map((c) => c.id));
+      const missing = uniqueIds.filter((id) => !found.has(id));
+      throw new NotFoundException(
+        `Charge(s) not found: ${missing.join(', ')}`,
+      );
+    }
+
+    const newDue = parseDateOnlyFromApi(dueOnYmd);
+    if (Number.isNaN(newDue.getTime())) {
+      throw new BadRequestException('dueOn is not a valid date');
+    }
+
+    for (const c of charges) {
+      c.dueOn = newDue;
+    }
+    await this.chargeRepo.save(charges);
+
+    const fresh = await this.chargeRepo.find({
+      where: uniqueIds.map((id) => ({ id, condominiumId })),
+      relations: { unit: { grouping: true } },
+    });
+    return fresh.map((c) => this.toView(c));
+  }
+
   async getPaymentReceiptFile(
     condominiumId: string,
     userId: string,
