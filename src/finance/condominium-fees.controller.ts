@@ -170,6 +170,31 @@ export class CondominiumFeesController {
       userId,
       chargeId,
       body?.incomeTransactionId,
+      body?.paymentReceiptStorageKey ?? null,
     );
+  }
+
+  @Get(':chargeId/payment-receipt-file')
+  @ApiOperation({
+    summary:
+      'Baixar comprovante de pagamento (imagem ou PDF) anexado ao quitar a cobrança.',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'chargeId', format: 'uuid' })
+  async paymentReceiptFile(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+    @Res({ passthrough: false }) res: Response,
+  ): Promise<void> {
+    const { buffer, contentType, filename } =
+      await this.feesService.getPaymentReceiptFile(
+        condominiumId,
+        userId,
+        chargeId,
+      );
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(buffer);
   }
 }

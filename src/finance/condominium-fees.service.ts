@@ -49,6 +49,8 @@ export interface CondominiumFeeChargeView {
   status: 'open' | 'paid';
   paidAt: string | null;
   incomeTransactionId: string | null;
+  /** `true` quando houver um comprovante (imagem/PDF) anexado ao quitar. */
+  hasPaymentReceipt: boolean;
 }
 
 @Injectable()
@@ -218,6 +220,7 @@ export class CondominiumFeesService {
     userId: string,
     chargeId: string,
     incomeTransactionId?: string,
+    paymentReceiptStorageKey?: string | null,
   ): Promise<CondominiumFeeChargeView> {
     await this.governance.assertManagement(condominiumId, userId);
     const charge = await this.chargeRepo.findOne({
@@ -229,6 +232,11 @@ export class CondominiumFeesService {
     }
     if (charge.status !== 'open') {
       throw new BadRequestException('Charge is not open');
+    }
+
+    const receiptKey = paymentReceiptStorageKey?.trim() || null;
+    if (receiptKey) {
+      await this.storage.assertReceiptExists(condominiumId, receiptKey);
     }
 
     const txId = incomeTransactionId?.trim();
@@ -270,6 +278,8 @@ export class CondominiumFeesService {
       charge.paidAt = todayLocalCalendarAsUtcNoon();
     }
 
+    charge.paymentReceiptStorageKey = receiptKey;
+
     await this.chargeRepo.save(charge);
     const fresh = await this.chargeRepo.findOne({
       where: { id: charge.id, condominiumId },
@@ -279,6 +289,30 @@ export class CondominiumFeesService {
       throw new NotFoundException('Charge not found');
     }
     return this.toView(fresh);
+  }
+
+  async getPaymentReceiptFile(
+    condominiumId: string,
+    userId: string,
+    chargeId: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    const { unitIds } = await this.feeChargesScope(condominiumId, userId);
+    const charge = await this.chargeRepo.findOne({
+      where: { id: chargeId, condominiumId },
+    });
+    if (!charge) {
+      throw new NotFoundException('Charge not found');
+    }
+    if (unitIds !== null && !unitIds.includes(charge.unitId)) {
+      throw new ForbiddenException('Charge not accessible');
+    }
+    if (!charge.paymentReceiptStorageKey) {
+      throw new NotFoundException('Charge has no payment receipt attached');
+    }
+    return this.storage.readReceipt(
+      condominiumId,
+      charge.paymentReceiptStorageKey,
+    );
   }
 
   async getPaymentReceiptPdf(
@@ -495,6 +529,7 @@ export class CondominiumFeesService {
       status: c.status,
       paidAt: paid,
       incomeTransactionId: c.incomeTransactionId,
+      hasPaymentReceipt: !!c.paymentReceiptStorageKey,
     };
   }
 

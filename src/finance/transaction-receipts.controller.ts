@@ -24,7 +24,7 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
-import { CondominiumsService } from '../condominiums/condominiums.service';
+import { GovernanceService } from '../planning/governance.service';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 
@@ -35,7 +35,7 @@ import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 export class TransactionReceiptsController {
   constructor(
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
-    private readonly condominiumsService: CondominiumsService,
+    private readonly governance: GovernanceService,
   ) {}
 
   @Post()
@@ -57,7 +57,7 @@ export class TransactionReceiptsController {
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @UploadedFile() file: Express.Multer.File | undefined,
   ) {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governance.assertManagement(condominiumId, userId);
     if (!file?.buffer?.length) {
       throw new BadRequestException('Envie um arquivo.');
     }
@@ -79,7 +79,7 @@ export class TransactionReceiptsController {
     @Query('key') key: string,
     @Res({ passthrough: false }) res: Response,
   ) {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governance.assertManagement(condominiumId, userId);
     if (!key) {
       throw new BadRequestException('Parâmetro key é obrigatório.');
     }

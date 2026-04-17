@@ -68,6 +68,19 @@ export class CondominiumFeeCharge {
   @JoinColumn({ name: 'income_transaction_id' })
   incomeTransaction: FinancialTransaction | null;
 
+  /**
+   * Chave (relativa) do comprovante de pagamento salvo no storage de
+   * receipts. É opcional: ao quitar uma cobrança, o gestor pode anexar
+   * uma imagem ou PDF do comprovante bancário.
+   */
+  @Column({
+    name: 'payment_receipt_storage_key',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  paymentReceiptStorageKey: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

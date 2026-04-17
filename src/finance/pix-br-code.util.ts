@@ -15,10 +15,25 @@ const stripDiacritics = (s: string): string =>
 const onlyAsciiPrintable = (s: string): string =>
   s.replace(/[^\x20-\x7E]/g, '');
 
-/** Remove espaços internos e mantém apenas caracteres imprimíveis ASCII. */
+/**
+ * Sanitiza a chave PIX:
+ * - Remove diacríticos e caracteres não-ASCII.
+ * - Remove espaços internos (raros, mas alguns cadastros têm).
+ * - Se a chave for um documento formatado (CPF/CNPJ) — só contém dígitos
+ *   e os separadores `.`, `/`, `-` — removemos a pontuação e enviamos
+ *   apenas dígitos, que é o que o BR Code espera. Email, telefone (+55)
+ *   e EVP (UUID com hífens) são mantidos no formato original.
+ */
 export function sanitizePixKey(raw: string | null | undefined): string {
   if (!raw) return '';
-  return onlyAsciiPrintable(stripDiacritics(String(raw))).trim();
+  const base = onlyAsciiPrintable(stripDiacritics(String(raw)))
+    .trim()
+    .replace(/\s+/g, '');
+  if (!base) return '';
+  if (/^[\d./-]+$/.test(base)) {
+    return base.replace(/[./-]/g, '');
+  }
+  return base;
 }
 
 /**
@@ -37,8 +52,7 @@ export function sanitizePixName(raw: string, maxLen = 25): string {
 
 /**
  * Cidade do beneficiário (EMV 60). Padrão: ASCII, apenas letras, números
- * e espaços. Alguns PSPs só aceitam maiúsculas; aqui retornamos em
- * maiúsculas para maior compatibilidade.
+ * e espaços. Preservamos o case original do cadastro (ex.: «Curitiba»).
  */
 export function sanitizePixCity(raw: string, maxLen = 15): string {
   const ascii = onlyAsciiPrintable(stripDiacritics(String(raw ?? '')));
@@ -46,7 +60,6 @@ export function sanitizePixCity(raw: string, maxLen = 15): string {
     .replace(/[^A-Za-z0-9 ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .toUpperCase()
     .slice(0, maxLen);
 }
 

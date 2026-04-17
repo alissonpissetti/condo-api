@@ -44,6 +44,7 @@ import { UnitMultipleResponsibles1750360000000 } from '../migrations/17503600000
 import { CondominiumTransparencyPixQrcode1750370000000 } from '../migrations/1750370000000-condominium-transparency-pix-qrcode';
 import { CondominiumBillingChargeModel1750380000000 } from '../migrations/1750380000000-condominium-billing-charge-model';
 import { SaasPlanFeatures1750390000000 } from '../migrations/1750390000000-saas-plan-features';
+import { FeeChargePaymentReceipt1750400000000 } from '../migrations/1750400000000-fee-charge-payment-receipt';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -122,6 +123,7 @@ export const AppDataSource = new DataSource({
     CondominiumTransparencyPixQrcode1750370000000,
     CondominiumBillingChargeModel1750380000000,
     SaasPlanFeatures1750390000000,
+    FeeChargePaymentReceipt1750400000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

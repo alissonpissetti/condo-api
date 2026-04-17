@@ -39,7 +39,7 @@ import { FundBalanceService } from './fund-balance.service';
 import {
   buildPixBrCode,
   sanitizePixKey,
-  sanitizePixMessage,
+  sanitizePixReferenceLabel,
 } from './pix-br-code.util';
 
 type UnitCol = {
@@ -167,9 +167,6 @@ export class MonthlyTransparencyPdfService {
     const includePixBrCodeOnPdf =
       condo.transparencyPdfIncludePixQrCode !== false;
     if (pixKey && includePixBrCodeOnPdf) {
-      // Mês/ano compacto e sem separadores (BR Code rejeita `-` e `/` em
-      // vários PSPs no campo 26.02). Ex.: "202603".
-      const ymCompact = ym.replace(/[^0-9]/g, '');
       const perUnitAmountCents =
         targetUnitId && unitCharge
           ? BigInt(String(unitCharge.amountDueCents))
@@ -178,25 +175,23 @@ export class MonthlyTransparencyPdfService {
         perUnitAmountCents !== null
           ? Number(perUnitAmountCents) / 100
           : undefined;
-      // Mensagem só com letras/números/espaço; limitada a 25 caracteres
-      // (compatibilidade ampla com Itaú, Nubank, Inter, Bradesco etc.).
-      // Priorizamos o AAAAMM no final; o nome do condomínio é encurtado
-      // para caber no espaço restante, garantindo que a referência
-      // «quando é relativa a qual mês» nunca desapareça.
-      const msgMaxLen = 25;
-      const msgTail = ymCompact ? ` ${ymCompact}` : '';
-      const msgHead = targetUnitId
-        ? sanitizePixMessage(condo.name ?? '', msgMaxLen - msgTail.length)
-        : 'Taxa';
-      const qrMessage =
-        sanitizePixMessage(`${msgHead}${msgTail}`, msgMaxLen) || 'Pix';
+      // Reference Label (EMV 62.05) — usado como «código da transferência»
+      // pelos apps de banco. Para boleto por unidade, usamos o id curto
+      // da cobrança (primeiros 12 chars alfanuméricos, em maiúsculas).
+      // Exemplo: "A1B2C3D4E5F6". Assim o usuário consegue conciliar a
+      // cobrança mesmo sem mensagem descritiva (campo 26.02 omitido).
+      const chargeRef = unitCharge?.id
+        ? sanitizePixReferenceLabel(unitCharge.id, 25)
+            .toUpperCase()
+            .slice(0, 12)
+        : '';
       try {
         pixPayload = buildPixBrCode({
           key: pixKey,
           name: condo.billingPixBeneficiaryName?.trim() || condo.name || '',
-          city: condo.billingPixCity?.trim() || 'NAO INFORMADO',
+          city: condo.billingPixCity?.trim() || '',
           amount: qrValue,
-          message: qrMessage,
+          transactionId: chargeRef || undefined,
         });
         pixQrPng = await QRCode.toBuffer(pixPayload, {
           type: 'png',
