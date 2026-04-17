@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -63,4 +64,13 @@ export class PatchSaasPlanDto {
   @ValidateNested({ each: true })
   @Type(() => SaasPlanPriceTierDto)
   unitPriceTiers?: SaasPlanPriceTierDto[] | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Mapa de módulos habilitados. Enviar `null` para limpar (plano sem restrição, todos liberados).',
+  })
+  @IsOptional()
+  @IsObject()
+  features?: Record<string, boolean> | null;
 }

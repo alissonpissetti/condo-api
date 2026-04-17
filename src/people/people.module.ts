@@ -6,6 +6,7 @@ import { PlanningModule } from '../planning/planning.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { MailModule } from '../mail/mail.module';
 import { Unit } from '../units/unit.entity';
+import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { SaasPlansModule } from '../platform/saas-plans.module';
 import { UsersModule } from '../users/users.module';
 import { CondominiumInvitation } from './condominium-invitation.entity';
@@ -23,6 +24,7 @@ import { UnitPeopleController } from './unit-people.controller';
       UnitInvitation,
       CondominiumInvitation,
       Unit,
+      UnitResponsiblePerson,
       Grouping,
       Condominium,
     ]),

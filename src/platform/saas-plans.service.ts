@@ -14,6 +14,11 @@ import type { CreateSaasPlanDto } from './dto/create-saas-plan.dto';
 import type { PatchSaasPlanDto } from './dto/patch-saas-plan.dto';
 import { SaasPlan } from './entities/saas-plan.entity';
 import {
+  defaultSaasPlanFeatures,
+  normalizeSaasPlanFeatures,
+  type SaasPlanFeatures,
+} from './saas-plan-features';
+import {
   assertValidUnitPriceTiers,
   normalizeTiersFromInput,
   resolvePricePerUnitForUnitCount,
@@ -106,6 +111,12 @@ export class SaasPlansService {
       notes: dto.notes ?? null,
       catalogBlurb: dto.catalogBlurb?.trim() ? dto.catalogBlurb.trim() : null,
       isDefault: false,
+      features:
+        dto.features === undefined
+          ? null
+          : dto.features === null
+            ? null
+            : normalizeSaasPlanFeatures(dto.features),
     });
     return this.planRepo.save(row);
   }
@@ -152,11 +163,22 @@ export class SaasPlansService {
         ? dto.catalogBlurb.trim()
         : null;
     }
+    if (dto.features !== undefined) {
+      row.features =
+        dto.features === null ? null : normalizeSaasPlanFeatures(dto.features);
+    }
     return this.planRepo.save(row);
   }
 
+  /** Features do plano resolvidas (preenche defaults se o plano for legado). */
+  resolvePlanFeatures(plan: SaasPlan): SaasPlanFeatures {
+    return plan.features
+      ? normalizeSaasPlanFeatures(plan.features)
+      : defaultSaasPlanFeatures();
+  }
+
   /**
-   * Preço por unidade efectivo para faturação (faixas ou preço único).
+   * Preço por unidade efetivo para faturamento (faixas ou preço único).
    * `unitCount < 1` usa a faixa de 1 unidade só para consultar a tarifa.
    */
   effectivePricePerUnitCents(plan: SaasPlan, unitCount: number): number {
@@ -223,7 +245,7 @@ export class SaasPlansService {
     const userCount = await this.userRepo.count({ where: { planId: id } });
     if (userCount > 0) {
       throw new BadRequestException(
-        `Este plano está atribuído a ${userCount} titular(es). Altere o plano desses utilizadores antes de remover.`,
+        `Este plano está atribuído a ${userCount} titular(es). Altere o plano desses usuários antes de remover.`,
       );
     }
     const changeReqCount = await this.planChangeReqRepo.count({
@@ -265,7 +287,7 @@ export class SaasPlansService {
     return p;
   }
 
-  /** Para novos utilizadores no registo. */
+  /** Para novos usuários no cadastro. */
   async resolveDefaultPlanIdForNewUser(): Promise<number> {
     const p = await this.getDefaultPlan();
     return p.id;
@@ -280,7 +302,7 @@ export class SaasPlansService {
   }
 
   /**
-   * Plano efectivo do titular do condomínio, ou plano padrão da plataforma.
+   * Plano efetivo do titular do condomínio, ou plano padrão da plataforma.
    */
   async resolvePlanForCondominiumOwner(ownerId: string): Promise<SaasPlan> {
     const user = await this.dataSource.getRepository(User).findOne({

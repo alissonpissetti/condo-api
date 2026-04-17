@@ -5,7 +5,7 @@ import { PlatformBillingAsaasService } from './platform-billing-asaas.service';
 
 /**
  * Gera mensalidades SaaS no calendário do condomínio (~10 dias antes do vencimento),
- * envia e-mail ao titular e suspende faturação 5 dias após vencimento sem pagamento.
+ * envia e-mail ao titular e suspende faturamento 5 dias após vencimento sem pagamento.
  * Desligado por omissão: SAAS_BILLING_DAILY_CRON_ENABLED=true.
  */
 @Injectable()

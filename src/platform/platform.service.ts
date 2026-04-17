@@ -30,7 +30,7 @@ export class PlatformService {
   async getMe(userId: string): Promise<{ email: string; platformAdmin: true }> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) {
-      throw new NotFoundException('Utilizador não encontrado.');
+      throw new NotFoundException('Usuário não encontrado.');
     }
     return { email: user.email, platformAdmin: true };
   }

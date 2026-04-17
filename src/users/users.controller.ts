@@ -11,7 +11,7 @@ import { MeResponseDto } from './dto/me-response.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { UsersService } from './users.service';
 
-@ApiTags('Utilizador')
+@ApiTags('Usuário')
 @ApiBearerAuth('JWT')
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -19,7 +19,7 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get('me')
-  @ApiOperation({ summary: 'Dados do utilizador autenticado' })
+  @ApiOperation({ summary: 'Dados do usuário autenticado' })
   @ApiOkResponse({ type: MeResponseDto })
   getMe(@CurrentUser() userId: string): Promise<MeResponseDto> {
     return this.usersService.getMe(userId);

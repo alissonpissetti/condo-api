@@ -9,6 +9,7 @@ import { UnitPersonsAndInvitations1744500000000 } from '../migrations/1744500000
 import { Person } from '../people/person.entity';
 import { UnitInvitation } from '../people/unit-invitation.entity';
 import { Unit } from '../units/unit.entity';
+import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { LoginSmsChallenge } from '../auth/login-sms-challenge.entity';
 import { PasswordResetChallenge } from '../auth/password-reset-challenge.entity';
 import { Financial1744850000000 } from '../migrations/1744850000000-financial';
@@ -39,6 +40,10 @@ import { CondominiumBillingContact1750310000000 } from '../migrations/1750310000
 import { CondominiumManagementLogo1750320000000 } from '../migrations/1750320000000-condominium-management-logo';
 import { UnitMemberDisplayNames1750330000000 } from '../migrations/1750330000000-unit-member-display-names';
 import { DropCondominiumDocumentMembersNote1750350000000 } from '../migrations/1750350000000-drop-condominium-document-members-note';
+import { UnitMultipleResponsibles1750360000000 } from '../migrations/1750360000000-unit-multiple-responsibles';
+import { CondominiumTransparencyPixQrcode1750370000000 } from '../migrations/1750370000000-condominium-transparency-pix-qrcode';
+import { CondominiumBillingChargeModel1750380000000 } from '../migrations/1750380000000-condominium-billing-charge-model';
+import { SaasPlanFeatures1750390000000 } from '../migrations/1750390000000-saas-plan-features';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -64,6 +69,7 @@ export const AppDataSource = new DataSource({
     Condominium,
     Grouping,
     Unit,
+    UnitResponsiblePerson,
     Person,
     UnitInvitation,
     LoginSmsChallenge,
@@ -112,6 +118,10 @@ export const AppDataSource = new DataSource({
     CondominiumManagementLogo1750320000000,
     UnitMemberDisplayNames1750330000000,
     DropCondominiumDocumentMembersNote1750350000000,
+    UnitMultipleResponsibles1750360000000,
+    CondominiumTransparencyPixQrcode1750370000000,
+    CondominiumBillingChargeModel1750380000000,
+    SaasPlanFeatures1750390000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

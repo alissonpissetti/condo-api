@@ -28,7 +28,7 @@ export class Condominium {
   @Column()
   name: string;
 
-  /** Plano SaaS efectivo para faturação deste condomínio (sobrepor ao plano do titular). */
+  /** Plano SaaS efetivo para faturamento deste condomínio (sobrepor ao plano do titular). */
   @Column({ name: 'saas_plan_id', type: 'int', nullable: true })
   saasPlanId: number | null;
 
@@ -67,6 +67,49 @@ export class Condominium {
     nullable: true,
   })
   billingPixCity: string | null;
+
+  /**
+   * Se false, o PDF de transparência mostra apenas a chave PIX em texto
+   * (sem imagem de QR Code nem código BR «Copia e cola»).
+   */
+  @Column({
+    name: 'transparency_pdf_include_pix_qrcode',
+    type: 'boolean',
+    default: true,
+  })
+  transparencyPdfIncludePixQrCode: boolean;
+
+  /**
+   * Modelo de cobrança em uso. Atualmente o único valor é `manual_pix`
+   * (o morador paga manualmente via PIX e envia comprovante ao síndico);
+   * campo preparado para receber modelos futuros (ex.: boleto, cartão).
+   */
+  @Column({
+    name: 'billing_charge_model',
+    type: 'varchar',
+    length: 32,
+    default: 'manual_pix',
+  })
+  billingChargeModel: string;
+
+  /** Dia do mês (1..31) sugerido como vencimento da taxa condominial. */
+  @Column({
+    name: 'billing_default_due_day',
+    type: 'int',
+    default: 10,
+  })
+  billingDefaultDueDay: number;
+
+  /**
+   * Taxa de juros aplicada em atraso, em basis points (1 bp = 0,01 %).
+   * Ex.: 250 representa 2,50 % ao mês. Guardado como inteiro para evitar float.
+   */
+  @Column({
+    name: 'billing_late_interest_bps',
+    type: 'int',
+    default: 0,
+  })
+  billingLateInterestBps: number;
 
   /** WhatsApp para envio de comprovantes (texto livre, ex.: 41 99989-7602). Se vazio, usa telefone da ficha do síndico. */
   @Column({

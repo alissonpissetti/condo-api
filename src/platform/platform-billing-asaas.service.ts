@@ -90,7 +90,7 @@ export class PlatformBillingAsaasService {
     );
     if (pricing.unitCount === 0) {
       throw new BadRequestException(
-        'Este condomínio não tem unidades registadas; não é possível calcular a mensalidade (plano × unidades).',
+        'Este condomínio não tem unidades cadastradas; não é possível calcular a mensalidade (plano × unidades).',
       );
     }
     if (pricing.baseMonthlyCents <= 0) {
@@ -114,7 +114,7 @@ export class PlatformBillingAsaasService {
     } else {
       if (billing.status === 'suspended') {
         throw new BadRequestException(
-          'Faturação suspensa para este condomínio.',
+          'Faturamento suspenso para este condomínio.',
         );
       }
       billing.monthlyAmountCents = pricing.monthlyCents;
@@ -404,7 +404,7 @@ export class PlatformBillingAsaasService {
   }
 
   /**
-   * Ciclo diário: suspende faturação 5 dias após vencimento sem pagamento;
+   * Ciclo diário: suspende faturamento 5 dias após vencimento sem pagamento;
    * gera cobrança ~N dias antes do vencimento e notifica o titular por e-mail.
    */
   async runDailySubscriptionBillingCycle(): Promise<{

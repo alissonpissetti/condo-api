@@ -11,7 +11,7 @@ export class MePersonDto {
   cpf: string | null;
 
   @ApiPropertyOptional({
-    description: 'Telefone na ficha (espelha o da conta ao guardar)',
+    description: 'Telefone na ficha (espelha o da conta ao salvar)',
   })
   phone: string | null;
 

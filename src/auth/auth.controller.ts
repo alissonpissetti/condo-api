@@ -27,7 +27,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  @ApiOperation({ summary: 'Registar novo utilizador' })
+  @ApiOperation({ summary: 'Cadastrar novo usuário' })
   @ApiCreatedResponse({
     description: 'Conta criada (sem JWT; use login para obter token)',
     type: AuthRegisterResponseDto,
@@ -37,7 +37,7 @@ export class AuthController {
   }
 
   @Post('login')
-  @ApiOperation({ summary: 'Iniciar sessão (JWT)' })
+  @ApiOperation({ summary: 'Entrar (JWT)' })
   @ApiOkResponse({
     description: 'Token JWT',
     type: AuthLoginResponseDto,
@@ -48,7 +48,7 @@ export class AuthController {
 
   @Post('sms/request')
   @ApiOperation({
-    summary: 'Pedir código de login por SMS (celular registado)',
+    summary: 'Pedir código de login por SMS (celular cadastrado)',
     description:
       'Envia um código de 6 dígitos por SMS via Comtele. A resposta é sempre genérica (não indica se o número existe). Requer COMTELE_AUTH_KEY em produção.',
   })
@@ -101,7 +101,7 @@ export class AuthController {
     summary: 'Definir nova senha após verificação do código',
   })
   @ApiOkResponse({
-    description: 'Senha atualizada; inicie sessão com email e nova senha.',
+    description: 'Senha atualizada; entre com e-mail e nova senha.',
     schema: { properties: { ok: { type: 'boolean', example: true } } },
   })
   completePasswordReset(@Body() dto: PasswordResetCompleteDto) {

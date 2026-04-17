@@ -74,7 +74,7 @@ export class ComteleService {
     } catch (err) {
       this.logger.error('Comtele: falha de rede ao enviar SMS', err);
       throw new BadGatewayException(
-        'Não foi possível contactar o serviço de SMS.',
+        'Não foi possível contatar o serviço de SMS.',
       );
     }
 

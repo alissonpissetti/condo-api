@@ -6,6 +6,7 @@ import { Condominium } from '../condominiums/condominium.entity';
 import { Grouping } from '../groupings/grouping.entity';
 import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
+import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { CondominiumDocument } from './entities/condominium-document.entity';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { GovernanceAuditLog } from './entities/governance-audit-log.entity';
@@ -33,6 +34,7 @@ import { PlanningPollsService } from './planning-polls.service';
       Condominium,
       Grouping,
       Unit,
+      UnitResponsiblePerson,
       Person,
     ]),
     CondominiumsModule,

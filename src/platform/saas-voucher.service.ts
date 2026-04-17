@@ -45,7 +45,7 @@ export class SaasVoucherService {
   ) {}
 
   /**
-   * Um voucher por condomínio (campo opcional). Só aplica se activo e o mês
+   * Um voucher por condomínio (campo opcional). Só aplica se ativo e o mês
    * intersecta validFrom–validTo.
    */
   async getApplicableDiscountForCondominium(
@@ -266,7 +266,7 @@ export class SaasVoucherService {
       throw new NotFoundException('Não existe voucher com este código.');
     }
     if (!v.active) {
-      throw new BadRequestException('Este voucher está inactivo.');
+      throw new BadRequestException('Este voucher está inativo.');
     }
     condo.saasVoucherId = v.id;
     await this.condoRepo.save(condo);

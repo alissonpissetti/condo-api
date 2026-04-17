@@ -55,7 +55,7 @@ export class CondominiumsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Listar condomínios do utilizador autenticado' })
+  @ApiOperation({ summary: 'Listar condomínios do usuário autenticado' })
   findAll(@CurrentUser() userId: string) {
     return this.condominiumsService.findAllForOwner(userId);
   }
@@ -185,7 +185,11 @@ export class CondominiumsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Eliminar condomínio (e agrupamentos/unidades)' })
+  @ApiOperation({
+    summary: 'Excluir condomínio (e agrupamentos/unidades)',
+    description:
+      'Só o titular que criou o condomínio (campo owner) pode executar esta ação. Demais usuários recebem 403.',
+  })
   @ApiParam({ name: 'id', format: 'uuid', description: 'ID do condomínio' })
   remove(
     @CurrentUser() userId: string,

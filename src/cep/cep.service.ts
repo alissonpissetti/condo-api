@@ -48,7 +48,7 @@ export class CepService {
       response = await fetch(url);
     } catch {
       throw new BadGatewayException(
-        'Não foi possível contactar o serviço de CEP.',
+        'Não foi possível contatar o serviço de CEP.',
       );
     }
     if (!response.ok) {

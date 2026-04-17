@@ -4,11 +4,13 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { Grouping } from '../groupings/grouping.entity';
 import { Person } from '../people/person.entity';
+import type { UnitResponsiblePerson } from './unit-responsible-person.entity';
 
 @Entity('units')
 export class Unit {
@@ -38,12 +40,9 @@ export class Unit {
   @JoinColumn({ name: 'owner_person_id' })
   ownerPerson: Person | null;
 
-  @Column({ name: 'responsible_person_id', nullable: true })
-  responsiblePersonId: string | null;
-
-  @ManyToOne(() => Person, { nullable: true, onDelete: 'SET NULL' })
-  @JoinColumn({ name: 'responsible_person_id' })
-  responsiblePerson: Person | null;
+  /** Vários responsáveis por unidade (ex.: co-inquilinos). */
+  @OneToMany('UnitResponsiblePerson', 'unit')
+  responsibleLinks: UnitResponsiblePerson[];
 
   /** Rótulo livre (ex.: PDF transparência) quando não há proprietário na base. */
   @Column({ name: 'owner_display_name', type: 'varchar', length: 255, nullable: true })

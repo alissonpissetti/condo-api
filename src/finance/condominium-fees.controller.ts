@@ -92,25 +92,38 @@ export class CondominiumFeesController {
   @Get('transparency-pdf')
   @ApiOperation({
     summary:
-      'PDF de transparência / fechamento mensal (despesas por unidade, taxa, PIX e WhatsApp do síndico)',
+      'PDF de transparência / fechamento mensal. Quando `unitId` é informado, a 1ª página é o slip de pagamento (valor da unidade, chave PIX, QR Code com valor + referência «Condomínio - MM/AAAA»).',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'competenceYm', example: '2026-03' })
+  @ApiQuery({
+    name: 'unitId',
+    required: false,
+    format: 'uuid',
+    description:
+      'Quando informado, gera o PDF específico da unidade (1ª página = slip de pagamento com QR Code PIX do valor devido).',
+  })
   async transparencyPdf(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @Query('competenceYm') competenceYm: string,
+    @Query('unitId') unitId: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
+    const normalizedUnitId = unitId?.trim() || null;
     const pdf = await this.monthlyTransparencyPdf.buildClosingTransparencyPdf(
       condominiumId,
       userId,
       competenceYm ?? '',
+      normalizedUnitId,
     );
     const ym = (competenceYm ?? 'fechamento').replace(/[^\d-]/g, '').slice(0, 7);
+    const unitSuffix = normalizedUnitId
+      ? `-unidade-${normalizedUnitId.slice(0, 8)}`
+      : '';
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="transparencia-condominial-${ym || 'mes'}.pdf"`,
+      'Content-Disposition': `attachment; filename="transparencia-condominial-${ym || 'mes'}${unitSuffix}.pdf"`,
     });
     return new StreamableFile(pdf);
   }

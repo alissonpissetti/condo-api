@@ -123,7 +123,7 @@ export class UnitsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Eliminar unidade' })
+  @ApiOperation({ summary: 'Excluir unidade' })
   @ApiParam({
     name: 'condominiumId',
     format: 'uuid',

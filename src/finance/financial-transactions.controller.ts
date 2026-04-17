@@ -108,7 +108,7 @@ export class FinancialTransactionsController {
   }
 
   @Delete(':transactionId')
-  @ApiOperation({ summary: 'Eliminar transação' })
+  @ApiOperation({ summary: 'Excluir transação' })
   remove(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

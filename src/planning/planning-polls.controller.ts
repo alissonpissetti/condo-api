@@ -47,7 +47,7 @@ export class PlanningPollsController {
   }
 
   @Get('my-units')
-  @ApiOperation({ summary: 'Unidades em que o utilizador pode votar' })
+  @ApiOperation({ summary: 'Unidades em que o usuário pode votar' })
   myUnits(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -84,7 +84,7 @@ export class PlanningPollsController {
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }),
   )
-  @ApiOperation({ summary: 'Anexar ficheiro à pauta (PDF, imagem, Word, texto)' })
+  @ApiOperation({ summary: 'Anexar arquivo à pauta (PDF, imagem, Word, texto)' })
   @ApiParam({ name: 'pollId' })
   uploadAttachment(
     @CurrentUser() userId: string,
@@ -93,7 +93,7 @@ export class PlanningPollsController {
     @UploadedFile() file: Express.Multer.File | undefined,
   ) {
     if (!file) {
-      throw new BadRequestException('Ficheiro em falta.');
+      throw new BadRequestException('Arquivo ausente.');
     }
     return this.polls.addAttachment(condominiumId, pollId, userId, file);
   }
@@ -176,7 +176,7 @@ export class PlanningPollsController {
   }
 
   @Post(':pollId/decide')
-  @ApiOperation({ summary: 'Registar decisão (opção vencedora)' })
+  @ApiOperation({ summary: 'Registrar decisão (opção vencedora)' })
   decide(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

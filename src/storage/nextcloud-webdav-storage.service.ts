@@ -30,7 +30,7 @@ const EXT_MIME: Record<string, string> = {
 
 /**
  * Armazena comprovantes no Nextcloud via WebDAV.
- * Crie um utilizador dedicado (ex.: condo_api) e uma palavra-passe de aplicação em Segurança.
+ * Crie um usuário dedicado (ex.: condo_api) e uma senha de aplicação em Segurança.
  *
  * @see https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html
  */
@@ -56,7 +56,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
     if (!pass) {
       throw new BadRequestException(
-        'Nextcloud: defina NEXTCLOUD_APP_PASSWORD (palavra-passe de aplicação).',
+        'Nextcloud: defina NEXTCLOUD_APP_PASSWORD (senha de aplicação).',
       );
     }
     this.webdavUserRoot = `${base}/remote.php/dav/files/${encodeURIComponent(user)}`;
@@ -260,7 +260,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
   }
 
-  /** URL do ficheiro (sem criar pastas). */
+  /** URL do arquivo (sem criar pastas). */
   private objectUrl(condominiumId: string, relativeKey: string): string {
     const segments = [
       ...this.basePathSegments,

@@ -6,6 +6,7 @@ import { Grouping } from '../groupings/grouping.entity';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
 import { Unit } from './unit.entity';
+import { flattenUnitResponsiblesForApi } from './unit-response.util';
 
 @Injectable()
 export class UnitsService {
@@ -24,12 +25,10 @@ export class UnitsService {
     private readonly governanceService: GovernanceService,
   ) {}
 
-  private async assertGroupingInCondo(
+  private async requireGroupingInCondo(
     condominiumId: string,
     groupingId: string,
-    userId: string,
   ): Promise<Grouping> {
-    await this.governanceService.assertManagement(condominiumId, userId);
     const grouping = await this.groupingRepo.findOne({
       where: { id: groupingId, condominiumId },
     });
@@ -39,17 +38,39 @@ export class UnitsService {
     return grouping;
   }
 
+  private async assertGroupingReadable(
+    condominiumId: string,
+    groupingId: string,
+    userId: string,
+  ): Promise<Grouping> {
+    await this.governanceService.assertAnyAccess(condominiumId, userId);
+    return this.requireGroupingInCondo(condominiumId, groupingId);
+  }
+
+  private async assertGroupingManaged(
+    condominiumId: string,
+    groupingId: string,
+    userId: string,
+  ): Promise<Grouping> {
+    await this.governanceService.assertManagement(condominiumId, userId);
+    return this.requireGroupingInCondo(condominiumId, groupingId);
+  }
+
   async findAll(
     condominiumId: string,
     groupingId: string,
     userId: string,
   ): Promise<Unit[]> {
-    await this.assertGroupingInCondo(condominiumId, groupingId, userId);
-    return this.unitRepo.find({
+    await this.assertGroupingReadable(condominiumId, groupingId, userId);
+    const rows = await this.unitRepo.find({
       where: { groupingId },
-      relations: { ownerPerson: true, responsiblePerson: true },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
       order: { createdAt: 'ASC' },
     });
+    for (const u of rows) {
+      flattenUnitResponsiblesForApi(u);
+    }
+    return rows;
   }
 
   async create(
@@ -58,7 +79,7 @@ export class UnitsService {
     userId: string,
     dto: CreateUnitDto,
   ): Promise<Unit> {
-    await this.assertGroupingInCondo(condominiumId, groupingId, userId);
+    await this.assertGroupingManaged(condominiumId, groupingId, userId);
     const unit = this.unitRepo.create({
       groupingId,
       identifier: dto.identifier,
@@ -71,7 +92,10 @@ export class UnitsService {
         dto.responsibleDisplayName,
       ),
     });
-    return this.unitRepo.save(unit);
+    const saved = await this.unitRepo.save(unit);
+    saved.responsibleLinks = [];
+    flattenUnitResponsiblesForApi(saved);
+    return saved;
   }
 
   async findOne(
@@ -80,14 +104,15 @@ export class UnitsService {
     unitId: string,
     userId: string,
   ): Promise<Unit> {
-    await this.assertGroupingInCondo(condominiumId, groupingId, userId);
+    await this.assertGroupingReadable(condominiumId, groupingId, userId);
     const unit = await this.unitRepo.findOne({
       where: { id: unitId, groupingId },
-      relations: { ownerPerson: true, responsiblePerson: true },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
     });
     if (!unit) {
       throw new NotFoundException('Unit not found');
     }
+    flattenUnitResponsiblesForApi(unit);
     return unit;
   }
 
@@ -98,7 +123,14 @@ export class UnitsService {
     userId: string,
     dto: UpdateUnitDto,
   ): Promise<Unit> {
-    const unit = await this.findOne(condominiumId, groupingId, unitId, userId);
+    await this.assertGroupingManaged(condominiumId, groupingId, userId);
+    const unit = await this.unitRepo.findOne({
+      where: { id: unitId, groupingId },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+    });
+    if (!unit) {
+      throw new NotFoundException('Unit not found');
+    }
     if (dto.identifier !== undefined) {
       unit.identifier = dto.identifier;
     }
@@ -118,7 +150,17 @@ export class UnitsService {
         dto.responsibleDisplayName,
       );
     }
-    return this.unitRepo.save(unit);
+    const saved = await this.unitRepo.save(unit);
+    const withLinks = await this.unitRepo.findOne({
+      where: { id: saved.id, groupingId },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+    });
+    if (withLinks) {
+      flattenUnitResponsiblesForApi(withLinks);
+      return withLinks;
+    }
+    flattenUnitResponsiblesForApi(saved);
+    return saved;
   }
 
   async remove(
@@ -127,7 +169,11 @@ export class UnitsService {
     unitId: string,
     userId: string,
   ): Promise<void> {
-    await this.findOne(condominiumId, groupingId, unitId, userId);
+    await this.assertGroupingManaged(condominiumId, groupingId, userId);
+    const n = await this.unitRepo.count({ where: { id: unitId, groupingId } });
+    if (n === 0) {
+      throw new NotFoundException('Unit not found');
+    }
     await this.unitRepo.delete(unitId);
   }
 }

@@ -70,7 +70,7 @@ export class FinancialFundsController {
   }
 
   @Delete(':fundId')
-  @ApiOperation({ summary: 'Eliminar fundo' })
+  @ApiOperation({ summary: 'Excluir fundo' })
   remove(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

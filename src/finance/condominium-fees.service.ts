@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -12,6 +13,9 @@ import {
   stampPlatformFooterOnAllPages,
 } from '../common/pdf-branding';
 import { CondominiumsService } from '../condominiums/condominiums.service';
+import type { CondoAccess } from '../planning/governance.service';
+import { GovernanceService } from '../planning/governance.service';
+import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
@@ -59,6 +63,7 @@ export class CondominiumFeesService {
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
     private readonly condominiumsService: CondominiumsService,
+    private readonly governance: GovernanceService,
     private readonly fundAccrual: FundAccrualService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
   ) {}
@@ -68,23 +73,30 @@ export class CondominiumFeesService {
     userId: string,
     competenceYm: string,
   ): Promise<CondominiumFeeChargeView[]> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    const { unitIds } = await this.feeChargesScope(condominiumId, userId);
     if (!competenceYm?.trim()) {
       throw new BadRequestException('competenceYm query is required');
     }
     const ym = competenceYm.trim();
     this.assertYm(ym);
 
-    const rows = await this.chargeRepo
+    if (unitIds !== null && unitIds.length === 0) {
+      return [];
+    }
+
+    const qb = this.chargeRepo
       .createQueryBuilder('c')
       .innerJoinAndSelect('c.unit', 'u')
       .innerJoinAndSelect('u.grouping', 'g')
       .where('c.condominium_id = :cid', { cid: condominiumId })
       .andWhere('c.competence_ym = :ym', { ym })
       .orderBy('g.name', 'ASC')
-      .addOrderBy('u.identifier', 'ASC')
-      .getMany();
+      .addOrderBy('u.identifier', 'ASC');
+    if (unitIds !== null) {
+      qb.andWhere('c.unit_id IN (:...uids)', { uids: unitIds });
+    }
 
+    const rows = await qb.getMany();
     return rows.map((c) => this.toView(c));
   }
 
@@ -93,13 +105,13 @@ export class CondominiumFeesService {
     userId: string,
     competenceYm: string,
   ): Promise<CondominiumFeeChargeView[]> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governance.assertManagement(condominiumId, userId);
     this.assertYm(competenceYm);
     await this.closeMonthInternal(condominiumId, competenceYm);
     return this.listCharges(condominiumId, userId, competenceYm);
   }
 
-  /** Usado pelo cron (sem utilizador). */
+  /** Usado pelo cron (sem usuário). */
   async closeMonthInternal(
     condominiumId: string,
     competenceYm: string,
@@ -152,7 +164,7 @@ export class CondominiumFeesService {
     userId: string,
     competenceYm: string,
   ): Promise<CondominiumFeeChargeView[]> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governance.assertManagement(condominiumId, userId);
     this.assertYm(competenceYm);
 
     const paidCount = await this.chargeRepo.count({
@@ -207,7 +219,7 @@ export class CondominiumFeesService {
     chargeId: string,
     incomeTransactionId?: string,
   ): Promise<CondominiumFeeChargeView> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.governance.assertManagement(condominiumId, userId);
     const charge = await this.chargeRepo.findOne({
       where: { id: chargeId, condominiumId },
       relations: { unit: { grouping: true } },
@@ -274,8 +286,8 @@ export class CondominiumFeesService {
     userId: string,
     chargeId: string,
   ): Promise<Buffer> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
-    const condo = await this.condominiumsService.findOneForOwner(
+    const { unitIds } = await this.feeChargesScope(condominiumId, userId);
+    const condoItem = await this.condominiumsService.findOneAccessible(
       condominiumId,
       userId,
     );
@@ -286,6 +298,13 @@ export class CondominiumFeesService {
     if (!charge) {
       throw new NotFoundException('Charge not found');
     }
+    if (
+      unitIds !== null &&
+      !unitIds.includes(charge.unitId)
+    ) {
+      throw new ForbiddenException('Charge not accessible');
+    }
+    const condo = condoItem;
     if (charge.status !== 'paid') {
       throw new BadRequestException(
         'Charge must be paid to generate a receipt',
@@ -424,6 +443,40 @@ export class CondominiumFeesService {
       return ymd;
     }
     return `${m[3]}/${m[2]}/${m[1]}`;
+  }
+
+  /**
+   * `unitIds === null` → vê todas as cobranças (gestão / titular).
+   * Caso contrário, só unidades ligadas ao usuário na ficha.
+   */
+  private async feeChargesScope(
+    condominiumId: string,
+    userId: string,
+  ): Promise<{ unitIds: string[] | null }> {
+    const access = await this.governance.assertAnyAccess(condominiumId, userId);
+    if (this.seesAllFeeCharges(access)) {
+      return { unitIds: null };
+    }
+    const unitIds = await this.governance.listUnitIdsLinkedToUser(
+      condominiumId,
+      userId,
+    );
+    return { unitIds };
+  }
+
+  private seesAllFeeCharges(access: CondoAccess): boolean {
+    if (access.kind === 'owner') {
+      return true;
+    }
+    if (access.kind === 'participant') {
+      return (
+        access.role === GovernanceRole.Syndic ||
+        access.role === GovernanceRole.SubSyndic ||
+        access.role === GovernanceRole.Admin ||
+        access.role === GovernanceRole.Owner
+      );
+    }
+    return false;
   }
 
   private toView(c: CondominiumFeeCharge): CondominiumFeeChargeView {

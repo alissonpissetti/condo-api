@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { Grouping } from '../groupings/grouping.entity';
+import type { SaasPlanFeatures } from '../platform/saas-plan-features';
 import { SaasPlansService } from '../platform/saas-plans.service';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
@@ -23,10 +24,12 @@ export type CondominiumListItem = {
   ownerId: string;
   /** Plano gravado no condomínio; `null` = até à alteração, usa regras de fallback (titular / padrão). */
   saasPlanId: number | null;
-  /** Plano efectivo para faturação (após resolver titular / padrão). */
+  /** Plano efetivo para faturamento (após resolver titular / padrão). */
   billingPlanId: number;
   billingPlanName: string;
   billingPricePerUnitCents: number;
+  /** Módulos habilitados pelo plano efetivo (chaves conforme `saas-plan-features.ts`). */
+  billingPlanFeatures: SaasPlanFeatures;
   createdAt: Date;
   updatedAt: Date;
   hasSyndic: boolean;
@@ -37,8 +40,16 @@ export type CondominiumListItem = {
   billingPixBeneficiaryName?: string | null;
   billingPixCity?: string | null;
   syndicWhatsappForReceipts?: string | null;
+  /** Só no detalhe GET :id — incluir QR Code PIX no PDF de transparência. */
+  transparencyPdfIncludePixQrCode?: boolean;
   /** Só no detalhe GET :id — existe logo se não for null. */
   managementLogoStorageKey?: string | null;
+  /** Só no detalhe GET :id — modelo de cobrança em uso (padrão: manual_pix). */
+  billingChargeModel?: string;
+  /** Só no detalhe GET :id — dia do mês (1..31) para vencimento padrão. */
+  billingDefaultDueDay?: number;
+  /** Só no detalhe GET :id — juros em basis points (1 bp = 0,01 %). */
+  billingLateInterestBps?: number;
 };
 
 @Injectable()
@@ -87,10 +98,16 @@ export class CondominiumsService {
 
     const byUnit = await this.condoRepo
       .createQueryBuilder('c')
+      .distinct(true)
       .innerJoin('groupings', 'g', 'g.condominium_id = c.id')
       .innerJoin('units', 'u', 'u.grouping_id = g.id')
       .leftJoin('people', 'op', 'op.id = u.owner_person_id')
-      .leftJoin('people', 'rp', 'rp.id = u.responsible_person_id')
+      .leftJoin(
+        'unit_responsible_people',
+        'urp',
+        'urp.unit_id = u.id',
+      )
+      .leftJoin('people', 'rp', 'rp.id = urp.person_id')
       .where('op.user_id = :uid OR rp.user_id = :uid', { uid: userId })
       .getMany();
 
@@ -149,6 +166,7 @@ export class CondominiumsService {
         plan,
         unitByCondo.get(c.id) ?? 0,
       ),
+      billingPlanFeatures: this.saasPlans.resolvePlanFeatures(plan),
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       hasSyndic: syndicByCondo.has(c.id),
@@ -173,7 +191,11 @@ export class CondominiumsService {
         billingPixBeneficiaryName: true,
         billingPixCity: true,
         syndicWhatsappForReceipts: true,
+        transparencyPdfIncludePixQrCode: true,
         managementLogoStorageKey: true,
+        billingChargeModel: true,
+        billingDefaultDueDay: true,
+        billingLateInterestBps: true,
       },
     });
     return {
@@ -182,7 +204,12 @@ export class CondominiumsService {
       billingPixBeneficiaryName: full?.billingPixBeneficiaryName ?? null,
       billingPixCity: full?.billingPixCity ?? null,
       syndicWhatsappForReceipts: full?.syndicWhatsappForReceipts ?? null,
+      transparencyPdfIncludePixQrCode:
+        full?.transparencyPdfIncludePixQrCode ?? true,
       managementLogoStorageKey: full?.managementLogoStorageKey ?? null,
+      billingChargeModel: full?.billingChargeModel ?? 'manual_pix',
+      billingDefaultDueDay: full?.billingDefaultDueDay ?? 10,
+      billingLateInterestBps: full?.billingLateInterestBps ?? 0,
     };
   }
 
@@ -202,6 +229,43 @@ export class CondominiumsService {
     });
     if (!condo) {
       throw new NotFoundException('Condominium not found');
+    }
+    return condo;
+  }
+
+  /**
+   * Carrega o condomínio para mutação por papéis de gestão (titular, síndico,
+   * subsíndico ou administrador). Lança 404 se o id não existir e 403 se o
+   * usuário não tiver permissão de gestão neste condomínio.
+   */
+  async findOneForManagement(
+    id: string,
+    userId: string,
+  ): Promise<Condominium> {
+    const condo = await this.condoRepo.findOne({ where: { id } });
+    if (!condo) {
+      throw new NotFoundException('Condominium not found');
+    }
+    if (condo.ownerId === userId) {
+      return condo;
+    }
+    const allowed = await this.participantRepo
+      .createQueryBuilder('p')
+      .where('p.condominium_id = :cid', { cid: id })
+      .andWhere('p.user_id = :uid', { uid: userId })
+      .andWhere('p.role IN (:...roles)', {
+        roles: [
+          GovernanceRole.Syndic,
+          GovernanceRole.SubSyndic,
+          GovernanceRole.Admin,
+          GovernanceRole.Owner,
+        ],
+      })
+      .getCount();
+    if (allowed === 0) {
+      throw new ForbiddenException(
+        'Permissão de gestão necessária (titular, síndico, subsíndico ou administrador).',
+      );
     }
     return condo;
   }
@@ -242,7 +306,16 @@ export class CondominiumsService {
     userId: string,
     dto: UpdateCondominiumDto,
   ): Promise<Condominium> {
-    const condo = await this.findOneForOwner(id, userId);
+    const condo = await this.findOneForManagement(id, userId);
+    if (dto.planId !== undefined) {
+      // Trocar o plano SaaS continua a ser exclusivo do titular da conta
+      // (impacto financeiro directo); demais campos abrem para a gestão.
+      if (condo.ownerId !== userId) {
+        throw new ForbiddenException(
+          'Apenas o titular da conta pode alterar o plano SaaS deste condomínio.',
+        );
+      }
+    }
     if (dto.name !== undefined) {
       condo.name = dto.name;
     }
@@ -266,6 +339,18 @@ export class CondominiumsService {
     if (dto.syndicWhatsappForReceipts !== undefined) {
       condo.syndicWhatsappForReceipts =
         dto.syndicWhatsappForReceipts?.trim() || null;
+    }
+    if (dto.transparencyPdfIncludePixQrCode !== undefined) {
+      condo.transparencyPdfIncludePixQrCode = dto.transparencyPdfIncludePixQrCode;
+    }
+    if (dto.billingChargeModel !== undefined) {
+      condo.billingChargeModel = dto.billingChargeModel;
+    }
+    if (dto.billingDefaultDueDay !== undefined) {
+      condo.billingDefaultDueDay = dto.billingDefaultDueDay;
+    }
+    if (dto.billingLateInterestBps !== undefined) {
+      condo.billingLateInterestBps = dto.billingLateInterestBps;
     }
     return this.condoRepo.save(condo);
   }
@@ -306,8 +391,11 @@ export class CondominiumsService {
     return phone.trim();
   }
 
+  /**
+   * Apenas o titular da conta que criou o condomínio (`owner_id`) pode eliminá-lo.
+   */
   async remove(id: string, userId: string): Promise<void> {
-    await this.findOneForOwner(id, userId);
+    await this.assertOwner(id, userId);
     await this.condoRepo.delete(id);
   }
 
@@ -317,7 +405,7 @@ export class CondominiumsService {
     buffer: Buffer,
     mimeType: string,
   ): Promise<{ managementLogoStorageKey: string }> {
-    const condo = await this.findOneForOwner(condominiumId, userId);
+    const condo = await this.findOneForManagement(condominiumId, userId);
     if (condo.managementLogoStorageKey) {
       await this.storage.deleteManagementLogo(
         condominiumId,
@@ -338,7 +426,7 @@ export class CondominiumsService {
     condominiumId: string,
     userId: string,
   ): Promise<void> {
-    const condo = await this.findOneForOwner(condominiumId, userId);
+    const condo = await this.findOneForManagement(condominiumId, userId);
     if (!condo.managementLogoStorageKey) {
       return;
     }
@@ -354,13 +442,13 @@ export class CondominiumsService {
     condominiumId: string,
     userId: string,
   ): Promise<{ buffer: Buffer; contentType: string }> {
-    const condo = await this.findOneForOwner(condominiumId, userId);
-    if (!condo.managementLogoStorageKey) {
+    const item = await this.findOneAccessible(condominiumId, userId);
+    if (!item.managementLogoStorageKey) {
       throw new NotFoundException('Logo não configurada.');
     }
     return this.storage.readManagementLogo(
       condominiumId,
-      condo.managementLogoStorageKey,
+      item.managementLogoStorageKey,
     );
   }
 }

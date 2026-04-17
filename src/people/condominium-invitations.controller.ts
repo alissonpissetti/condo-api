@@ -34,7 +34,7 @@ export class CondominiumInvitationsController {
   @ApiOperation({
     summary: 'Pré-visualizar pessoa pelo email (convite ao condomínio)',
     description:
-      'Se existir ficha ou utilizador com o email, devolve o nome para exibir no formulário.',
+      'Se existir ficha ou usuário com o e-mail, devolve o nome para exibir no formulário.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'email', required: true })
@@ -65,7 +65,7 @@ export class CondominiumInvitationsController {
 
   @Get('history')
   @ApiOperation({
-    summary: 'Listar convites já aceites (histórico)',
+    summary: 'Listar convites já aceitos (histórico)',
     description: 'Convites com registro concluído neste condomínio, mais recentes primeiro.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
@@ -83,7 +83,7 @@ export class CondominiumInvitationsController {
   @ApiOperation({
     summary: 'Criar convite por email (membro / onboarding)',
     description:
-      'Envia email com link de registo. O convite fica pendente até ser aceite.',
+      'Envia e-mail com link de cadastro. O convite fica pendente até ser aceito.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   create(

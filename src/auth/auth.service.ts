@@ -90,7 +90,7 @@ export class AuthService {
   }
 
   /**
-   * Envia SMS com código de 6 dígitos (se o número estiver registado e SMS configurado).
+   * Envia SMS com código de 6 dígitos (se o número estiver cadastrado e SMS configurado).
    * Resposta genérica para não revelar se o telefone existe.
    */
   async requestSmsLogin(dto: SmsLoginRequestDto): Promise<{

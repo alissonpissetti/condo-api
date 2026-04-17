@@ -60,7 +60,7 @@ export class PlatformController {
   }
 
   @Get('users')
-  @ApiOperation({ summary: 'Listagem paginada de utilizadores (titulares)' })
+  @ApiOperation({ summary: 'Listagem paginada de usuários (titulares)' })
   listUsers(@Query() q: PageQueryDto) {
     const page = q.page ?? 1;
     const limit = q.limit ?? 20;
@@ -98,7 +98,7 @@ export class PlatformController {
 
   @Post('plans/:planId/set-default')
   @ApiOperation({
-    summary: 'Definir plano padrão para novos registos',
+    summary: 'Definir plano padrão para novos cadastros',
   })
   setDefaultPlan(@Param('planId', ParseIntPipe) planId: number) {
     return this.saasPlans.setDefaultPlan(planId);
@@ -168,13 +168,13 @@ export class PlatformController {
   }
 
   @Get('condominiums/:id/billing')
-  @ApiOperation({ summary: 'Perfil de faturação SaaS do condomínio' })
+  @ApiOperation({ summary: 'Perfil de faturamento SaaS do condomínio' })
   getBilling(@Param('id', ParseUUIDPipe) id: string) {
     return this.platform.getBilling(id);
   }
 
   @Patch('condominiums/:id/billing')
-  @ApiOperation({ summary: 'Atualizar perfil de faturação SaaS' })
+  @ApiOperation({ summary: 'Atualizar perfil de faturamento SaaS' })
   patchBilling(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchSaasBillingDto,
@@ -198,7 +198,7 @@ export class PlatformController {
 
   @Post('condominiums/:id/billing/charges')
   @ApiOperation({
-    summary: 'Gerar cobrança do mês (Asaas + registo local)',
+    summary: 'Gerar cobrança do mês (Asaas + registro local)',
   })
   createCharge(
     @Param('id', ParseUUIDPipe) id: string,
@@ -210,7 +210,7 @@ export class PlatformController {
   @Post('billing/charges/bulk')
   @ApiOperation({
     summary:
-      'Gerar cobrança do mês para todos os condomínios (Asaas + registo local)',
+      'Gerar cobrança do mês para todos os condomínios (Asaas + registro local)',
   })
   bulkCreateCharges(@Body() body: CreateSaasChargeDto) {
     return this.billingAsaas.bulkCreateMonthlyCharges(body);

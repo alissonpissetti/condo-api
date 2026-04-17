@@ -8,7 +8,7 @@ const LOGO_FILENAME = 'logo-big.png';
 
 /**
  * OpenAPI + Swagger UI em `/docs`.
- * Serve `/logo-big.png` a partir da raiz do projeto (cwd), se o ficheiro existir.
+ * Serve `/logo-big.png` a partir da raiz do projeto (cwd), se o arquivo existir.
  */
 export function setupSwagger(app: INestApplication): void {
   const logoPath = join(process.cwd(), LOGO_FILENAME);
@@ -28,7 +28,7 @@ export function setupSwagger(app: INestApplication): void {
   const config = new DocumentBuilder()
     .setTitle('Condo API')
     .setDescription(
-      'API de gestão condominal: registo e login (JWT), condomínios do utilizador, agrupamentos (blocos) e unidades.',
+      'API de gestão condominal: cadastro e login (JWT), condomínios do usuário, agrupamentos (blocos) e unidades.',
     )
     .setVersion('1.0')
     .addServer(serverUrl)

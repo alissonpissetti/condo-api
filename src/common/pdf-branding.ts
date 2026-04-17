@@ -58,7 +58,7 @@ function drawPlatformWatermarkOnCurrentPage(
     doc.opacity(opacity);
     doc.image(logoPath, ix, iy, { width: iw });
   } catch {
-    /* ficheiro em falta ou inválido */
+    /* arquivo ausente ou inválido */
   }
   doc.restore();
   /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */

@@ -28,7 +28,7 @@ export class AssignUnitPersonDto {
 
   @ApiPropertyOptional({
     description:
-      'Obrigatório se não existir pessoa/utilizador com o CPF/email indicado (convite)',
+      'Obrigatório se não existir pessoa/usuário com o CPF/e-mail indicado (convite)',
   })
   @IsOptional()
   @IsEmail()

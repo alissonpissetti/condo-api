@@ -15,15 +15,18 @@ import { CondominiumsService } from '../condominiums/condominiums.service';
 import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { Unit } from '../units/unit.entity';
+import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { SaasPlansService } from '../platform/saas-plans.service';
 import { UsersService } from '../users/users.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { AssignUnitPersonDto } from './dto/assign-unit-person.dto';
 import { CreateCondominiumInviteDto } from './dto/create-condominium-invite.dto';
+import { PatchUnitPersonPhoneDto } from './dto/patch-unit-person-phone.dto';
 import { CondominiumInvitation } from './condominium-invitation.entity';
 import { Person } from './person.entity';
 import { UnitInvitation } from './unit-invitation.entity';
 import { applyPersonAddressToEntity } from './apply-person-address';
+import { normalizeBrCellphone } from '../lib/phone-br';
 import {
   isValidCpf,
   normalizeCepDigits,
@@ -32,6 +35,25 @@ import {
 } from './people.utils';
 
 type UnitPersonRole = AssignUnitPersonDto['role'];
+
+/** Celular BR em E.164 (55…); exige DDD + 9 + 8 dígitos. */
+function normalizeInviteMobile(raw: string): string {
+  const trimmed = raw?.trim() ?? '';
+  if (!trimmed) {
+    throw new BadRequestException('Celular é obrigatório.');
+  }
+  const n = normalizeBrCellphone(trimmed);
+  if (!n) {
+    throw new BadRequestException('Celular inválido.');
+  }
+  const national = n.startsWith('55') ? n.slice(2) : n;
+  if (national.length !== 11 || national[2] !== '9') {
+    throw new BadRequestException(
+      'Indique um celular válido com DDD (11 dígitos, começando por 9 após o DDD).',
+    );
+  }
+  return n;
+}
 
 @Injectable()
 export class PeopleService {
@@ -45,6 +67,8 @@ export class PeopleService {
     private readonly condominiumInvitationRepo: Repository<CondominiumInvitation>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
+    @InjectRepository(UnitResponsiblePerson)
+    private readonly unitResponsibleRepo: Repository<UnitResponsiblePerson>,
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
     private readonly condominiumsService: CondominiumsService,
@@ -54,13 +78,14 @@ export class PeopleService {
     private readonly config: ConfigService,
   ) {}
 
-  private async loadUnitForManagement(
+  private async loadUnitScoped(
     condominiumId: string,
     groupingId: string,
     unitId: string,
     userId: string,
+    assertAccess: (cid: string, uid: string) => Promise<unknown>,
   ): Promise<{ unit: Unit; condominiumName: string }> {
-    await this.governanceService.assertManagement(condominiumId, userId);
+    await assertAccess(condominiumId, userId);
     const condominium = await this.condominiumsService.findById(condominiumId);
     if (!condominium) {
       throw new NotFoundException('Condomínio não encontrado.');
@@ -75,7 +100,7 @@ export class PeopleService {
     }
     const unit = await this.unitRepo.findOne({
       where: { id: unitId, groupingId },
-      relations: { ownerPerson: true, responsiblePerson: true },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
     });
     if (!unit) {
       throw new NotFoundException('Unidade não encontrada.');
@@ -83,12 +108,87 @@ export class PeopleService {
     return { unit, condominiumName: condominium.name };
   }
 
-  private applyRoleToUnit(unit: Unit, personId: string, role: UnitPersonRole) {
+  private loadUnitForManagement(
+    condominiumId: string,
+    groupingId: string,
+    unitId: string,
+    userId: string,
+  ): Promise<{ unit: Unit; condominiumName: string }> {
+    return this.loadUnitScoped(condominiumId, groupingId, unitId, userId, (c, u) =>
+      this.governanceService.assertManagement(c, u),
+    );
+  }
+
+  /** Titular ou síndico: editar telefone de condômino ligado à unidade. */
+  async patchPersonPhoneForUnit(
+    condominiumId: string,
+    groupingId: string,
+    unitId: string,
+    personId: string,
+    actorUserId: string,
+    dto: PatchUnitPersonPhoneDto,
+  ): Promise<{ id: string; fullName: string; phone: string | null }> {
+    const { unit } = await this.loadUnitScoped(
+      condominiumId,
+      groupingId,
+      unitId,
+      actorUserId,
+      (c, u) => this.governanceService.assertSyndicOrOwner(c, u),
+    );
+    const isOwnerLink = unit.ownerPersonId === personId;
+    const isResponsible = await this.unitResponsibleRepo.exist({
+      where: { unitId: unit.id, personId },
+    });
+    if (!isOwnerLink && !isResponsible) {
+      throw new BadRequestException(
+        'Esta pessoa não é proprietária nem responsável identificada nesta unidade.',
+      );
+    }
+    const person = await this.personRepo.findOne({ where: { id: personId } });
+    if (!person) {
+      throw new NotFoundException('Pessoa não encontrada.');
+    }
+    const trimmed = (dto.phone ?? '').trim();
+    const phoneNorm = trimmed ? normalizeBrCellphone(trimmed) : null;
+    if (trimmed && !phoneNorm) {
+      throw new BadRequestException('Número de telefone inválido.');
+    }
+    if (person.userId) {
+      await this.usersService.setPhoneForUserByStaff(person.userId, dto.phone);
+    }
+    person.phone = phoneNorm;
+    await this.personRepo.save(person);
+    return {
+      id: person.id,
+      fullName: person.fullName,
+      phone: person.phone,
+    };
+  }
+
+  private async ensureResponsibleLink(
+    unitId: string,
+    personId: string,
+  ): Promise<void> {
+    const exists = await this.unitResponsibleRepo.exist({
+      where: { unitId, personId },
+    });
+    if (!exists) {
+      await this.unitResponsibleRepo.save(
+        this.unitResponsibleRepo.create({ unitId, personId }),
+      );
+    }
+  }
+
+  private async applyRoleToUnit(
+    unit: Unit,
+    personId: string,
+    role: UnitPersonRole,
+  ): Promise<void> {
     if (role === 'owner' || role === 'both') {
       unit.ownerPersonId = personId;
     }
     if (role === 'responsible' || role === 'both') {
-      unit.responsiblePersonId = personId;
+      await this.ensureResponsibleLink(unit.id, personId);
     }
   }
 
@@ -115,7 +215,7 @@ export class PeopleService {
     return `${masked}@${domain}`;
   }
 
-  /** Pesquisa pessoa ou utilizador por CPF/email (gestor da unidade). */
+  /** Pesquisa pessoa ou usuário por CPF/email (gestor da unidade). */
   async personCandidate(
     condominiumId: string,
     groupingId: string,
@@ -162,7 +262,7 @@ export class PeopleService {
                 email: user.email,
                 fullName: null,
                 hasUserAccount: true,
-                note: 'Utilizador existe; será criada ficha de pessoa na associação, se necessário.',
+                note: 'Usuário existe; será criada ficha de pessoa na associação, se necessário.',
               },
         };
       }
@@ -206,7 +306,7 @@ export class PeopleService {
 
   /**
    * Associa proprietário / responsável à unidade.
-   * Se não existir pessoa nem utilizador com o email, exige `email` no corpo e envia convite (sem alterar a unidade até aceitar).
+   * Se não existir pessoa nem usuário com o email, exige `email` no corpo e envia convite (sem alterar a unidade até aceitar).
    */
   async assignToUnit(
     condominiumId: string,
@@ -276,7 +376,7 @@ export class PeopleService {
           applyPersonAddressToEntity(linked, dto);
           await this.personRepo.save(linked);
         }
-        this.applyRoleToUnit(unit, linked.id, role);
+        await this.applyRoleToUnit(unit, linked.id, role);
         this.clearDisplayNamesWhenLinkingPerson(unit, role);
         await this.unitRepo.save(unit);
         return {
@@ -305,7 +405,7 @@ export class PeopleService {
       } catch (e) {
         if (e instanceof QueryFailedError) {
           throw new ConflictException(
-            'Email ou CPF já registado noutra ficha de pessoa.',
+            'E-mail ou CPF já cadastrado em outra ficha de pessoa.',
           );
         }
         throw e;
@@ -381,7 +481,7 @@ export class PeopleService {
     applyPersonAddressToEntity(person, dto);
     await this.personRepo.save(person);
 
-    this.applyRoleToUnit(unit, person.id, role);
+    await this.applyRoleToUnit(unit, person.id, role);
     this.clearDisplayNamesWhenLinkingPerson(unit, role);
     await this.unitRepo.save(unit);
 
@@ -401,11 +501,36 @@ export class PeopleService {
       unitId,
       userId,
     );
-    // `save()` com `responsiblePerson` carregado pode repor o FK; `update()` aplica só a coluna.
+    await this.unitResponsibleRepo.delete({ unitId: unit.id });
     await this.unitRepo.update(
       { id: unit.id },
-      { responsiblePersonId: null, responsibleDisplayName: null },
+      { responsibleDisplayName: null },
     );
+  }
+
+  /** Remove uma pessoa da lista de responsáveis da unidade (mantém as outras). */
+  async removeResponsiblePersonFromUnit(
+    condominiumId: string,
+    groupingId: string,
+    unitId: string,
+    personId: string,
+    userId: string,
+  ): Promise<void> {
+    const { unit } = await this.loadUnitForManagement(
+      condominiumId,
+      groupingId,
+      unitId,
+      userId,
+    );
+    const del = await this.unitResponsibleRepo.delete({
+      unitId: unit.id,
+      personId,
+    });
+    if ((del.affected ?? 0) < 1) {
+      throw new NotFoundException(
+        'Esta pessoa não está associada como responsável desta unidade.',
+      );
+    }
   }
 
   async getInvitePreview(plainToken: string) {
@@ -510,14 +635,14 @@ export class PeopleService {
     const existingUser = await this.usersService.findByEmail(inv.email);
     if (existingUser) {
       throw new ConflictException(
-        'Já existe uma conta com este email. Inicie sessão; o administrador pode voltar a associar a unidade na aplicação.',
+        'Já existe uma conta com este e-mail. Entre; o administrador pode associar a unidade novamente na aplicação.',
       );
     }
 
     const person = inv.person;
     if (person.userId) {
       throw new ConflictException(
-        'Esta ficha de pessoa já tem utilizador associado.',
+        'Esta ficha de pessoa já tem usuário associado.',
       );
     }
 
@@ -527,15 +652,25 @@ export class PeopleService {
       );
     }
 
+    const phoneNorm = normalizeInviteMobile(dto.phone);
+    const phoneTaken = await this.usersService.findByPhone(phoneNorm);
+    if (phoneTaken) {
+      throw new ConflictException(
+        'Este celular já está cadastrado em outra conta.',
+      );
+    }
+
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
       email: inv.email,
       passwordHash,
       planId,
+      phone: phoneNorm,
     });
 
     person.userId = user.id;
+    person.phone = phoneNorm;
     if (dto.fullName?.trim()) {
       person.fullName = dto.fullName.trim();
     }
@@ -547,10 +682,12 @@ export class PeopleService {
       unit.ownerDisplayName = null;
     }
     if (inv.asResponsible) {
-      unit.responsiblePersonId = person.id;
       unit.responsibleDisplayName = null;
     }
     await this.unitRepo.save(unit);
+    if (inv.asResponsible) {
+      await this.ensureResponsibleLink(unit.id, person.id);
+    }
 
     inv.consumedAt = new Date();
     await this.invitationRepo.save(inv);
@@ -574,6 +711,8 @@ export class PeopleService {
       throw new GoneException('Convite expirado.');
     }
 
+    const phoneNorm = normalizeInviteMobile(dto.phone);
+
     const person = inv.person;
     const existingUser = await this.usersService.findByEmail(inv.email);
 
@@ -590,14 +729,19 @@ export class PeopleService {
           'Este convite não corresponde à conta associada a este email.',
         );
       }
+      await this.usersService.assertOrSetPhoneForInviteAccept(
+        existingUser,
+        phoneNorm,
+      );
       const unit = inv.unit;
-      unit.responsiblePersonId = person.id;
       unit.responsibleDisplayName = null;
       await this.unitRepo.save(unit);
+      await this.ensureResponsibleLink(unit.id, person.id);
+      person.phone = phoneNorm;
       if (dto.fullName?.trim()) {
         person.fullName = dto.fullName.trim();
-        await this.personRepo.save(person);
       }
+      await this.personRepo.save(person);
       inv.consumedAt = new Date();
       await this.condominiumInvitationRepo.save(inv);
       return {
@@ -612,7 +756,7 @@ export class PeopleService {
 
     if (person.userId) {
       throw new ConflictException(
-        'Esta ficha de pessoa já tem utilizador associado. Inicie sessão com essa conta para aceitar convites futuros.',
+        'Esta ficha de pessoa já tem usuário associado. Entre com essa conta para aceitar convites futuros.',
       );
     }
 
@@ -622,24 +766,33 @@ export class PeopleService {
       );
     }
 
+    const phoneTakenNew = await this.usersService.findByPhone(phoneNorm);
+    if (phoneTakenNew) {
+      throw new ConflictException(
+        'Este celular já está cadastrado em outra conta.',
+      );
+    }
+
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
       email: inv.email,
       passwordHash,
       planId,
+      phone: phoneNorm,
     });
 
     person.userId = user.id;
+    person.phone = phoneNorm;
     if (dto.fullName?.trim()) {
       person.fullName = dto.fullName.trim();
     }
     await this.personRepo.save(person);
 
     const unit = inv.unit;
-    unit.responsiblePersonId = person.id;
     unit.responsibleDisplayName = null;
     await this.unitRepo.save(unit);
+    await this.ensureResponsibleLink(unit.id, person.id);
 
     inv.consumedAt = new Date();
     await this.condominiumInvitationRepo.save(inv);
@@ -695,7 +848,7 @@ export class PeopleService {
         hasUserAccount: true,
         canInvite: true,
         message:
-          'Já existe utilizador com este email. Pode enviar o convite; a pessoa confirma pelo link com a conta existente.',
+          'Já existe usuário com este e-mail. Você pode enviar o convite; a pessoa confirma pelo link com a conta existente.',
       };
     }
 
@@ -802,7 +955,7 @@ export class PeopleService {
           const fullName = dto.fullName?.trim() ?? '';
           if (fullName.length < 2) {
             throw new BadRequestException(
-              'Nome completo obrigatório para convidar esta conta (criação da ficha de pessoa ligada ao utilizador).',
+              'Nome completo obrigatório para convidar esta conta (criação da ficha de pessoa ligada ao usuário).',
             );
           }
           person = this.personRepo.create({

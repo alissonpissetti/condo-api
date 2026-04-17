@@ -59,13 +59,44 @@ export class GovernanceService {
     if (condo.ownerId === userId) {
       return { kind: 'owner' };
     }
-    const row = await this.participantRepo.findOne({
+    const rows = await this.participantRepo.find({
       where: { condominiumId, userId },
+      order: { createdAt: 'ASC' },
     });
-    if (!row) {
+    if (rows.length === 0) {
       return null;
     }
-    return { kind: 'participant', role: row.role };
+    const role = this.highestParticipantRole(rows.map((r) => r.role));
+    return { kind: 'participant', role };
+  }
+
+  /**
+   * Um usuário pode ter várias linhas de participante (papéis distintos).
+   * Usa-se o papel de maior privilégio para permissões (ex.: síndico + membro → síndico).
+   */
+  private highestParticipantRole(roles: GovernanceRole[]): GovernanceRole {
+    const rank: GovernanceRole[] = [
+      GovernanceRole.Syndic,
+      GovernanceRole.SubSyndic,
+      GovernanceRole.Admin,
+      GovernanceRole.Owner,
+      GovernanceRole.Member,
+    ];
+    let best = roles[0]!;
+    let bestIdx = rank.indexOf(best);
+    if (bestIdx < 0) {
+      bestIdx = rank.length;
+    }
+    for (let i = 1; i < roles.length; i++) {
+      const r = roles[i]!;
+      const idx = rank.indexOf(r);
+      const effective = idx < 0 ? rank.length : idx;
+      if (effective < bestIdx) {
+        bestIdx = effective;
+        best = r;
+      }
+    }
+    return best;
   }
 
   async assertAnyAccess(
@@ -91,13 +122,43 @@ export class GovernanceService {
     condominiumId: string,
     userId: string,
   ): Promise<boolean> {
-    const n = await this.unitRepo
+    const ids = await this.listUnitIdsLinkedToUser(condominiumId, userId);
+    return ids.length > 0;
+  }
+
+  /**
+   * Unidades em que o usuário tem ligação de conta (proprietário na ficha ou
+   * responsável identificado). Usado p.ex. para filtrar cobranças de taxas.
+   */
+  async listUnitIdsLinkedToUser(
+    condominiumId: string,
+    userId: string,
+  ): Promise<string[]> {
+    const raw = await this.unitRepo
       .createQueryBuilder('u')
       .innerJoin('u.grouping', 'g')
       .leftJoin('u.ownerPerson', 'op')
-      .leftJoin('u.responsiblePerson', 'rp')
+      .leftJoin('u.responsibleLinks', 'url')
+      .leftJoin('url.person', 'urlp')
       .where('g.condominiumId = :cid', { cid: condominiumId })
-      .andWhere('(op.userId = :uid OR rp.userId = :uid)', { uid: userId })
+      .andWhere('(op.userId = :uid OR urlp.userId = :uid)', { uid: userId })
+      .select('u.id', 'id')
+      .getRawMany<{ id: string }>();
+    return [...new Set(raw.map((r) => r.id))];
+  }
+
+  /** Conta cadastrada como responsável (ficha) em pelo menos uma unidade. */
+  private async hasUnitResponsiblePersonLink(
+    condominiumId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const n = await this.unitRepo
+      .createQueryBuilder('u')
+      .innerJoin('u.grouping', 'g')
+      .innerJoin('u.responsibleLinks', 'url')
+      .innerJoin('url.person', 'p')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .andWhere('p.userId = :uid', { uid: userId })
       .getCount();
     return n > 0;
   }
@@ -219,8 +280,8 @@ export class GovernanceService {
   }
 
   /**
-   * Resolve conta por e-mail para atribuir papéis: tem de existir utilizador
-   * e vínculo ao condomínio (titular, participante ou morador por unidade).
+   * Resolve conta por e-mail para atribuir papéis: precisa existir usuário
+   * e ser o titular ou pessoa já cadastrada como responsável de alguma unidade.
    */
   async lookupUserForGovernanceRole(
     condominiumId: string,
@@ -236,18 +297,17 @@ export class GovernanceService {
     const user = await this.usersService.findByEmail(email);
     if (!user) {
       throw new NotFoundException(
-        'Nenhuma conta com este e-mail. A pessoa precisa de registo (ex.: convite) antes de receber um papel.',
+        'Nenhuma conta com este e-mail. A pessoa precisa se cadastrar (ex.: convite) antes de receber um papel.',
       );
     }
-    const hasStake =
-      condo.ownerId === user.id ||
-      (await this.participantRepo.exist({
-        where: { condominiumId, userId: user.id },
-      })) ||
-      (await this.hasPersonLinkToCondominium(condominiumId, user.id));
-    if (!hasStake) {
+    const isOwner = condo.ownerId === user.id;
+    const isResponsible = await this.hasUnitResponsiblePersonLink(
+      condominiumId,
+      user.id,
+    );
+    if (!isOwner && !isResponsible) {
       throw new BadRequestException(
-        'Esta conta ainda não está ligada a este condomínio. Use convites ou associe a pessoa a uma unidade.',
+        'Só é possível atribuir papéis ao titular ou a contas já indicadas como responsáveis de alguma unidade (Unidades).',
       );
     }
     const person = await this.personRepo.findOne({
@@ -258,8 +318,115 @@ export class GovernanceService {
       email: user.email,
       personId: person?.id ?? null,
       fullName: person?.fullName ?? null,
-      isOwner: condo.ownerId === user.id,
+      isOwner,
     };
+  }
+
+  /**
+   * Contas elegíveis para síndico / subsíndico / administrador: titular e
+   * responsáveis identificados nas unidades (com conta associada à ficha).
+   */
+  async listEligibleForGovernance(condominiumId: string, actorUserId: string) {
+    await this.assertCanManageRoles(condominiumId, actorUserId);
+    const condo = await this.getCondominiumOrThrow(condominiumId);
+
+    type Agg = {
+      userId: string;
+      personId: string | null;
+      fullName: string | null;
+      email: string;
+      units: Set<string>;
+      isOwner: boolean;
+    };
+    const byUser = new Map<string, Agg>();
+
+    const raw = await this.unitRepo
+      .createQueryBuilder('u')
+      .select('p.userId', 'userId')
+      .addSelect('p.id', 'personId')
+      .addSelect('p.fullName', 'fullName')
+      .addSelect('usr.email', 'email')
+      .addSelect('u.identifier', 'unitIdentifier')
+      .innerJoin('u.grouping', 'g')
+      .innerJoin('u.responsibleLinks', 'url')
+      .innerJoin('url.person', 'p')
+      .innerJoin('p.user', 'usr')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .getRawMany<{
+        userId: string;
+        personId: string;
+        fullName: string;
+        email: string;
+        unitIdentifier: string;
+      }>();
+
+    for (const r of raw) {
+      let a = byUser.get(r.userId);
+      if (!a) {
+        a = {
+          userId: r.userId,
+          personId: r.personId,
+          fullName: r.fullName,
+          email: r.email,
+          units: new Set(),
+          isOwner: r.userId === condo.ownerId,
+        };
+        byUser.set(r.userId, a);
+      }
+      a.units.add((r.unitIdentifier ?? '').trim() || '—');
+      if (r.userId === condo.ownerId) {
+        a.isOwner = true;
+      }
+    }
+
+    const ownerUser = await this.usersService.findById(condo.ownerId);
+    if (ownerUser) {
+      const ownerPerson = await this.personRepo.findOne({
+        where: { userId: condo.ownerId },
+      });
+      let a = byUser.get(condo.ownerId);
+      if (!a) {
+        a = {
+          userId: condo.ownerId,
+          personId: ownerPerson?.id ?? null,
+          fullName: ownerPerson?.fullName ?? null,
+          email: ownerUser.email,
+          units: new Set(),
+          isOwner: true,
+        };
+        byUser.set(condo.ownerId, a);
+      } else {
+        a.isOwner = true;
+        if (ownerPerson?.id) {
+          a.personId = ownerPerson.id;
+        }
+        if (ownerPerson?.fullName?.trim()) {
+          a.fullName = ownerPerson.fullName;
+        }
+      }
+    }
+
+    const list = [...byUser.values()].map((a) => ({
+      userId: a.userId,
+      personId: a.personId,
+      fullName: a.fullName,
+      email: a.email,
+      isOwner: a.isOwner,
+      responsibleUnitLabels: [...a.units].sort((x, y) =>
+        x.localeCompare(y, 'pt', { sensitivity: 'base' }),
+      ),
+    }));
+
+    list.sort((a, b) => {
+      if (a.isOwner !== b.isOwner) {
+        return a.isOwner ? -1 : 1;
+      }
+      const na = (a.fullName?.trim() || a.email).toLowerCase();
+      const nb = (b.fullName?.trim() || b.email).toLowerCase();
+      return na.localeCompare(nb, 'pt');
+    });
+
+    return list;
   }
 
   async createParticipant(
@@ -269,6 +436,19 @@ export class GovernanceService {
   ) {
     await this.assertCanManageRoles(condominiumId, actorUserId);
     await this.ensureBootstrapParticipants(condominiumId);
+    const condo = await this.getCondominiumOrThrow(condominiumId);
+
+    if (dto.userId !== condo.ownerId) {
+      const linked = await this.hasUnitResponsiblePersonLink(
+        condominiumId,
+        dto.userId,
+      );
+      if (!linked) {
+        throw new BadRequestException(
+          'Só é possível atribuir este papel ao titular ou a responsáveis identificados em alguma unidade.',
+        );
+      }
+    }
 
     if (dto.role === GovernanceRole.Owner) {
       throw new BadRequestException(

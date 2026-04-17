@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { SaasPlanFeatures } from '../saas-plan-features';
 import type { SaasPlanPriceTier } from '../saas-plan-unit-pricing';
 
 @Entity('saas_plans')
@@ -50,6 +51,13 @@ export class SaasPlan {
 
   @Column({ type: 'text', nullable: true })
   notes: string | null;
+
+  /**
+   * Flags de módulos habilitados no painel para este plano. `null` = plano
+   * legado sem restrições (todos os módulos liberados).
+   */
+  @Column({ type: 'json', nullable: true })
+  features: SaasPlanFeatures | null;
 
   @OneToMany('User', 'plan')
   users: unknown[];

@@ -118,8 +118,8 @@ export class GroupingsController {
 
   @Delete(':id')
   @ApiOperation({
-    summary: 'Eliminar agrupamento',
-    description: 'Não é permitido apagar o último agrupamento do condomínio.',
+    summary: 'Excluir agrupamento',
+    description: 'Não é permitido excluir o último agrupamento do condomínio.',
   })
   @ApiParam({
     name: 'condominiumId',

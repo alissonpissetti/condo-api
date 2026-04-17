@@ -209,7 +209,7 @@ export class PlanningPollsService {
     file: Express.Multer.File,
   ) {
     if (!file?.buffer?.length) {
-      throw new BadRequestException('Ficheiro em falta.');
+      throw new BadRequestException('Arquivo ausente.');
     }
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
@@ -394,13 +394,13 @@ export class PlanningPollsService {
       unitsVoted,
       /** Soma das marcações por opção (numa pauta multi, pode exceder o nº de unidades). */
       totalOptionSelections: optionSelections,
-      /** Uma linha por unidade que votou; cada unidade só tem um registo de voto (substituído ao reenviar). */
+      /** Uma linha por unidade que votou; cada unidade só tem um registro de voto (substituído ao reenviar). */
       votesByUnit: [...byUnit.values()],
     };
   }
 
   /**
-   * Titular do condomínio ou síndico (participante): podem registar voto em nome
+   * Titular do condomínio ou síndico (participante): podem registrar voto em nome
    * da própria unidade ou de qualquer outra; fora do prazo de votação quando aplicável.
    * (Subsíndico/admin seguem regras de morador neste fluxo.)
    */
@@ -421,14 +421,15 @@ export class PlanningPollsService {
     unit: Unit,
     userId: string,
   ): Promise<void> {
-    const ownerId = unit.ownerPersonId;
-    const respId = unit.responsiblePersonId;
-    const ids = [ownerId, respId].filter(Boolean) as string[];
-    if (ids.length === 0) {
+    const personIds = [
+      unit.ownerPersonId,
+      ...(unit.responsibleLinks ?? []).map((l) => l.personId),
+    ].filter(Boolean) as string[];
+    if (personIds.length === 0) {
       throw new ForbiddenException('Unidade sem representante definido.');
     }
     const people = await this.personRepo.find({
-      where: { id: In(ids) },
+      where: { id: In(personIds) },
     });
     const ok = people.some((p) => p.userId === userId);
     if (!ok) {
@@ -468,13 +469,14 @@ export class PlanningPollsService {
         poll.status !== PlanningPollStatus.Closed
       ) {
         throw new BadRequestException(
-          'Como titular ou síndico, só é possível registar votos em rascunho, com votação aberta ou encerrada (antes da deliberação final).',
+          'Como titular ou síndico, só é possível registrar votos em rascunho, com votação aberta ou encerrada (antes da deliberação final).',
         );
       }
     }
 
     const unit = await this.unitRepo.findOne({
       where: { id: dto.unitId },
+      relations: { responsibleLinks: { person: true }, ownerPerson: true },
     });
     if (!unit) {
       throw new NotFoundException('Unidade não encontrada.');
@@ -547,7 +549,7 @@ export class PlanningPollsService {
     }
     const units = await this.unitRepo.find({
       where: { groupingId: In(gids) },
-      relations: { ownerPerson: true, responsiblePerson: true },
+      relations: { ownerPerson: true, responsibleLinks: { person: true } },
       order: { identifier: 'ASC' },
     });
     if (await this.canVoteForAnyUnit(condominiumId, userId)) {

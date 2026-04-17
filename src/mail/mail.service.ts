@@ -27,7 +27,7 @@ export type CondominiumMemberInviteMail = {
   inviteLink: string;
   condominiumName: string;
   unitIdentifier: string;
-  /** Conta já existente: texto do e-mail pede confirmação pelo link, sem registo. */
+  /** Conta já existente: texto do e-mail pede confirmação pelo link, sem cadastro. */
   existingAccount?: boolean;
 };
 
@@ -39,7 +39,7 @@ export class MailService {
 
   async sendUnitPersonInvite(params: UnitPersonInviteMail): Promise<void> {
     const subject = `Convite — ${params.condominiumName} · unidade ${params.unitIdentifier}`;
-    const text = `Foi convidado como ${params.roleDescription} nesta unidade.\n\nCondomínio: ${params.condominiumName}\nUnidade: ${params.unitIdentifier}\n\nPara concluir o cadastro e associar a sua conta, aceda a:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
+    const text = `Você foi convidado(a) como ${params.roleDescription} nesta unidade.\n\nCondomínio: ${params.condominiumName}\nUnidade: ${params.unitIdentifier}\n\nPara concluir o cadastro e associar a sua conta, acesse:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {
@@ -79,8 +79,8 @@ export class MailService {
   ): Promise<void> {
     const subject = `Convite — ${params.condominiumName} · unidade ${params.unitIdentifier}`;
     const text = params.existingAccount
-      ? `Foi convidado(a) a ser responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nComo já tem conta neste email, abra o link para confirmar a associação à unidade (não é necessário criar nova conta):\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`
-      : `Foi convidado como responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nPara criar a sua conta e confirmar a associação à unidade, abra:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
+      ? `Você foi convidado(a) a ser responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nComo já tem conta neste e-mail, abra o link para confirmar a associação à unidade (não é necessário criar nova conta):\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`
+      : `Você foi convidado(a) como responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nPara criar a sua conta e confirmar a associação à unidade, abra:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {
@@ -136,7 +136,7 @@ export class MailService {
       links.length > 0 ? `\n\n${links.join('\n')}\n` : '\n';
 
     const subject = `Mensalidade da plataforma — ${params.condominiumName} (venc. ${params.dueDate})`;
-    const text = `Olá,\n\nFoi gerada a mensalidade SaaS do condomínio «${params.condominiumName}».\n\nMês de referência: ${params.referenceMonth}\nValor: ${amount} ${cur}\nData de vencimento: ${params.dueDate}\n${linksBlock}\nPode pagar até à data de vencimento. Em caso de dúvida, contacte o suporte.\n\nSe não esperava este e-mail, ignore.`;
+    const text = `Olá,\n\nFoi gerada a mensalidade SaaS do condomínio «${params.condominiumName}».\n\nMês de referência: ${params.referenceMonth}\nValor: ${amount} ${cur}\nData de vencimento: ${params.dueDate}\n${linksBlock}\nVocê pode pagar até a data de vencimento. Em caso de dúvida, entre em contato com o suporte.\n\nSe não esperava este e-mail, ignore.`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {
@@ -172,8 +172,8 @@ export class MailService {
   }
 
   async sendPasswordResetCode(to: string, code: string): Promise<void> {
-    const subject = 'Código para redefinir a sua senha — Meu Condomínio';
-    const text = `O seu código para redefinir a senha: ${code}\n\nNão o partilhe. Válido por 10 minutos.\n\nSe não pediu esta alteração, ignore este email.`;
+    const subject = 'Código para redefinir sua senha — Meu Condomínio';
+    const text = `Seu código para redefinir a senha: ${code}\n\nNão compartilhe. Válido por 10 minutos.\n\nSe você não pediu esta alteração, ignore este e-mail.`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {

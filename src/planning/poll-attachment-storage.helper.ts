@@ -61,15 +61,15 @@ export class PollAttachmentStorageHelper {
   ): Promise<string> {
     if (!this.isAllowedMime(mimeType)) {
       throw new BadRequestException(
-        'Tipo de ficheiro não permitido. Use PDF, imagem, Word ou texto.',
+        'Tipo de arquivo não permitido. Use PDF, imagem, Word ou texto.',
       );
     }
     if (buffer.length > MAX_BYTES) {
-      throw new BadRequestException('Ficheiro muito grande (máx. 20 MB).');
+      throw new BadRequestException('Arquivo muito grande (máx. 20 MB).');
     }
     const ext = this.extForMime(mimeType);
     if (!ext) {
-      throw new BadRequestException('Tipo de ficheiro inválido.');
+      throw new BadRequestException('Tipo de arquivo inválido.');
     }
     const id = randomUUID();
     const relativeKey = `poll-attachments/${id}.${ext}`;
@@ -112,7 +112,7 @@ export class PollAttachmentStorageHelper {
     try {
       await fs.unlink(full);
     } catch {
-      /* ficheiro já ausente */
+      /* arquivo já ausente */
     }
   }
 }

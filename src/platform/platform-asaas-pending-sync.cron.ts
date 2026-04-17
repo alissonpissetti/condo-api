@@ -26,7 +26,7 @@ export class PlatformAsaasPendingSyncCronService {
       const r = await this.billingAsaas.syncPendingChargesFromAsaas();
       if (r.updated > 0 || r.errors.length > 0) {
         this.logger.log(
-          `Asaas sync pendente: verificadas=${r.checked} actualizadas=${r.updated} erros=${r.errors.length}`,
+          `Asaas sync pendente: verificadas=${r.checked} atualizadas=${r.updated} erros=${r.errors.length}`,
         );
       }
     } catch (e) {

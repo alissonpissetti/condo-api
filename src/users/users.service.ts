@@ -39,6 +39,32 @@ export class UsersService {
     return this.usersRepo.findOne({ where: { phone } });
   }
 
+  /**
+   * Aceitar convite com usuário já existente: confirma o mesmo celular da conta
+   * ou preenche se ainda não existia.
+   */
+  async assertOrSetPhoneForInviteAccept(
+    user: User,
+    phoneNorm: string,
+  ): Promise<void> {
+    if (user.phone) {
+      if (user.phone !== phoneNorm) {
+        throw new BadRequestException(
+          'O celular informado não coincide com o cadastro da sua conta. Entre e atualize em «Meus dados», se necessário.',
+        );
+      }
+      return;
+    }
+    const taken = await this.findByPhone(phoneNorm);
+    if (taken && taken.id !== user.id) {
+      throw new ConflictException(
+        'Este celular já está cadastrado em outra conta.',
+      );
+    }
+    user.phone = phoneNorm;
+    await this.usersRepo.save(user);
+  }
+
   async create(data: {
     email: string;
     passwordHash: string;
@@ -58,10 +84,39 @@ export class UsersService {
     return this.usersRepo.findOne({ where: { id } });
   }
 
+  /**
+   * Atualiza telefone da conta por ação de gestão (ex.: síndico).
+   * `null` ou string vazia após trim limpa o número.
+   */
+  async setPhoneForUserByStaff(
+    targetUserId: string,
+    phoneRaw: string | null | undefined,
+  ): Promise<void> {
+    const user = await this.findById(targetUserId);
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+    const trimmed = (phoneRaw ?? '').trim();
+    const phoneNorm = trimmed ? normalizeBrCellphone(trimmed) : null;
+    if (trimmed && !phoneNorm) {
+      throw new BadRequestException('Número de telefone inválido.');
+    }
+    if (phoneNorm) {
+      const phoneTaken = await this.findByPhone(phoneNorm);
+      if (phoneTaken && phoneTaken.id !== targetUserId) {
+        throw new ConflictException(
+          'Este número já está associado a outra conta.',
+        );
+      }
+    }
+    user.phone = phoneNorm;
+    await this.usersRepo.save(user);
+  }
+
   async setPassword(userId: string, plainPassword: string): Promise<void> {
     const user = await this.findById(userId);
     if (!user) {
-      throw new NotFoundException('Utilizador não encontrado.');
+      throw new NotFoundException('Usuário não encontrado.');
     }
     user.passwordHash = await bcrypt.hash(plainPassword, 10);
     await this.usersRepo.save(user);
@@ -76,7 +131,7 @@ export class UsersService {
   }> {
     const user = await this.findById(userId);
     if (!user) {
-      throw new NotFoundException('Utilizador não encontrado.');
+      throw new NotFoundException('Usuário não encontrado.');
     }
     const person = await this.personRepo.findOne({
       where: { userId: user.id },
@@ -103,7 +158,7 @@ export class UsersService {
   }> {
     const user = await this.findById(userId);
     if (!user) {
-      throw new NotFoundException('Utilizador não encontrado.');
+      throw new NotFoundException('Usuário não encontrado.');
     }
     const emailNorm = dto.email.trim().toLowerCase();
     const phoneNorm = normalizeBrCellphone(dto.phone);
@@ -184,7 +239,7 @@ export class UsersService {
     }
     const row = await this.personRepo.findOne({ where: { cpf } });
     if (row && row.id !== excludePersonId) {
-      throw new ConflictException('CPF já registado noutra ficha de pessoa.');
+      throw new ConflictException('CPF já cadastrado em outra ficha de pessoa.');
     }
   }
 
@@ -266,7 +321,7 @@ export class UsersService {
     if (!person && !fullNameIn) {
       if (hasAddressIntent) {
         throw new BadRequestException(
-          'Indique o nome completo para registar o endereço na ficha.',
+          'Indique o nome completo para cadastrar o endereço na ficha.',
         );
       }
       return;
@@ -299,7 +354,7 @@ export class UsersService {
           /Duplicate|duplicate|UQ_people|unique/i.test(String(e.message))
         ) {
           throw new ConflictException(
-            'Email ou CPF já registado noutra ficha de pessoa.',
+            'E-mail ou CPF já cadastrado em outra ficha de pessoa.',
           );
         }
         throw e;
@@ -341,7 +396,7 @@ export class UsersService {
         /Duplicate|duplicate|UQ_people|unique/i.test(String(e.message))
       ) {
         throw new ConflictException(
-          'Email ou CPF já registado noutra ficha de pessoa.',
+          'E-mail ou CPF já cadastrado em outra ficha de pessoa.',
         );
       }
       throw e;

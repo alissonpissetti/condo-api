@@ -29,7 +29,7 @@ export class GovernanceController {
   constructor(private readonly governance: GovernanceService) {}
 
   @Get('access')
-  @ApiOperation({ summary: 'Papel do utilizador neste condomínio' })
+  @ApiOperation({ summary: 'Papel do usuário neste condomínio' })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   async access(
     @CurrentUser() userId: string,
@@ -49,11 +49,26 @@ export class GovernanceController {
     return this.governance.listParticipants(condominiumId);
   }
 
+  @Get('participants/eligible-for-governance')
+  @ApiOperation({
+    summary:
+      'Listar contas elegíveis para papéis (titular + responsáveis nas unidades)',
+    description:
+      'Titular da conta e pessoas com usuário associado que figuram como responsáveis em pelo menos uma unidade.',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  listEligibleForGovernance(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+  ) {
+    return this.governance.listEligibleForGovernance(condominiumId, userId);
+  }
+
   @Get('participants/lookup-user')
   @ApiOperation({
     summary: 'Resolver e-mail para userId (atribuir síndico/admin)',
     description:
-      'A conta tem de existir e estar ligada ao condomínio (titular, participante ou unidade).',
+      'A conta tem de existir e ser o titular ou responsável identificado em alguma unidade.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'email', required: true })
