@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   StreamableFile,
   UploadedFile,
@@ -20,6 +21,7 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -27,6 +29,7 @@ import { CurrentUser } from '../common/current-user.decorator';
 import { CastVoteDto } from './dto/cast-vote.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
 import { DecidePollDto } from './dto/decide-poll.dto';
+import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollsService } from './planning-polls.service';
 
@@ -38,12 +41,21 @@ export class PlanningPollsController {
   constructor(private readonly polls: PlanningPollsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Listar pautas' })
+  @ApiOperation({
+    summary: 'Listar pautas',
+    description:
+      'Ordenação: data de competência (decrescente), depois data de registro. Sem «q»: filtra por data de registro (padrão últimos 30 dias). Com «q»: busca por título e ignora datas. Máximo 100 itens.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'registeredFrom', required: false })
+  @ApiQuery({ name: 'registeredTo', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   list(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Query() query: ListPlanningPollsQueryDto,
   ) {
-    return this.polls.list(condominiumId, userId);
+    return this.polls.list(condominiumId, userId, query);
   }
 
   @Get('my-units')
@@ -84,7 +96,10 @@ export class PlanningPollsController {
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }),
   )
-  @ApiOperation({ summary: 'Anexar arquivo à pauta (PDF, imagem, Word, texto)' })
+  @ApiOperation({
+    summary:
+      'Anexar arquivo à pauta (PDF, imagem, Word, texto ou áudio Opus / Ogg, ex.: .opus do WhatsApp)',
+  })
   @ApiParam({ name: 'pollId' })
   uploadAttachment(
     @CurrentUser() userId: string,
@@ -145,7 +160,11 @@ export class PlanningPollsController {
   }
 
   @Patch(':pollId')
-  @ApiOperation({ summary: 'Atualizar pauta' })
+  @ApiOperation({
+    summary: 'Atualizar pauta',
+    description:
+      'Em rascunho: pode alterar `assemblyType` (ordinária, eleição ou Ata), `allowMultiple` e substituir `options`. Tipo «Ata» remove opções; ao sair de «Ata», envie pelo menos duas opções.',
+  })
   update(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -173,6 +192,19 @@ export class PlanningPollsController {
     @Param('pollId', ParseUUIDPipe) pollId: string,
   ) {
     return this.polls.close(condominiumId, pollId, userId);
+  }
+
+  @Post(':pollId/finalize-ata')
+  @ApiOperation({
+    summary:
+      'Concluir pauta tipo «Ata» (sem opções de voto): marca como decidida após encerramento.',
+  })
+  finalizeAta(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.finalizeAtaPoll(condominiumId, pollId, userId);
   }
 
   @Post(':pollId/decide')

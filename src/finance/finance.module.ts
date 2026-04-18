@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
 import { PlanningModule } from '../planning/planning.module';
+import { UsersModule } from '../users/users.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { Unit } from '../units/unit.entity';
@@ -41,6 +42,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     ]),
     CondominiumsModule,
     PlanningModule,
+    UsersModule,
   ],
   controllers: [
     FinancialFundsController,

@@ -64,4 +64,12 @@ export class MeResponseDto {
       'Ficha de pessoa associada à conta (nome, CPF, endereço). Null até completar o perfil.',
   })
   person: MePersonDto | null;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    nullable: true,
+    description:
+      'Data da última gravação da assinatura digital (PNG). Null se ainda não existir.',
+  })
+  signatureRecordedAt: Date | null;
 }

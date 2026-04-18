@@ -21,7 +21,10 @@ export function resolveMeuCondominioFooterLogoPath(): string | null {
 }
 
 export type StampPlatformFooterOptions = {
-  /** Se false, omite o texto do domínio (mantém linha e, se existir, o logo). */
+  /**
+   * Se true, acrescenta o rótulo textual do domínio sob o logo.
+   * Por defeito fica **desligado** — só o logo do produto no rodapé.
+   */
   showDomainLabel?: boolean;
 };
 
@@ -96,7 +99,8 @@ export function installPlatformWatermarkUnderAllContent(
 }
 
 /**
- * Desenha rodapé em todas as páginas: linha discreta, marca alinhada à direita.
+ * Desenha rodapé em todas as páginas: linha discreta e **só o logo** do produto à direita
+ * (sem texto de domínio, salvo `showDomainLabel: true`).
  * Exige `bufferPages: true` no PDFDocument. Usa `page.margins.bottom` como faixa útil.
  */
 export function stampPlatformFooterOnAllPages(
@@ -104,13 +108,13 @@ export function stampPlatformFooterOnAllPages(
   opts?: StampPlatformFooterOptions,
 ): void {
   /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- PDFKit */
-  const showDomainLabel = opts?.showDomainLabel !== false;
+  const showDomainLabel = opts?.showDomainLabel === true;
   const logoPath = resolveMeuCondominioFooterLogoPath();
   const range = doc.bufferedPageRange();
   const label = 'meucondominio.cloud';
-  const logoMaxW = 56;
-  const logoMaxH = 22;
-  const rightPad = 10;
+  const logoMaxW = showDomainLabel ? 56 : 76;
+  const logoMaxH = showDomainLabel ? 22 : 30;
+  const rightPad = 12;
   const lineInset = 2;
 
   for (let i = range.start; i < range.start + range.count; i++) {
@@ -121,19 +125,19 @@ export function stampPlatformFooterOnAllPages(
     const mb = margins.bottom;
 
     const bandTop = height - mb;
-    const lineY = bandTop + 8;
+    const lineY = bandTop + 6;
     const innerLeft = ml + lineInset;
     const innerRight = width - mr - lineInset;
     const blockRight = width - mr - rightPad;
 
     doc.save();
-    doc.lineWidth(0.45).strokeColor('#d0d0d0');
+    doc.lineWidth(0.35).strokeColor('#e2e2e2');
     doc.moveTo(innerLeft, lineY).lineTo(innerRight, lineY).stroke();
 
     let labelY = lineY + 12;
     try {
       if (logoPath) {
-        const logoTop = lineY + 6;
+        const logoTop = lineY + 5;
         const logoX = blockRight - logoMaxW;
         doc.image(logoPath, logoX, logoTop, { width: logoMaxW });
         labelY = logoTop + logoMaxH + 4;

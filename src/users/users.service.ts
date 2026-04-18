@@ -128,6 +128,7 @@ export class UsersService {
     phone: string | null;
     createdAt: Date;
     person: MePersonDto | null;
+    signatureRecordedAt: Date | null;
   }> {
     const user = await this.findById(userId);
     if (!user) {
@@ -143,7 +144,87 @@ export class UsersService {
       phone: user.phone,
       createdAt: user.createdAt,
       person: person ? this.serializePerson(person) : null,
+      signatureRecordedAt: user.signatureUpdatedAt ?? null,
     };
+  }
+
+  async putMySignature(userId: string, pngBase64: string): Promise<{
+    id: string;
+    email: string;
+    phone: string | null;
+    createdAt: Date;
+    person: MePersonDto | null;
+    signatureRecordedAt: Date | null;
+  }> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+    const raw = pngBase64.replace(/^data:image\/png;base64,/i, '').trim();
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(raw, 'base64');
+    } catch {
+      throw new BadRequestException('Base64 inválido.');
+    }
+    if (buf.length < 32) {
+      throw new BadRequestException('Imagem demasiado pequena ou vazia.');
+    }
+    if (buf.length > 380_000) {
+      throw new BadRequestException(
+        'Imagem demasiado grande. Reduza a área de desenho ou a resolução.',
+      );
+    }
+    const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (!buf.subarray(0, 8).equals(pngMagic)) {
+      throw new BadRequestException('Formato inválido: é necessário PNG.');
+    }
+    const now = new Date();
+    /**
+     * `repository.update` em vez de `save` na entidade carregada sem `signaturePng`:
+     * com `select: false`, o `.save()` pode omitir o BLOB no UPDATE (MariaDB/MySQL).
+     */
+    await this.usersRepo.update(
+      { id: userId },
+      {
+        signaturePng: buf,
+        signatureUpdatedAt: now,
+      },
+    );
+    return this.getMe(userId);
+  }
+
+  async clearMySignature(userId: string): Promise<{
+    id: string;
+    email: string;
+    phone: string | null;
+    createdAt: Date;
+    person: MePersonDto | null;
+    signatureRecordedAt: Date | null;
+  }> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+    await this.usersRepo
+      .createQueryBuilder()
+      .update(User)
+      .set({ signaturePng: null, signatureUpdatedAt: null })
+      .where('id = :id', { id: userId })
+      .execute();
+    return this.getMe(userId);
+  }
+
+  /** PNG da assinatura digital do utilizador (`null` se não existir). */
+  async getUserSignatureBuffer(userId: string): Promise<Buffer | null> {
+    const row = await this.usersRepo
+      .createQueryBuilder('u')
+      .select(['u.id'])
+      .addSelect('u.signaturePng')
+      .where('u.id = :id', { id: userId })
+      .getOne();
+    const b = row?.signaturePng;
+    return b && b.length > 0 ? b : null;
   }
 
   async updateProfile(
@@ -155,6 +236,7 @@ export class UsersService {
     phone: string | null;
     createdAt: Date;
     person: MePersonDto | null;
+    signatureRecordedAt: Date | null;
   }> {
     const user = await this.findById(userId);
     if (!user) {

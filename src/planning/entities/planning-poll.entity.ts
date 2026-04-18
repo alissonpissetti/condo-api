@@ -48,6 +48,10 @@ export class PlanningPoll {
   @Column({ name: 'allow_multiple', type: 'boolean', default: false })
   allowMultiple: boolean;
 
+  /** Data civil de competência da pauta (AAAA-MM-DD). */
+  @Column({ name: 'competence_date', type: 'date' })
+  competenceDate: string;
+
   @Column({ name: 'decided_option_id', type: 'varchar', length: 36, nullable: true })
   decidedOptionId: string | null;
 

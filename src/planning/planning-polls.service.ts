@@ -14,6 +14,7 @@ import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
 import { CastVoteDto } from './dto/cast-vote.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
+import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollAttachment } from './entities/planning-poll-attachment.entity';
 import { PlanningPollOption } from './entities/planning-poll-option.entity';
@@ -55,6 +56,16 @@ export class PlanningPollsService {
     this.attachmentStorage = new PollAttachmentStorageHelper(config);
   }
 
+  private normalizeCompetenceYmdOrThrow(raw: string): string {
+    const s = raw.trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      throw new BadRequestException(
+        'Data de competência inválida; use o formato AAAA-MM-DD.',
+      );
+    }
+    return s;
+  }
+
   private normalizePollRelations(poll: PlanningPoll): void {
     if (poll.options?.length) {
       poll.options.sort((a, b) => a.sortOrder - b.sortOrder);
@@ -90,13 +101,87 @@ export class PlanningPollsService {
     return poll;
   }
 
-  async list(condominiumId: string, userId: string) {
+  private defaultRegisteredRangeUtc(): { from: Date; to: Date } {
+    const now = new Date();
+    const toYmd = now.toISOString().slice(0, 10);
+    const to = new Date(`${toYmd}T23:59:59.999Z`);
+    const from = new Date(`${toYmd}T00:00:00.000Z`);
+    from.setUTCDate(from.getUTCDate() - 29);
+    return { from, to };
+  }
+
+  private parseUtcDayStart(ymd: string): Date {
+    return new Date(`${ymd.slice(0, 10)}T00:00:00.000Z`);
+  }
+
+  private parseUtcDayEnd(ymd: string): Date {
+    return new Date(`${ymd.slice(0, 10)}T23:59:59.999Z`);
+  }
+
+  async list(
+    condominiumId: string,
+    userId: string,
+    query: ListPlanningPollsQueryDto = {},
+  ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    const limit = Math.min(Math.max(query.limit ?? 100, 1), 100);
+    const qRaw = query.q?.trim();
+
+    const qb = this.pollRepo
+      .createQueryBuilder('poll')
+      .where('poll.condominiumId = :cid', { cid: condominiumId });
+
+    if (qRaw) {
+      const safe = qRaw.replace(/[%_]/g, '').trim();
+      if (!safe) {
+        throw new BadRequestException('Indique texto para buscar no título.');
+      }
+      qb.andWhere('LOWER(poll.title) LIKE :pat', {
+        pat: `%${safe.toLowerCase()}%`,
+      });
+    } else {
+      const hasFrom = !!query.registeredFrom?.trim();
+      const hasTo = !!query.registeredTo?.trim();
+      if (hasFrom !== hasTo) {
+        throw new BadRequestException(
+          'Informe «registeredFrom» e «registeredTo», ou omita ambos para o período padrão (30 dias).',
+        );
+      }
+      let from: Date;
+      let to: Date;
+      if (hasFrom && hasTo) {
+        from = this.parseUtcDayStart(query.registeredFrom!);
+        to = this.parseUtcDayEnd(query.registeredTo!);
+        if (from.getTime() > to.getTime()) {
+          throw new BadRequestException(
+            'A data inicial do registro não pode ser posterior à data final.',
+          );
+        }
+      } else {
+        ({ from, to } = this.defaultRegisteredRangeUtc());
+      }
+      qb.andWhere('poll.createdAt >= :rFrom', { rFrom: from }).andWhere(
+        'poll.createdAt <= :rTo',
+        { rTo: to },
+      );
+    }
+
+    const ordered = await qb
+      .orderBy('poll.competenceDate', 'DESC')
+      .addOrderBy('poll.createdAt', 'DESC')
+      .addOrderBy('poll.id', 'DESC')
+      .take(limit)
+      .getMany();
+    const ids = ordered.map((p) => p.id);
+    if (ids.length === 0) {
+      return [];
+    }
     const list = await this.pollRepo.find({
-      where: { condominiumId },
-      order: { createdAt: 'DESC' },
+      where: { id: In(ids), condominiumId },
       relations: { options: true, attachments: true },
     });
+    const order = new Map(ids.map((id, i) => [id, i]));
+    list.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     for (const p of list) {
       this.normalizePollRelations(p);
     }
@@ -125,6 +210,25 @@ export class PlanningPollsService {
         'Eleições utilizam escolha única por unidade.',
       );
     }
+    if (dto.assemblyType === AssemblyType.Ata) {
+      if (allowMultiple) {
+        throw new BadRequestException(
+          'Pauta «Ata» não utiliza escolha múltipla.',
+        );
+      }
+      if (dto.options?.length) {
+        throw new BadRequestException(
+          'Pauta «Ata» não admite opções de voto no sistema.',
+        );
+      }
+    } else if (!dto.options || dto.options.length < 2) {
+      throw new BadRequestException('Indique pelo menos duas opções de voto.');
+    }
+    const optionInputs =
+      dto.assemblyType === AssemblyType.Ata ? [] : dto.options;
+    const competenceSrc =
+      dto.competenceDate?.trim() || new Date().toISOString().slice(0, 10);
+    const competenceYmd = this.normalizeCompetenceYmdOrThrow(competenceSrc);
     const poll = this.pollRepo.create({
       id: randomUUID(),
       condominiumId,
@@ -132,12 +236,13 @@ export class PlanningPollsService {
       body: sanitizePollBodyRich(dto.body) ?? null,
       opensAt: opens,
       closesAt: closes,
+      competenceDate: competenceYmd,
       status: PlanningPollStatus.Draft,
       assemblyType: dto.assemblyType,
       allowMultiple,
       decidedOptionId: null,
       createdByUserId: userId,
-      options: dto.options.map((o, i) =>
+      options: optionInputs.map((o, i) =>
         this.optionRepo.create({
           id: randomUUID(),
           label: o.label,
@@ -157,19 +262,81 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    if (dto.title !== undefined) {
+    const prevAssembly = poll.assemblyType;
+    const touchesAssemblyConfig =
+      dto.assemblyType !== undefined ||
+      dto.allowMultiple !== undefined ||
+      dto.options !== undefined;
+    if (touchesAssemblyConfig) {
       if (poll.status !== PlanningPollStatus.Draft) {
-        throw new BadRequestException('Título só é editável em rascunho.');
+        throw new BadRequestException(
+          'Tipo de assembleia, opções e modo de votação só são editáveis em rascunho.',
+        );
+      }
+    }
+
+    if (touchesAssemblyConfig && poll.status === PlanningPollStatus.Draft) {
+      const nextAssembly = dto.assemblyType ?? poll.assemblyType;
+      let nextAllow = dto.allowMultiple ?? poll.allowMultiple;
+      if (
+        nextAssembly === AssemblyType.Election ||
+        nextAssembly === AssemblyType.Ata
+      ) {
+        nextAllow = false;
+      }
+      if (nextAssembly === AssemblyType.Ata) {
+        if (dto.options && dto.options.length > 0) {
+          throw new BadRequestException(
+            'Pauta «Ata» não admite opções de voto no sistema.',
+          );
+        }
+      } else if (dto.options !== undefined) {
+        const labels = dto.options
+          .map((o) => o.label.trim())
+          .filter(Boolean);
+        if (labels.length < 2) {
+          throw new BadRequestException(
+            'Indique pelo menos duas opções de voto.',
+          );
+        }
+      } else if (
+        prevAssembly === AssemblyType.Ata &&
+        dto.assemblyType !== undefined &&
+        dto.assemblyType !== AssemblyType.Ata &&
+        dto.options === undefined
+      ) {
+        throw new BadRequestException(
+          'Ao sair do tipo «Ata», envie a lista «options» com pelo menos duas opções.',
+        );
+      }
+      if (nextAssembly === AssemblyType.Election && nextAllow) {
+        throw new BadRequestException(
+          'Eleições utilizam escolha única por unidade.',
+        );
+      }
+    }
+
+    if (dto.title !== undefined) {
+      const canEditTitle =
+        poll.status === PlanningPollStatus.Draft ||
+        poll.status === PlanningPollStatus.Open ||
+        poll.status === PlanningPollStatus.Closed;
+      if (!canEditTitle) {
+        throw new BadRequestException(
+          'Título só pode ser editado em rascunho, com pauta aberta ou encerrada (antes da decisão final).',
+        );
       }
       poll.title = dto.title.trim();
     }
     if (dto.body !== undefined) {
-      if (
-        poll.status !== PlanningPollStatus.Draft &&
-        poll.status !== PlanningPollStatus.Open
-      ) {
+      const canEditBody =
+        poll.status === PlanningPollStatus.Draft ||
+        poll.status === PlanningPollStatus.Open ||
+        poll.status === PlanningPollStatus.Closed ||
+        poll.status === PlanningPollStatus.Decided;
+      if (!canEditBody) {
         throw new BadRequestException(
-          'Descrição só é editável em rascunho ou com votação aberta.',
+          'Descrição não pode ser alterada neste estado da pauta.',
         );
       }
       poll.body = sanitizePollBodyRich(dto.body) ?? null;
@@ -192,6 +359,56 @@ export class PlanningPollsService {
         poll.closesAt = closes;
       }
     }
+    if (dto.competenceDate !== undefined) {
+      const canEditCompetence =
+        poll.status === PlanningPollStatus.Draft ||
+        poll.status === PlanningPollStatus.Open ||
+        poll.status === PlanningPollStatus.Closed ||
+        poll.status === PlanningPollStatus.Decided;
+      if (!canEditCompetence) {
+        throw new BadRequestException(
+          'Data de competência não pode ser alterada neste estado.',
+        );
+      }
+      poll.competenceDate = this.normalizeCompetenceYmdOrThrow(
+        dto.competenceDate,
+      );
+    }
+    if (dto.assemblyType !== undefined) {
+      poll.assemblyType = dto.assemblyType;
+    }
+    if (dto.allowMultiple !== undefined) {
+      poll.allowMultiple = dto.allowMultiple;
+    }
+    if (
+      poll.assemblyType === AssemblyType.Election ||
+      poll.assemblyType === AssemblyType.Ata
+    ) {
+      poll.allowMultiple = false;
+    }
+
+    if (touchesAssemblyConfig && poll.status === PlanningPollStatus.Draft) {
+      if (poll.assemblyType === AssemblyType.Ata) {
+        await this.optionRepo.delete({ pollId: poll.id });
+        poll.decidedOptionId = null;
+      } else if (dto.options !== undefined) {
+        const labels = dto.options
+          .map((o) => o.label.trim())
+          .filter(Boolean);
+        await this.optionRepo.delete({ pollId: poll.id });
+        poll.decidedOptionId = null;
+        const rows = labels.map((label, i) =>
+          this.optionRepo.create({
+            id: randomUUID(),
+            pollId: poll.id,
+            label,
+            sortOrder: i,
+          }),
+        );
+        await this.optionRepo.save(rows);
+      }
+    }
+
     if (dto.status !== undefined) {
       poll.status = dto.status;
     }
@@ -200,6 +417,25 @@ export class PlanningPollsService {
     }
     const saved = await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, saved.id);
+  }
+
+  /**
+   * Alguns clientes enviam `application/octet-stream` (ou MIME vazio) para ficheiros
+   * `.opus` exportados do WhatsApp. Normaliza para um tipo aceite pelo armazém.
+   */
+  private normalizePollAttachmentMimeType(file: Express.Multer.File): string {
+    let mime = (file.mimetype ?? '').trim().toLowerCase();
+    if (!mime) {
+      mime = 'application/octet-stream';
+    }
+    if (this.attachmentStorage.isAllowedMime(mime)) {
+      return mime;
+    }
+    const name = (file.originalname ?? '').toLowerCase();
+    if (name.endsWith('.opus') || name.endsWith('.oga')) {
+      return 'audio/ogg';
+    }
+    return file.mimetype;
   }
 
   async addAttachment(
@@ -214,10 +450,16 @@ export class PlanningPollsService {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
     this.assertCanEditAttachments(poll);
+    const mimeType = this.normalizePollAttachmentMimeType(file);
+    if (!this.attachmentStorage.isAllowedMime(mimeType)) {
+      throw new BadRequestException(
+        'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto ou áudio (ex.: .opus).',
+      );
+    }
     const storageKey = await this.attachmentStorage.saveFile(
       condominiumId,
       file.buffer,
-      file.mimetype,
+      mimeType,
     );
     const maxRow = await this.attachmentRepo
       .createQueryBuilder('a')
@@ -235,7 +477,7 @@ export class PlanningPollsService {
       pollId: poll.id,
       storageKey,
       originalFilename: orig || 'anexo',
-      mimeType: file.mimetype,
+      mimeType,
       sizeBytes: file.size,
       sortOrder: nextOrder,
       uploadedByUserId: userId,
@@ -311,6 +553,25 @@ export class PlanningPollsService {
     return this.loadPollForCondo(condominiumId, pollId);
   }
 
+  async finalizeAtaPoll(condominiumId: string, pollId: string, userId: string) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.assemblyType !== AssemblyType.Ata) {
+      throw new BadRequestException(
+        'Este encerramento só se aplica a pautas do tipo «Ata».',
+      );
+    }
+    if (poll.status !== PlanningPollStatus.Closed) {
+      throw new BadRequestException(
+        'Encerre a pauta antes de concluir o registo da ata.',
+      );
+    }
+    poll.status = PlanningPollStatus.Decided;
+    poll.decidedOptionId = null;
+    await this.pollRepo.save(poll);
+    return this.loadPollForCondo(condominiumId, pollId);
+  }
+
   async decide(
     condominiumId: string,
     pollId: string,
@@ -319,6 +580,11 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.assemblyType === AssemblyType.Ata) {
+      throw new BadRequestException(
+        'Pautas «Ata» não têm opção vencedora; use «Concluir registo da ata».',
+      );
+    }
     if (poll.status !== PlanningPollStatus.Closed) {
       throw new BadRequestException('Encerre a pauta antes de decidir.');
     }
@@ -447,6 +713,11 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (!(poll.options ?? []).length) {
+      throw new BadRequestException(
+        'Esta pauta não admite votação eletrônica.',
+      );
+    }
     const extendedUnitVote = await this.canVoteForAnyUnit(
       condominiumId,
       userId,

@@ -22,6 +22,7 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { CreateMeetingMinutesTemplateDto } from './dto/create-meeting-minutes-template.dto';
 import { PublishElectionDocumentDto } from './dto/publish-document.dto';
 import { PlanningDocumentsService } from './planning-documents.service';
 
@@ -31,6 +32,23 @@ import { PlanningDocumentsService } from './planning-documents.service';
 @UseGuards(JwtAuthGuard)
 export class PlanningDocumentsController {
   constructor(private readonly documents: PlanningDocumentsService) {}
+
+  @Post('documents/meeting-minutes-template')
+  @ApiOperation({
+    summary:
+      'Criar ata de reunião (modelo PDF): reuniões administrativas ou assembleias sem usar a pauta eletrónica.',
+  })
+  createMeetingMinutesTemplate(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: CreateMeetingMinutesTemplateDto,
+  ) {
+    return this.documents.generateMeetingMinutesTemplate(
+      condominiumId,
+      userId,
+      dto,
+    );
+  }
 
   @Get('documents')
   @ApiOperation({ summary: 'Listar documentos' })

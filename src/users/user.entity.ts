@@ -36,4 +36,23 @@ export class User {
   @ManyToOne(() => SaasPlan, (p) => p.users, { nullable: true, onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'plan_id' })
   plan: SaasPlan | null;
+
+  /**
+   * PNG da assinatura desenhada pelo utilizador (não carregada em `find` por defeito —
+   * usar query com `addSelect('u.signaturePng')`).
+   */
+  @Column({ name: 'signature_png', type: 'blob', nullable: true, select: false })
+  signaturePng: Buffer | null;
+
+  /**
+   * `datetime` (e não `timestamp` / `timestamptz`) para compatibilidade com MySQL/MariaDB.
+   * Precisão 6 alinha à migração `datetime(6)` / `TIMESTAMP(6)` no Postgres.
+   */
+  @Column({
+    name: 'signature_updated_at',
+    type: 'datetime',
+    precision: 6,
+    nullable: true,
+  })
+  signatureUpdatedAt: Date | null;
 }

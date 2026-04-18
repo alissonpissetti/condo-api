@@ -9,6 +9,7 @@ import { resolveTypeOrmConnectionOptions } from './database/connection-credentia
 import { GroupingsModule } from './groupings/groupings.module';
 import { PeopleModule } from './people/people.module';
 import { FinanceModule } from './finance/finance.module';
+import { CommunicationsModule } from './communications/communications.module';
 import { PlanningModule } from './planning/planning.module';
 import { StorageModule } from './storage/storage.module';
 import { UnitsModule } from './units/units.module';
@@ -46,6 +47,7 @@ import { UsersModule } from './users/users.module';
     UnitsModule,
     FinanceModule,
     PlanningModule,
+    CommunicationsModule,
     PlatformModule,
   ],
 })

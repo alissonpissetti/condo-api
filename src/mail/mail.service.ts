@@ -207,4 +207,45 @@ export class MailService {
       text,
     });
   }
+
+  /** Informativo do condomínio (HTML + texto alternativo). */
+  async sendCommunicationBroadcast(params: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+  }): Promise<void> {
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    if (!host) {
+      this.logger.warn(
+        `[e-mail não configurado — defina SMTP_HOST] Informativo para ${params.to}\n${params.text}`,
+      );
+      return;
+    }
+
+    const port = parseInt(this.config.get<string>('SMTP_PORT', '587'), 10);
+    const secure =
+      this.config.get<string>('SMTP_SECURE', 'false').toLowerCase() === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
+    const from = this.config.get<string>(
+      'EMAIL_FROM',
+      user ?? 'noreply@localhost',
+    );
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    await transporter.sendMail({
+      from,
+      to: params.to,
+      subject: params.subject,
+      text: params.text,
+      html: params.html,
+    });
+  }
 }

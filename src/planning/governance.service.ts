@@ -147,6 +147,57 @@ export class GovernanceService {
     return [...new Set(raw.map((r) => r.id))];
   }
 
+  /**
+   * Contas de utilizador a considerar como audiência de informativos: titular da
+   * conta condomínio, participantes de governo, e contas ligadas às unidades
+   * (proprietário ou responsável na ficha com `person.userId`).
+   */
+  async listCommunicationAudienceUserIds(
+    condominiumId: string,
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    const condo = await this.condoRepo.findOne({
+      where: { id: condominiumId },
+      select: { ownerId: true },
+    });
+    if (condo?.ownerId) {
+      ids.add(condo.ownerId);
+    }
+    const parts = await this.participantRepo.find({
+      where: { condominiumId },
+      select: { userId: true },
+    });
+    for (const p of parts) {
+      ids.add(p.userId);
+    }
+    const ownerUserRows = await this.unitRepo
+      .createQueryBuilder('u')
+      .distinct(true)
+      .innerJoin('u.grouping', 'g')
+      .innerJoin('u.ownerPerson', 'op')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .andWhere('op.userId IS NOT NULL')
+      .select('op.userId', 'uid')
+      .getRawMany<{ uid: string }>();
+    for (const r of ownerUserRows) {
+      ids.add(r.uid);
+    }
+    const respUserRows = await this.unitRepo
+      .createQueryBuilder('u')
+      .distinct(true)
+      .innerJoin('u.grouping', 'g')
+      .innerJoin('u.responsibleLinks', 'url')
+      .innerJoin('url.person', 'p')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .andWhere('p.userId IS NOT NULL')
+      .select('p.userId', 'uid')
+      .getRawMany<{ uid: string }>();
+    for (const r of respUserRows) {
+      ids.add(r.uid);
+    }
+    return [...ids];
+  }
+
   /** Conta cadastrada como responsável (ficha) em pelo menos uma unidade. */
   private async hasUnitResponsiblePersonLink(
     condominiumId: string,

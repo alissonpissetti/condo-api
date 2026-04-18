@@ -5,7 +5,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 const KEY_RE =
-  /^poll-attachments\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
+  /^communication-attachments\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
 
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
@@ -17,18 +17,23 @@ const MIME_EXT: Record<string, string> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
     'docx',
   'text/plain': 'txt',
-  /** Áudio Opus (ex.: mensagens de voz exportadas do WhatsApp, extensão `.opus`). */
   'audio/ogg': 'opus',
   'audio/opus': 'opus',
-  /** Alguns clientes enviam Ogg genérico sem subtype `opus`. */
   'application/ogg': 'opus',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
 };
+
+const VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+const MAX_BYTES_DEFAULT = 20 * 1024 * 1024;
+const MAX_BYTES_VIDEO = 50 * 1024 * 1024;
 
 const ALLOWED = new Set(Object.keys(MIME_EXT));
 
-const MAX_BYTES = 20 * 1024 * 1024;
-
-export class PollAttachmentStorageHelper {
+export class CommunicationAttachmentStorageHelper {
   private readonly root: string;
 
   constructor(config: ConfigService) {
@@ -59,6 +64,10 @@ export class PollAttachmentStorageHelper {
     return path.join(this.root, condominiumId, safe);
   }
 
+  maxBytesFor(mime: string): number {
+    return VIDEO_MIMES.has(mime) ? MAX_BYTES_VIDEO : MAX_BYTES_DEFAULT;
+  }
+
   async saveFile(
     condominiumId: string,
     buffer: Buffer,
@@ -66,18 +75,21 @@ export class PollAttachmentStorageHelper {
   ): Promise<string> {
     if (!this.isAllowedMime(mimeType)) {
       throw new BadRequestException(
-        'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto ou áudio (ex.: .opus).',
+        'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto, áudio ou vídeo (MP4, WebM, MOV).',
       );
     }
-    if (buffer.length > MAX_BYTES) {
-      throw new BadRequestException('Arquivo muito grande (máx. 20 MB).');
+    const max = this.maxBytesFor(mimeType);
+    if (buffer.length > max) {
+      throw new BadRequestException(
+        `Arquivo muito grande (máx. ${Math.round(max / (1024 * 1024))} MB).`,
+      );
     }
     const ext = this.extForMime(mimeType);
     if (!ext) {
       throw new BadRequestException('Tipo de arquivo inválido.');
     }
     const id = randomUUID();
-    const relativeKey = `poll-attachments/${id}.${ext}`;
+    const relativeKey = `communication-attachments/${id}.${ext}`;
     const full = this.abs(condominiumId, relativeKey);
     await fs.mkdir(path.dirname(full), { recursive: true });
     await fs.writeFile(full, buffer);
@@ -107,19 +119,17 @@ export class PollAttachmentStorageHelper {
     return {
       buffer,
       contentType: mime,
-      filename: path.basename(relativeKey),
+      filename: `anexo.${ext}`,
     };
   }
 
   async deleteFile(condominiumId: string, relativeKey: string): Promise<void> {
-    if (!this.isValidKey(relativeKey)) {
-      throw new BadRequestException('Chave de anexo inválida.');
-    }
+    if (!this.isValidKey(relativeKey)) return;
     const full = this.abs(condominiumId, relativeKey);
     try {
       await fs.unlink(full);
     } catch {
-      /* arquivo já ausente */
+      /* ignore */
     }
   }
 }

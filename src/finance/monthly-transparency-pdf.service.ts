@@ -6,7 +6,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import QRCode from 'qrcode';
 import { Between, In, Repository } from 'typeorm';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
@@ -36,11 +35,6 @@ import { isAllocationRule } from './allocation.types';
 import { distributePositiveCents } from './distribute-cents';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
 import { FundBalanceService } from './fund-balance.service';
-import {
-  buildPixBrCode,
-  sanitizePixKey,
-  sanitizePixReferenceLabel,
-} from './pix-br-code.util';
 
 type UnitCol = {
   unitId: string;
@@ -124,10 +118,11 @@ export class MonthlyTransparencyPdfService {
         'No units in condominium for transparency report',
       );
     }
-    const unitCols = targetUnitId
-      ? allUnitCols.filter((u) => u.unitId === targetUnitId)
-      : allUnitCols;
-    if (targetUnitId && unitCols.length === 0) {
+    const unitCols = allUnitCols;
+    const targetUnit = targetUnitId
+      ? (allUnitCols.find((u) => u.unitId === targetUnitId) ?? null)
+      : null;
+    if (targetUnitId && !targetUnit) {
       throw new NotFoundException('Unit not found in condominium');
     }
 
@@ -149,62 +144,8 @@ export class MonthlyTransparencyPdfService {
     charges.sort((a, b) =>
       (a.unit?.identifier ?? '').localeCompare(b.unit?.identifier ?? '', 'pt'),
     );
-    const unitCharge = targetUnitId
-      ? (charges.find((c) => c.unitId === targetUnitId) ?? null)
-      : null;
-
-    const syndicWhatsapp =
-      await this.condominiumsService.resolveSyndicWhatsappDisplay(
-        condominiumId,
-      );
-
     const fixos = txs.filter((t) => t.fund?.isPermanent === true);
     const variavel = txs.filter((t) => t.fund?.isPermanent !== true);
-
-    const pixKey = sanitizePixKey(condo.billingPixKey);
-    let pixPayload: string | null = null;
-    let pixQrPng: Buffer | null = null;
-    const includePixBrCodeOnPdf =
-      condo.transparencyPdfIncludePixQrCode !== false;
-    if (pixKey && includePixBrCodeOnPdf) {
-      const perUnitAmountCents =
-        targetUnitId && unitCharge
-          ? BigInt(String(unitCharge.amountDueCents))
-          : null;
-      const qrValue =
-        perUnitAmountCents !== null
-          ? Number(perUnitAmountCents) / 100
-          : undefined;
-      // Reference Label (EMV 62.05) — usado como «código da transferência»
-      // pelos apps de banco. Para boleto por unidade, usamos o id curto
-      // da cobrança (primeiros 12 chars alfanuméricos, em maiúsculas).
-      // Exemplo: "A1B2C3D4E5F6". Assim o usuário consegue conciliar a
-      // cobrança mesmo sem mensagem descritiva (campo 26.02 omitido).
-      const chargeRef = unitCharge?.id
-        ? sanitizePixReferenceLabel(unitCharge.id, 25)
-            .toUpperCase()
-            .slice(0, 12)
-        : '';
-      try {
-        pixPayload = buildPixBrCode({
-          key: pixKey,
-          name: condo.billingPixBeneficiaryName?.trim() || condo.name || '',
-          city: condo.billingPixCity?.trim() || '',
-          amount: qrValue,
-          transactionId: chargeRef || undefined,
-        });
-        pixQrPng = await QRCode.toBuffer(pixPayload, {
-          type: 'png',
-          width: 320,
-          margin: 1,
-        });
-      } catch {
-        // Campos PIX inválidos (nome/cidade vazios após sanitização etc.).
-        // Seguimos sem BR Code em vez de produzir um código corrompido.
-        pixPayload = null;
-        pixQrPng = null;
-      }
-    }
 
     let managementLogoBuffer: Buffer | null = null;
     if (condo.managementLogoStorageKey) {
@@ -295,7 +236,6 @@ export class MonthlyTransparencyPdfService {
     const administracaoDisplay =
       await this.loadAdministracaoForPdf(condominiumId);
 
-    const targetUnit = targetUnitId ? unitCols[0] ?? null : null;
     return this.renderPdf({
       condoName: condo.name,
       competenceYm: ym,
@@ -305,20 +245,12 @@ export class MonthlyTransparencyPdfService {
       variavel,
       periodTransactions,
       charges,
-      syndicWhatsapp,
-      pixPayload,
-      pixQrPng,
-      pixKey: pixKey || null,
-      pixBeneficiaryLabel:
-        condo.billingPixBeneficiaryName?.trim() || condo.name?.trim() || null,
-      pixCity: condo.billingPixCity?.trim() || null,
       managementLogoBuffer,
       funds: fundRows,
       fundReport,
       agrupamentosDisplay,
       administracao: administracaoDisplay,
       targetUnit,
-      unitCharge,
     });
   }
 
@@ -521,16 +453,6 @@ export class MonthlyTransparencyPdfService {
       lines.push(cur);
     }
     return lines;
-  }
-
-  /** Texto sem espaços (ex.: payload PIX): quebra por tamanho fixo. */
-  private chunkFixedChars(s: string, len: number): string[] {
-    const t = String(s);
-    const out: string[] = [];
-    for (let i = 0; i < t.length; i += len) {
-      out.push(t.slice(i, i + len));
-    }
-    return out;
   }
 
   private drawTextLines(
@@ -913,16 +835,6 @@ export class MonthlyTransparencyPdfService {
     return `${label}/${year}`;
   }
 
-  /** Ex.: `2026-03` → `03/2026` (para referência curta em QR/mensagens). */
-  private formatCompetenceYmSlash(ym: string): string {
-    const head = ym.trim();
-    const m = /^(\d{4})-(\d{2})$/.exec(head);
-    if (!m) {
-      return head;
-    }
-    return `${m[2]}/${m[1]}`;
-  }
-
   /** Ex.: limites da competência em `dd/mm/aaaa à dd/mm/aaaa`. */
   private formatExpensePeriodLabelPtBr(fromYmd: string, toYmd: string): string {
     return `${this.formatYmdPtBr(fromYmd)} à ${this.formatYmdPtBr(toYmd)}`;
@@ -937,306 +849,202 @@ export class MonthlyTransparencyPdfService {
     );
   }
 
+  private feeChargeStatusLabelPt(status: string): string {
+    return status === 'paid' ? 'Quitada' : 'Em aberto';
+  }
+
   /**
-   * Página 1 — slip de pagamento para a unidade informada: traz o valor devido
-   * em destaque, chave PIX, QR Code (com valor pré-preenchido) e código
-   * «Copia e cola». Pensado para o condômino quitar direto no app do banco.
+   * Quando o PDF é pedido no contexto de uma unidade: explica o documento e lista a taxa de
+   * todas as unidades, com destaque para a unidade do condômino.
    */
-  private renderUnitPaymentSlipPage(
+  private renderSlipFollowFeeContextSection(
     doc: InstanceType<typeof PDFDocument>,
     p: {
       margin: number;
       contentW: number;
-      accent: string;
-      muted: string;
-      condoName: string;
-      competenceYm: string;
+      yStart: number;
       competenceYmPtBr: string;
-      unit: UnitCol;
-      charge: CondominiumFeeCharge | null;
-      pixKey: string | null;
-      pixBeneficiaryLabel: string | null;
-      pixCity: string | null;
-      pixQrPng: Buffer | null;
-      pixPayload: string | null;
-      syndicWhatsapp: string | null;
-      managementLogoBuffer: Buffer | null;
+      targetUnitIdentifier: string;
+      unitCols: UnitCol[];
+      charges: CondominiumFeeCharge[];
+      highlightUnitId: string;
     },
-  ): void {
-    const {
+  ): number {
+    const { margin, contentW } = p;
+    let y = p.yStart;
+    const boxPad = 10;
+    const explain =
+      `Prestação de contas mensal do condomínio (competência ${p.competenceYmPtBr}): despesas do período, fundos, movimentos e, ao final, o extrato discriminado por unidade. ` +
+      `Na tabela abaixo consta o valor da taxa condominial desta competência para cada unidade (a linha sombreada corresponde à unidade ${p.targetUnitIdentifier}).`;
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#0c4a6e');
+    const titleLh = doc.currentLineHeight(true) + 2.5;
+    doc.font('Helvetica').fontSize(9).fillColor('#334155');
+    const exLines = this.wrapWordsToLines(doc, explain, contentW - boxPad * 2);
+    const exLh = doc.currentLineHeight(true) + 2.5;
+    const boxH = boxPad * 2 + titleLh + 2 + exLines.length * exLh + 8;
+    y = this.ensureSpace(doc, y, boxH + 16, margin);
+    doc.save();
+    doc
+      .roundedRect(margin, y, contentW, boxH, 5)
+      .fill('#f0f9ff')
+      .stroke('#bae6fd')
+      .lineWidth(0.55)
+      .stroke();
+    doc.restore();
+    let cy = y + boxPad;
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#0c4a6e');
+    doc.text('Sobre este documento', margin + boxPad, cy, { lineBreak: false });
+    cy += titleLh + 2;
+    doc.font('Helvetica').fontSize(9).fillColor('#334155');
+    for (const ln of exLines) {
+      doc.text(ln, margin + boxPad, cy, { lineBreak: false });
+      cy += exLh;
+    }
+    y = y + boxH + 18;
+
+    y = this.ensureSpace(doc, y, 52, margin);
+    doc.font('Helvetica-Bold').fontSize(12).fillColor('#0f172a');
+    doc.text(
+      `Taxa condominial — valores por unidade (${p.competenceYmPtBr})`,
       margin,
-      contentW,
-      accent,
-      muted,
-      condoName,
-      competenceYmPtBr,
-      unit,
-      charge,
-    } = p;
-    const amountCents = charge ? BigInt(String(charge.amountDueCents)) : 0n;
-    const amountStr = this.brl(amountCents);
-    const dueOnPt = charge ? this.formatDateBr(charge.dueOn) : '—';
-
-    let y = margin;
-    y = drawDocumentHeaderLogo(doc, margin, y, p.managementLogoBuffer, 48);
-
-    doc.save();
-    doc.rect(margin, y, 4, 64).fill(accent);
-    doc.restore();
-    doc
-      .font('Helvetica-Bold')
-      .fontSize(19)
-      .fillColor('#121820')
-      .text('Pagamento da taxa condominial', margin + 14, y + 2, {
-        lineBreak: false,
-      });
-    doc
-      .font('Helvetica')
-      .fontSize(11)
-      .fillColor(muted)
-      .text('Slip de pagamento via PIX — específico para a unidade', margin + 14, y + 30, {
-        lineBreak: false,
-      });
-    y += 78;
-
-    doc.save();
-    doc
-      .roundedRect(margin, y, contentW, 132, 8)
-      .fill('#f4f7fb')
-      .strokeColor('#d8e0ea')
-      .lineWidth(0.6)
-      .stroke();
-    doc.restore();
-    const boxInset = 16;
-    const colW = (contentW - boxInset * 2 - 20) / 2;
-    const leftX = margin + boxInset;
-    const rightX = leftX + colW + 20;
-
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-    doc.text('CONDOMÍNIO', leftX, y + 14, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#0d1b26');
-    const condoLines = this.wrapWordsToLines(doc, condoName, colW);
-    let ly = y + 26;
-    const condoLh = doc.currentLineHeight(true) + 1;
-    for (const cl of condoLines.slice(0, 2)) {
-      doc.text(cl, leftX, ly, { lineBreak: false });
-      ly += condoLh;
-    }
-
-    const respLine = unit.responsibleName?.trim();
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-    doc.text('UNIDADE', leftX, y + 72, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#0d1b26');
-    const unitLabel = `${unit.identifier}${unit.groupingName ? ` · ${unit.groupingName}` : ''}`;
-    doc.text(unitLabel, leftX, y + 84, { lineBreak: false });
-    if (respLine) {
-      doc.font('Helvetica').fontSize(8.5).fillColor('#334155');
-      const respLines = this.wrapWordsToLines(
-        doc,
-        `Responsável: ${respLine}`,
-        colW,
-      );
-      if (respLines[0]) {
-        doc.text(respLines[0], leftX, y + 102, { lineBreak: false });
-      }
-    }
-
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-    doc.text('COMPETÊNCIA', rightX, y + 14, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#0d1b26');
-    doc.text(competenceYmPtBr, rightX, y + 26, { lineBreak: false });
-
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-    doc.text('VENCIMENTO', rightX, y + 56, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#0d1b26');
-    doc.text(dueOnPt, rightX, y + 68, { lineBreak: false });
-
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-    doc.text('SITUAÇÃO', rightX, y + 96, { lineBreak: false });
-    const statusLabel = !charge
-      ? 'Sem cobrança gerada'
-      : charge.status === 'paid'
-        ? 'Paga'
-        : 'Em aberto';
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(
-      !charge ? '#b91c1c' : charge.status === 'paid' ? '#166534' : '#92400e',
+      y,
+      { lineBreak: false },
     );
-    doc.text(statusLabel, rightX, y + 108, { lineBreak: false });
+    y += 20;
+    doc.font('Helvetica').fontSize(8.8).fillColor('#64748b');
+    const sub = this.wrapWordsToLines(
+      doc,
+      'Valores devidos nesta competência, conforme cobranças geradas no sistema. A linha sombreada destaca a sua unidade.',
+      contentW,
+    );
+    const subLh = doc.currentLineHeight(true) + 2;
+    y = this.drawTextLines(doc, margin, y, sub, subLh, margin);
+    y += 10;
 
-    y += 132 + 16;
+    const wUnit = 52;
+    const wDue = 54;
+    const wAmt = 80;
+    const wStat = 56;
+    const wGrp = Math.max(72, contentW - wUnit - wDue - wAmt - wStat);
+    const xUnit = margin;
+    const xGrp = xUnit + wUnit;
+    const xDue = xGrp + wGrp;
+    const xAmt = xDue + wDue;
+    const xStat = xAmt + wAmt;
 
+    const headH = 22;
+    y = this.ensureSpace(doc, y, headH + 8, margin);
     doc.save();
     doc
-      .roundedRect(margin, y, contentW, 72, 10)
-      .fill('#0f172a')
-      .strokeColor('#0f172a')
-      .lineWidth(0.5)
-      .stroke();
+      .rect(xUnit, y, wUnit + wGrp + wDue + wAmt + wStat, headH)
+      .fill('#e2e8f0')
+      .stroke('#94a3b8');
     doc.restore();
-    doc.font('Helvetica').fontSize(9).fillColor('#cbd5e1');
-    doc.text('VALOR A PAGAR', margin + 18, y + 16, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(28).fillColor('#ffffff');
-    doc.text(amountStr, margin + 18, y + 30, { lineBreak: false });
-    doc.font('Helvetica').fontSize(8.5).fillColor('#93a1b4');
-    const refText = `Referência: ${condoName} - ${this.formatCompetenceYmSlash(p.competenceYm)}`;
-    const refDisplay = this.wrapWordsToLines(doc, refText, contentW - 36)[0] ?? refText;
-    doc.text(refDisplay, margin + 18, y + 60, { lineBreak: false });
-    y += 72 + 18;
+    doc.font('Helvetica-Bold').fontSize(7.8).fillColor('#1e293b');
+    doc.text('Unidade', xUnit + 4, y + 7, { lineBreak: false });
+    doc.text('Agrupamento', xGrp + 4, y + 7, { lineBreak: false });
+    const hVenc = 'Venc.';
+    doc.text(hVenc, xDue + wDue - 4 - doc.widthOfString(hVenc), y + 7, {
+      lineBreak: false,
+    });
+    const hVal = 'Valor';
+    doc.text(hVal, xAmt + wAmt - 4 - doc.widthOfString(hVal), y + 7, {
+      lineBreak: false,
+    });
+    const hSit = 'Situação';
+    doc.text(hSit, xStat + wStat - 4 - doc.widthOfString(hSit), y + 7, {
+      lineBreak: false,
+    });
+    y += headH;
 
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(accent);
-    doc.text('Pague via PIX', margin, y, { lineBreak: false });
-    y += 18;
+    const chargeByUnit = new Map<string, CondominiumFeeCharge>();
+    for (const c of p.charges) {
+      chargeByUnit.set(c.unitId, c);
+    }
+    const sorted = [...p.unitCols].sort((a, b) =>
+      a.identifier.localeCompare(b.identifier, 'pt', { sensitivity: 'base' }),
+    );
+    let sumCents = 0n;
+    for (const u of sorted) {
+      const ch = chargeByUnit.get(u.unitId);
+      if (ch) {
+        sumCents += BigInt(String(ch.amountDueCents));
+      }
+      const grp = (u.groupingName?.trim() || '—').slice(0, 48);
+      const dueStr = ch ? this.formatDateBr(ch.dueOn) : '—';
+      const amtStr = ch ? this.brl(BigInt(String(ch.amountDueCents))) : '—';
+      const statStr = ch ? this.feeChargeStatusLabelPt(ch.status) : 'Sem cobrança';
+      const highlight = u.unitId === p.highlightUnitId;
+      doc.font('Helvetica').fontSize(7.8);
+      const grpLines = this.wrapWordsToLines(doc, grp, wGrp - 8);
+      const lh = doc.currentLineHeight(true) + 1;
+      const rowH = Math.max(22, 6 + grpLines.length * lh);
 
-    if (p.pixQrPng && p.pixPayload) {
-      const qrSize = 180;
-      const qrX = margin;
-      const qrY = y;
+      y = this.ensureSpace(doc, y, rowH + 2, margin);
+      if (highlight) {
+        doc.save();
+        doc
+          .rect(xUnit, y, wUnit + wGrp + wDue + wAmt + wStat, rowH)
+          .fill('#eff6ff');
+        doc.restore();
+      }
       doc.save();
+      doc.strokeColor('#e2e8f0').lineWidth(0.35);
       doc
-        .roundedRect(qrX - 6, qrY - 6, qrSize + 12, qrSize + 12, 6)
-        .fill('#ffffff')
-        .strokeColor('#d8e0ea')
-        .lineWidth(0.55)
+        .rect(xUnit, y, wUnit, rowH)
+        .stroke()
+        .rect(xGrp, y, wGrp, rowH)
+        .stroke()
+        .rect(xDue, y, wDue, rowH)
+        .stroke()
+        .rect(xAmt, y, wAmt, rowH)
+        .stroke()
+        .rect(xStat, y, wStat, rowH)
         .stroke();
       doc.restore();
-      doc.image(p.pixQrPng, qrX, qrY, { width: qrSize });
 
-      const infoX = qrX + qrSize + 22;
-      const infoW = contentW - qrSize - 22;
-      let iy = qrY + 2;
-      doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-      doc.text('BENEFICIÁRIO', infoX, iy, { lineBreak: false });
-      iy += 12;
-      doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#0d1b26');
-      const benLines = this.wrapWordsToLines(
-        doc,
-        p.pixBeneficiaryLabel ?? condoName,
-        infoW,
-      );
-      const benLh = doc.currentLineHeight(true) + 1;
-      for (const bl of benLines.slice(0, 2)) {
-        doc.text(bl, infoX, iy, { lineBreak: false });
-        iy += benLh;
+      doc.fillColor('#0f172a');
+      doc.font('Helvetica-Bold').fontSize(8);
+      const uid = (u.identifier?.trim() || '—').slice(0, 14);
+      doc.text(uid, xUnit + 4, y + 6, { lineBreak: false });
+      doc.font('Helvetica').fontSize(7.8);
+      let gy = y + 5;
+      for (const gl of grpLines) {
+        doc.text(gl, xGrp + 4, gy, { lineBreak: false });
+        gy += lh;
       }
-      iy += 6;
-
-      if (p.pixKey) {
-        doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-        doc.text('CHAVE PIX', infoX, iy, { lineBreak: false });
-        iy += 12;
-        doc.font('Courier').fontSize(10).fillColor('#111827');
-        const keyLines = this.wrapWordsToLines(doc, p.pixKey, infoW);
-        const keyLh = doc.currentLineHeight(true) + 1;
-        for (const kl of keyLines.slice(0, 3)) {
-          doc.text(kl, infoX, iy, { lineBreak: false });
-          iy += keyLh;
-        }
-        iy += 6;
-      }
-
-      doc.font('Helvetica').fontSize(8.5).fillColor(muted);
-      doc.text('COMO PAGAR', infoX, iy, { lineBreak: false });
-      iy += 12;
-      doc.font('Helvetica').fontSize(8.5).fillColor('#1e293b');
-      const howLines = this.wrapWordsToLines(
-        doc,
-        'Abra o app do seu banco, escolha PIX → QR Code ou PIX Copia e cola, aponte a câmera para o código ao lado ou cole o código abaixo. Confira o nome do beneficiário e confirme a transferência.',
-        infoW,
-      );
-      const howLh = doc.currentLineHeight(true) + 1.5;
-      for (const hl of howLines) {
-        doc.text(hl, infoX, iy, { lineBreak: false });
-        iy += howLh;
-      }
-
-      y = qrY + qrSize + 18;
-
-      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(accent);
-      doc.text('PIX Copia e cola', margin, y, { lineBreak: false });
-      y += 14;
-      // Uma única chamada `doc.text()` com `\n` explícito entre os
-      // chunks: o content stream do PDF fica com um texto contínuo, e
-      // ao copiar aparecem só quebras de linha entre os trechos (sem
-      // espaços intrusivos). Apps de banco toleram `\n` no BR Code.
-      doc.font('Courier').fontSize(7).fillColor('#111827');
-      const copyColW = contentW - 20;
-      const copyBoxH = 78;
-      doc.save();
-      doc
-        .roundedRect(margin, y - 4, contentW, copyBoxH, 4)
-        .fill('#f8fafc')
-        .strokeColor('#d8e0ea')
-        .lineWidth(0.45)
-        .stroke();
-      doc.restore();
-      const perLineCopy = Math.max(
-        10,
-        Math.floor(copyColW / Math.max(1, doc.widthOfString('M'))),
-      );
-      doc.text(
-        this.chunkFixedChars(p.pixPayload, perLineCopy).join('\n'),
-        margin + 10,
-        y,
-        {
-          width: copyColW,
-          lineBreak: true,
-          lineGap: 1,
-        },
-      );
-      y = Math.max(y + copyBoxH, doc.y) + 10;
-    } else if (p.pixKey) {
-      doc.font('Helvetica').fontSize(9.5).fillColor('#334155');
-      const lines = this.wrapWordsToLines(
-        doc,
-        'No app do seu banco, informe manualmente a chave PIX abaixo e o valor devido. Confira o nome do beneficiário antes de confirmar.',
-        contentW,
-      );
-      const lh = doc.currentLineHeight(true) + 2;
-      for (const ln of lines) {
-        doc.text(ln, margin, y, { lineBreak: false });
-        y += lh;
-      }
-      y += 4;
-      doc.font('Helvetica-Bold').fontSize(9).fillColor(muted);
-      doc.text('CHAVE PIX', margin, y, { lineBreak: false });
-      y += 12;
-      doc.font('Courier').fontSize(10).fillColor('#111827');
-      const keyLines = this.wrapWordsToLines(doc, p.pixKey, contentW);
-      const keyLh = doc.currentLineHeight(true) + 1;
-      for (const kl of keyLines) {
-        doc.text(kl, margin, y, { lineBreak: false });
-        y += keyLh;
-      }
-      y += 8;
-    } else {
-      doc.font('Helvetica').fontSize(9.5).fillColor('#b91c1c');
-      const warn = this.wrapWordsToLines(
-        doc,
-        'Chave PIX ainda não configurada neste condomínio. Peça ao síndico para cadastrar a chave em «Editar condomínio → Cobrança».',
-        contentW,
-      );
-      const wlh = doc.currentLineHeight(true) + 2;
-      for (const wl of warn) {
-        doc.text(wl, margin, y, { lineBreak: false });
-        y += wlh;
-      }
-      y += 8;
+      doc.text(dueStr, xDue + wDue - 4 - doc.widthOfString(dueStr), y + 6, {
+        lineBreak: false,
+      });
+      doc.font('Helvetica-Bold').fontSize(8);
+      doc.text(amtStr, xAmt + wAmt - 4 - doc.widthOfString(amtStr), y + 6, {
+        lineBreak: false,
+      });
+      doc.font('Helvetica').fontSize(7.8);
+      doc.text(statStr, xStat + wStat - 4 - doc.widthOfString(statStr), y + 6, {
+        lineBreak: false,
+      });
+      y += rowH;
     }
 
-    if (p.syndicWhatsapp) {
-      doc.font('Helvetica').fontSize(9).fillColor('#334155');
-      const compLines = this.wrapWordsToLines(
-        doc,
-        `Após efetuar o pagamento, envie o comprovante (print ou PDF) para o WhatsApp do síndico: ${p.syndicWhatsapp}.`,
-        contentW,
-      );
-      const clh = doc.currentLineHeight(true) + 2;
-      for (const cl of compLines) {
-        doc.text(cl, margin, y, { lineBreak: false });
-        y += clh;
-      }
-    }
+    const totH = 22;
+    y = this.ensureSpace(doc, y, totH + 6, margin);
+    doc.save();
+    doc
+      .rect(xUnit, y, wUnit + wGrp + wDue + wAmt + wStat, totH)
+      .fill('#f1f5f9')
+      .stroke('#94a3b8');
+    doc.restore();
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0f172a');
+    doc.text('Total do condomínio', xUnit + 4, y + 6, { lineBreak: false });
+    const totS = this.brl(sumCents);
+    doc.text(totS, xAmt + wAmt - 4 - doc.widthOfString(totS), y + 6, {
+      lineBreak: false,
+    });
+    y += totH + 14;
+    return y;
   }
+
 
   private renderPdf(ctx: {
     condoName: string;
@@ -1247,13 +1055,6 @@ export class MonthlyTransparencyPdfService {
     variavel: FinancialTransaction[];
     periodTransactions: FinancialTransaction[];
     charges: CondominiumFeeCharge[];
-    syndicWhatsapp: string | null;
-    pixPayload: string | null;
-    pixQrPng: Buffer | null;
-    /** Chave PIX legível (e-mail, telefone, EVP, etc.) — aparece nas instruções. */
-    pixKey: string | null;
-    pixBeneficiaryLabel: string | null;
-    pixCity: string | null;
     managementLogoBuffer: Buffer | null;
     funds: FundPdfRow[];
     agrupamentosDisplay: AgrupamentosPdfRow[];
@@ -1264,9 +1065,8 @@ export class MonthlyTransparencyPdfService {
       openingByFund: Map<string, bigint>;
       closingByFund: Map<string, bigint>;
     };
-    /** Quando informado, a primeira página é o slip de pagamento da unidade. */
+    /** Quando informado, destaca a unidade na tabela de taxas (mesmo PDF de transparência geral). */
     targetUnit: UnitCol | null;
-    unitCharge: CondominiumFeeCharge | null;
   }): Promise<Buffer> {
     const margin = 56;
     /** Faixa inferior para rodapé (logo meucondominio.cloud à direita + linha). */
@@ -1310,31 +1110,6 @@ export class MonthlyTransparencyPdfService {
 
       let y = margin;
 
-      if (ctx.targetUnit) {
-        this.renderUnitPaymentSlipPage(doc, {
-          margin,
-          contentW,
-          accent,
-          muted,
-          condoName: ctx.condoName,
-          competenceYm: ctx.competenceYm,
-          competenceYmPtBr,
-          unit: ctx.targetUnit,
-          charge: ctx.unitCharge,
-          pixKey: ctx.pixKey,
-          pixBeneficiaryLabel: ctx.pixBeneficiaryLabel,
-          pixCity: ctx.pixCity,
-          pixQrPng: ctx.pixQrPng,
-          pixPayload: ctx.pixPayload,
-          syndicWhatsapp: ctx.syndicWhatsapp,
-          managementLogoBuffer: ctx.managementLogoBuffer,
-        });
-        doc.addPage();
-        doc.x = margin;
-        doc.y = margin;
-        y = margin;
-      }
-
       y = drawDocumentHeaderLogo(
         doc,
         margin,
@@ -1351,7 +1126,9 @@ export class MonthlyTransparencyPdfService {
         .fontSize(18)
         .fillColor('#121820')
         .text(
-          ctx.targetUnit ? 'Prestação de contas do mês' : 'Prestação de contas',
+          ctx.targetUnit
+            ? 'Prestação de contas do condomínio'
+            : 'Prestação de contas',
           margin + 14,
           y + 2,
           { lineBreak: false },
@@ -1362,7 +1139,7 @@ export class MonthlyTransparencyPdfService {
         .fillColor(muted)
         .text(
           ctx.targetUnit
-            ? `Detalhamento da taxa — unidade ${ctx.targetUnit.identifier}`
+            ? `Competência ${competenceYmPtBr} — fechamento mensal (todas as unidades)`
             : 'Taxa condominial — transparência',
           margin + 14,
           y + 32,
@@ -1395,6 +1172,20 @@ export class MonthlyTransparencyPdfService {
       doc.restore();
       y += 20;
       doc.fillColor('#000000');
+
+      if (ctx.targetUnit) {
+        y = this.renderSlipFollowFeeContextSection(doc, {
+          margin,
+          contentW,
+          yStart: y,
+          competenceYmPtBr,
+          targetUnitIdentifier: ctx.targetUnit.identifier.trim() || '—',
+          unitCols,
+          charges: ctx.charges,
+          highlightUnitId: ctx.targetUnit.unitId,
+        });
+        y += 8;
+      }
 
       y = this.renderAdministracaoSection(
         doc,
@@ -1566,7 +1357,7 @@ export class MonthlyTransparencyPdfService {
       if (!ctx.targetUnit) {
       y = startNewSectionPage();
       doc.font('Helvetica-Bold').fontSize(14).fillColor(accent);
-      doc.text('Taxa condominial e pagamento', margin, y, {
+      doc.text('Taxa condominial', margin, y, {
         lineBreak: false,
       });
       y += 22;
@@ -1625,179 +1416,6 @@ export class MonthlyTransparencyPdfService {
       doc.fillColor('#000000');
       y += 12;
 
-      const pixAndFooterMin = ctx.pixQrPng
-        ? 360
-        : ctx.pixPayload
-          ? 220
-          : ctx.pixKey
-            ? 160
-            : 100;
-      y += 28;
-      if (y + pixAndFooterMin > doc.page.maxY() - 12) {
-        doc.addPage();
-        doc.x = margin;
-        doc.y = margin;
-        y = margin;
-      }
-
-      doc.save();
-      doc.strokeColor('#d4dbe3').lineWidth(0.65);
-      doc.moveTo(margin, y).lineTo(margin + contentW, y).stroke();
-      doc.restore();
-      y += 18;
-
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(accent);
-      doc.text('Pagamento via PIX', margin, y, { lineBreak: false });
-      y += 16;
-
-      const hasPixData = !!(ctx.pixKey || ctx.pixPayload);
-      if (hasPixData) {
-        const instrBody =
-          ctx.pixQrPng && ctx.pixPayload
-            ? `Para quitar a taxa condominial de ${competenceYmPtBr}, utilize PIX com os dados indicados nesta página. No aplicativo do seu banco, pode pagar lendo o QR Code abaixo, informando manualmente a chave PIX ou colando o código completo no campo «Pix Copia e cola». Confira o nome do beneficiário antes de confirmar a transferência.`
-            : ctx.pixPayload
-              ? `Para quitar a taxa condominial de ${competenceYmPtBr}, utilize PIX com os dados indicados nesta página. No aplicativo do seu banco, informe manualmente a chave PIX ou cole o código completo no campo «Pix Copia e cola». Confira o nome do beneficiário antes de confirmar a transferência.`
-              : `Para quitar a taxa condominial de ${competenceYmPtBr}, utilize PIX com a chave indicada nesta página. No aplicativo do seu banco, informe manualmente a chave PIX (tipo e valor abaixo). Confira o nome do beneficiário antes de confirmar a transferência.`;
-        doc.font('Helvetica').fontSize(9).fillColor('#333333');
-        const instrLines = this.wrapWordsToLines(doc, instrBody, contentW);
-        const instrLh = doc.currentLineHeight(true) + 2;
-        y = this.drawTextLines(doc, margin, y, instrLines, instrLh, margin);
-        y += 12;
-
-        doc.save();
-        doc.strokeColor('#d4dbe3').lineWidth(0.5);
-        doc.moveTo(margin, y).lineTo(margin + contentW, y).stroke();
-        doc.restore();
-        y += 10;
-
-        doc.font('Helvetica-Bold').fontSize(10).fillColor(accent);
-        doc.text('Dados da chave PIX', margin, y, { lineBreak: false });
-        y += 14;
-        doc.font('Helvetica').fontSize(9).fillColor('#222222');
-        if (ctx.pixBeneficiaryLabel) {
-          const benLines = this.wrapWordsToLines(
-            doc,
-            `Beneficiário (recebedor): ${ctx.pixBeneficiaryLabel}`,
-            contentW,
-          );
-          const benLh = doc.currentLineHeight(true) + 1.5;
-          y = this.drawTextLines(doc, margin, y, benLines, benLh, margin);
-          y += 4;
-        }
-        if (ctx.pixCity) {
-          doc.text(`Cidade: ${ctx.pixCity}`, margin, y, {
-            width: contentW,
-            lineBreak: false,
-          });
-          y += doc.currentLineHeight(true) + 6;
-        }
-        if (ctx.pixKey) {
-          doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#333333');
-          doc.text('Chave PIX (digitar ou conferir no banco):', margin, y, {
-            width: contentW,
-          });
-          y += doc.currentLineHeight(true) + 3;
-          doc.font('Courier').fontSize(9).fillColor('#111111');
-          const keyLines = this.wrapWordsToLines(doc, ctx.pixKey, contentW);
-          const keyLh = doc.currentLineHeight(true) + 1;
-          y = this.drawTextLines(doc, margin, y, keyLines, keyLh, margin);
-          y += 10;
-        }
-
-        if (ctx.pixQrPng && ctx.pixPayload) {
-          doc.font('Helvetica-Bold').fontSize(10).fillColor(accent);
-          doc.text('QR Code e código «Copia e cola»', margin, y, {
-            lineBreak: false,
-          });
-          y += 14;
-
-          const pixBlockH = 152;
-          y = this.ensureSpace(doc, y, pixBlockH + 8, margin);
-          doc.save();
-          doc
-            .roundedRect(margin, y - 8, contentW, pixBlockH + 16, 6)
-            .fill('#f8fafc')
-            .strokeColor('#d8e0ea')
-            .lineWidth(0.55)
-            .stroke();
-          doc.restore();
-          doc.image(ctx.pixQrPng, margin + 8, y, { width: 124 });
-          doc.font('Helvetica').fontSize(8).fillColor('#333333');
-          doc.text('Copia e cola (PIX):', margin + 148, y + 4, {
-            lineBreak: false,
-          });
-          // Uma única chamada `doc.text()` com chunks unidos por `\n`:
-          // o texto copiado sai contínuo (só quebras entre trechos),
-          // sem espaços intrusivos que invalidariam o BR Code.
-          doc.font('Courier').fontSize(6.5).fillColor('#111111');
-          const pixColW = contentW - 168;
-          const perLineRp = Math.max(
-            10,
-            Math.floor(pixColW / Math.max(1, doc.widthOfString('M'))),
-          );
-          doc.text(
-            this.chunkFixedChars(ctx.pixPayload, perLineRp).join('\n'),
-            margin + 148,
-            y + 18,
-            {
-              width: pixColW,
-              lineBreak: true,
-              lineGap: 1,
-            },
-          );
-          doc.fillColor('#000000');
-          y = Math.max(y + 128, doc.y) + 20;
-        } else if (ctx.pixPayload) {
-          doc.font('Helvetica-Bold').fontSize(10).fillColor(accent);
-          doc.text('Código «Copia e cola» (PIX)', margin, y, {
-            lineBreak: false,
-          });
-          y += 14;
-          doc.font('Courier').fontSize(6.5).fillColor('#111111');
-          const pixColW = contentW - 8;
-          const perLineRp2 = Math.max(
-            10,
-            Math.floor(pixColW / Math.max(1, doc.widthOfString('M'))),
-          );
-          doc.text(
-            this.chunkFixedChars(ctx.pixPayload, perLineRp2).join('\n'),
-            margin,
-            y,
-            {
-              width: pixColW,
-              lineBreak: true,
-              lineGap: 1,
-            },
-          );
-          doc.fillColor('#000000');
-          y = doc.y + 16;
-        }
-      } else {
-        doc.font('Helvetica').fontSize(9.5).fillColor('#5a6572');
-        const hintLines = this.wrapWordsToLines(
-          doc,
-          'Cadastre a chave PIX nas definições do condomínio (editar condomínio, seção de cobrança). O PDF incluirá instruções e a chave em texto. O QR Code e o código «Copia e cola» só são gerados quando essa opção está ativada nas definições do condomínio.',
-          contentW,
-        );
-        const hlh = doc.currentLineHeight(true) + 2;
-        y = this.drawTextLines(doc, margin, y, hintLines, hlh, margin);
-        doc.fillColor('#000000');
-        y += 12;
-      }
-
-      y += 14;
-      y = this.ensureSpace(doc, y, 64, margin);
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(accent);
-      doc.text('Comprovante de pagamento', margin, y, { lineBreak: false });
-      y += 16;
-      doc.font('Helvetica').fontSize(9).fillColor('#222222');
-      const comprovanteBody = ctx.syndicWhatsapp
-        ? `Após efetuar o pagamento, envie o comprovante (print ou PDF) para o WhatsApp do síndico: ${ctx.syndicWhatsapp}.`
-        : 'Após efetuar o pagamento, envie o comprovante ao síndico. Configure o WhatsApp nas definições do condomínio ou associe telefone à ficha do síndico em Planejamento / participantes.';
-      const compLines = this.wrapWordsToLines(doc, comprovanteBody, readabilityW);
-      const compLh = doc.currentLineHeight(true) + 1.5;
-      y = this.drawTextLines(doc, margin, y, compLines, compLh, margin);
-      y += 10;
       }
       y = this.ensureSpace(doc, y, 36, margin);
       doc.font('Helvetica').fontSize(7.5).fillColor('#666666');
