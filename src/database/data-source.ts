@@ -48,6 +48,11 @@ import { FeeChargePaymentReceipt1750400000000 } from '../migrations/175040000000
 import { UserSignaturePng1750410000000 } from '../migrations/1750410000000-user-signature-png';
 import { PlanningPollCompetenceDate1750420000000 } from '../migrations/1750420000000-planning-poll-competence-date';
 import { Communications1750430000000 } from '../migrations/1750430000000-communications';
+import { CommunicationAudienceChannels1751000000000 } from '../migrations/1751000000000-communication-audience-channels';
+import { CommunicationReadLinks1751100000000 } from '../migrations/1751100000000-communication-read-links';
+import { CommunicationReadAccessLogs1751200000000 } from '../migrations/1751200000000-communication-read-access-logs';
+import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
+import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -130,6 +135,11 @@ export const AppDataSource = new DataSource({
     UserSignaturePng1750410000000,
     PlanningPollCompetenceDate1750420000000,
     Communications1750430000000,
+    CommunicationAudienceChannels1751000000000,
+    CommunicationReadLinks1751100000000,
+    CommunicationReadAccessLogs1751200000000,
+    CommunicationDisplayNames1751210000000,
+    SupportTickets1751220000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

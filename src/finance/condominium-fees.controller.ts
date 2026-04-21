@@ -112,7 +112,7 @@ export class CondominiumFeesController {
   @Get('transparency-pdf')
   @ApiOperation({
     summary:
-      'PDF de transparência / fechamento mensal da competência: despesas do período, fundos, movimentos e extrato por unidade. Com `unitId`, o documento destaca a unidade do condômino (sem dados de pagamento ou PIX).',
+      'PDF de transparência / fechamento mensal da competência: despesas do período, fundos, movimentos e extrato por unidade. Com `unitId`, antecede-se uma capa com slip de pagamento via PIX (cobrança em aberto e chave PIX configurada), seguida do mesmo relatório com destaque da unidade.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'competenceYm', example: '2026-03' })
@@ -121,7 +121,7 @@ export class CondominiumFeesController {
     required: false,
     format: 'uuid',
     description:
-      'Opcional: emite o mesmo PDF de transparência do condomínio com destaque para a unidade indicada (tabela de taxas e contexto na capa). Não inclui instruções de pagamento.',
+      'Opcional: PDF da unidade — primeira página slip PIX (QR e «Copia e cola» conforme configuração do condomínio) quando houver cobrança em aberto; em seguida o PDF de transparência com destaque da unidade.',
   })
   async transparencyPdf(
     @CurrentUser() userId: string,

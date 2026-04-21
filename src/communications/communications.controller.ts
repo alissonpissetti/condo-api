@@ -24,6 +24,7 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { AudiencePreviewDto } from './dto/audience-preview.dto';
 import { CommunicationsService } from './communications.service';
 import { CreateCommunicationDto } from './dto/create-communication.dto';
 import { UpdateCommunicationDto } from './dto/update-communication.dto';
@@ -54,6 +55,19 @@ export class CommunicationsController {
     @Body() dto: CreateCommunicationDto,
   ) {
     return this.communications.create(condominiumId, userId, dto);
+  }
+
+  @Post('audience-preview')
+  @ApiOperation({
+    summary:
+      'Pré-visualizar destinatários (contas de utilizador ligadas a proprietário ou responsável nas unidades)',
+  })
+  previewAudience(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: AudiencePreviewDto,
+  ) {
+    return this.communications.previewAudience(condominiumId, userId, dto);
   }
 
   @Get(':communicationId/attachments/:attachmentId/file')
@@ -91,7 +105,10 @@ export class CommunicationsController {
   }
 
   @Patch(':communicationId')
-  @ApiOperation({ summary: 'Actualizar rascunho' })
+  @ApiOperation({
+    summary:
+      'Actualizar rascunho (título, texto, audiência, canais) ou só audiência/canais de um informativo já enviado',
+  })
   update(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -107,7 +124,10 @@ export class CommunicationsController {
   }
 
   @Post(':communicationId/send')
-  @ApiOperation({ summary: 'Enviar informativo (e-mail + SMS conforme dados dos destinatários)' })
+  @ApiOperation({
+    summary:
+      'Enviar informativo em rascunho ou reenviar um já enviado (novos links; audiência e canais do registo; links antigos mantêm-se válidos)',
+  })
   send(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

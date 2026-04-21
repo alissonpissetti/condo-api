@@ -30,6 +30,10 @@ export class CommunicationRecipient {
   @JoinColumn({ name: 'user_id' })
   user: User;
 
+  /** Nome na ficha (ou e-mail) no momento do envio — distingue contas na mesma unidade. */
+  @Column({ name: 'recipient_display_name', type: 'varchar', length: 255, nullable: true })
+  recipientDisplayName: string | null;
+
   @Column({ name: 'email_snapshot', type: 'varchar', length: 255, nullable: true })
   emailSnapshot: string | null;
 
@@ -47,6 +51,17 @@ export class CommunicationRecipient {
 
   @Column({ name: 'sms_error', type: 'text', nullable: true })
   smsError: string | null;
+
+  @Column({
+    name: 'whatsapp_status',
+    type: 'varchar',
+    length: 16,
+    default: DeliveryChannelStatus.Skipped,
+  })
+  whatsappStatus: DeliveryChannelStatus;
+
+  @Column({ name: 'whatsapp_error', type: 'text', nullable: true })
+  whatsappError: string | null;
 
   @Column({ name: 'email_token_hash', type: 'varchar', length: 64, nullable: true })
   emailTokenHash: string | null;

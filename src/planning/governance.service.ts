@@ -198,6 +198,106 @@ export class GovernanceService {
     return [...ids];
   }
 
+  /**
+   * Unidades do condomínio (com proprietário e responsáveis carregados) para
+   * montar audiência de informativos: filtro por unidades ou por agrupamentos.
+   * Listas vazias = todas as unidades ou todos os agrupamentos, conforme `mode`.
+   */
+  async loadUnitsForCommunicationAudience(
+    condominiumId: string,
+    mode: 'units' | 'groupings',
+    selectedIds: string[],
+  ): Promise<Unit[]> {
+    const qb = this.unitRepo
+      .createQueryBuilder('u')
+      .innerJoinAndSelect('u.grouping', 'g')
+      .where('g.condominiumId = :cid', { cid: condominiumId });
+    if (mode === 'units') {
+      if (selectedIds.length > 0) {
+        qb.andWhere('u.id IN (:...uids)', { uids: selectedIds });
+      }
+    } else {
+      if (selectedIds.length > 0) {
+        qb.andWhere('g.id IN (:...gids)', { gids: selectedIds });
+      }
+    }
+    return qb
+      .leftJoinAndSelect('u.ownerPerson', 'op')
+      .leftJoinAndSelect('u.responsibleLinks', 'url')
+      .leftJoinAndSelect('url.person', 'urlp')
+      .orderBy('g.name', 'ASC')
+      .addOrderBy('u.identifier', 'ASC')
+      .getMany();
+  }
+
+  /**
+   * Contas (`users.id`) ligadas a proprietário ou responsável nas unidades
+   * filtradas (ver {@link loadUnitsForCommunicationAudience}).
+   */
+  async listUnitLinkedAccountUserIds(
+    condominiumId: string,
+    mode: 'units' | 'groupings',
+    selectedIds: string[],
+  ): Promise<string[]> {
+    const units = await this.loadUnitsForCommunicationAudience(
+      condominiumId,
+      mode,
+      selectedIds,
+    );
+    const ids = new Set<string>();
+    for (const u of units) {
+      const ou = u.ownerPerson?.userId?.trim();
+      if (ou) {
+        ids.add(ou);
+      }
+      for (const link of u.responsibleLinks ?? []) {
+        const ru = link.person?.userId?.trim();
+        if (ru) {
+          ids.add(ru);
+        }
+      }
+    }
+    return [...ids];
+  }
+
+  /**
+   * Unidades da audiência em que o utilizador é proprietário ou responsável
+   * (para links de leitura por unidade e por canal).
+   */
+  async listAudienceUnitsForAccountUser(
+    condominiumId: string,
+    mode: 'units' | 'groupings',
+    selectedIds: string[],
+    userId: string,
+  ): Promise<Unit[]> {
+    const units = await this.loadUnitsForCommunicationAudience(
+      condominiumId,
+      mode,
+      selectedIds,
+    );
+    const seen = new Set<string>();
+    const out: Unit[] = [];
+    for (const unit of units) {
+      if (seen.has(unit.id)) {
+        continue;
+      }
+      const ownerUid = unit.ownerPerson?.userId?.trim();
+      if (ownerUid === userId) {
+        seen.add(unit.id);
+        out.push(unit);
+        continue;
+      }
+      const isResp = (unit.responsibleLinks ?? []).some(
+        (l) => l.person?.userId?.trim() === userId,
+      );
+      if (isResp) {
+        seen.add(unit.id);
+        out.push(unit);
+      }
+    }
+    return out;
+  }
+
   /** Conta cadastrada como responsável (ficha) em pelo menos uma unidade. */
   private async hasUnitResponsiblePersonLink(
     condominiumId: string,
