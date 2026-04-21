@@ -10,6 +10,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { CreateSupportTicketMessageDto } from './dto/create-support-ticket-message.dto';
 import { CreateSupportTicketDto } from './dto/create-support-ticket.dto';
 import { SupportService } from './support.service';
 
@@ -33,6 +34,27 @@ export class SupportTicketsController {
   })
   create(@CurrentUser() userId: string, @Body() dto: CreateSupportTicketDto) {
     return this.support.create(userId, dto);
+  }
+
+  @Get(':ticketId/conversation')
+  @ApiOperation({
+    summary: 'Chamado com histórico de mensagens (apenas o titular do chamado)',
+  })
+  getConversation(
+    @CurrentUser() userId: string,
+    @Param('ticketId', ParseUUIDPipe) ticketId: string,
+  ) {
+    return this.support.getConversationForUser(userId, ticketId);
+  }
+
+  @Post(':ticketId/messages')
+  @ApiOperation({ summary: 'Responder no chamado (utilizador)' })
+  postUserMessage(
+    @CurrentUser() userId: string,
+    @Param('ticketId', ParseUUIDPipe) ticketId: string,
+    @Body() dto: CreateSupportTicketMessageDto,
+  ) {
+    return this.support.postMessageFromUser(userId, ticketId, dto.body);
   }
 
   @Get(':ticketId')

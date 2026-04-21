@@ -4,11 +4,13 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
 import { User } from '../../users/user.entity';
+import { SupportTicketMessage } from './support-ticket-message.entity';
 import { SupportTicketCategory } from '../enums/support-ticket-category.enum';
 import { SupportTicketStatus } from '../enums/support-ticket-status.enum';
 
@@ -43,6 +45,13 @@ export class SupportTicket {
 
   @Column({ type: 'varchar', length: 16, default: SupportTicketStatus.Open })
   status: SupportTicketStatus;
+
+  /** Token secreto para o cliente abrir o chamado pelo link do e-mail (sem expor dados a terceiros). */
+  @Column({ name: 'view_token', type: 'varchar', length: 64 })
+  viewToken: string;
+
+  @OneToMany(() => SupportTicketMessage, (m) => m.ticket)
+  messages: SupportTicketMessage[];
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

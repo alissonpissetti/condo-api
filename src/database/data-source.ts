@@ -53,6 +53,7 @@ import { CommunicationReadLinks1751100000000 } from '../migrations/1751100000000
 import { CommunicationReadAccessLogs1751200000000 } from '../migrations/1751200000000-communication-read-access-logs';
 import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
+import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -140,6 +141,7 @@ export const AppDataSource = new DataSource({
     CommunicationReadAccessLogs1751200000000,
     CommunicationDisplayNames1751210000000,
     SupportTickets1751220000000,
+    SupportTicketMessagesViewToken1751230000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

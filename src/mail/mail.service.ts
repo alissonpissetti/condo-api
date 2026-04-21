@@ -208,6 +208,53 @@ export class MailService {
     });
   }
 
+  /** Nova resposta da equipa no chamado de suporte (link com token para acompanhar). */
+  async sendSupportTicketReply(params: {
+    to: string;
+    ticketTitle: string;
+    followUrl: string;
+    replyPreview: string;
+  }): Promise<void> {
+    const preview =
+      params.replyPreview.length > 400
+        ? `${params.replyPreview.slice(0, 400)}…`
+        : params.replyPreview;
+    const subject = `Nova resposta no suporte — «${params.ticketTitle}»`;
+    const text = `Olá,\n\nA equipa deixou uma nova resposta no seu chamado de suporte «${params.ticketTitle}».\n\n---\n${preview}\n---\n\nAcompanhe o andamento e responda quando quiser, usando o link seguro abaixo (é o mesmo do e-mail; guarde-o se precisar voltar mais tarde):\n${params.followUrl}\n\nSe não abriu este chamado na plataforma, ignore este e-mail.\n\n— Meu Condomínio`;
+
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    if (!host) {
+      this.logger.warn(
+        `[e-mail não configurado — defina SMTP_HOST] Resposta suporte para ${params.to}\n${text}`,
+      );
+      return;
+    }
+
+    const port = parseInt(this.config.get<string>('SMTP_PORT', '587'), 10);
+    const secure =
+      this.config.get<string>('SMTP_SECURE', 'false').toLowerCase() === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
+    const from = this.config.get<string>(
+      'EMAIL_FROM',
+      user ?? 'noreply@localhost',
+    );
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    await transporter.sendMail({
+      from,
+      to: params.to,
+      subject,
+      text,
+    });
+  }
+
   /** Informativo do condomínio (HTML + texto alternativo). */
   async sendCommunicationBroadcast(params: {
     to: string;

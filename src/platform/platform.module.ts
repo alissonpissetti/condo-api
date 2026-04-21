@@ -16,7 +16,9 @@ import { PlatformBillingAsaasService } from './platform-billing-asaas.service';
 import { PlatformController } from './platform.controller';
 import { PlatformSaasBillingDailyCronService } from './platform-saas-billing-daily.cron';
 import { PlatformService } from './platform.service';
+import { PlatformSupportTicketsController } from './platform-support-tickets.controller';
 import { SaasPlansModule } from './saas-plans.module';
+import { SupportModule } from '../support/support.module';
 
 @Module({
   imports: [
@@ -30,8 +32,13 @@ import { SaasPlansModule } from './saas-plans.module';
     UsersModule,
     SaasPlansModule,
     MailModule,
+    SupportModule,
   ],
-  controllers: [PlatformController, PlatformAsaasWebhookController],
+  controllers: [
+    PlatformController,
+    PlatformAsaasWebhookController,
+    PlatformSupportTicketsController,
+  ],
   providers: [
     PlatformService,
     PlatformBillingAsaasService,
