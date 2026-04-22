@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import {
   drawDocumentHeaderLogo,
   installPlatformWatermarkUnderAllContent,
@@ -19,6 +19,10 @@ import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
+import {
+  CondominiumFeeChargePaymentLog,
+  type CondominiumFeeChargePaymentLogAction,
+} from './entities/condominium-fee-charge-payment-log.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { Unit } from '../units/unit.entity';
@@ -31,12 +35,27 @@ import {
   todayLocalCalendarAsUtcNoon,
 } from './date-only.util';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
+import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import {
   dueDateForCompetenceYm,
   firstDayOfCompetenceYm,
   isValidCompetenceYm,
   lastDayOfCompetenceYm,
 } from './finance-competence.util';
+
+const UNIT_REL_FOR_FEE_VIEW = {
+  grouping: true,
+  financialResponsiblePerson: true,
+  responsibleLinks: { person: true },
+} as const;
+
+export interface CondominiumFeeChargePaymentLogView {
+  id: string;
+  action: CondominiumFeeChargePaymentLogAction;
+  actorUserId: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
 
 export interface CondominiumFeeChargeView {
   id: string;
@@ -51,6 +70,12 @@ export interface CondominiumFeeChargeView {
   incomeTransactionId: string | null;
   /** `true` quando houver um comprovante (imagem/PDF) anexado ao quitar. */
   hasPaymentReceipt: boolean;
+  /**
+   * Nome único para contexto financeiro (responsável financeiro da unidade,
+   * ou único responsável, ou rótulo livre). `null` se houver vários responsáveis
+   * sem designação.
+   */
+  financialResponsibleName: string | null;
 }
 
 @Injectable()
@@ -58,6 +83,8 @@ export class CondominiumFeesService {
   constructor(
     @InjectRepository(CondominiumFeeCharge)
     private readonly chargeRepo: Repository<CondominiumFeeCharge>,
+    @InjectRepository(CondominiumFeeChargePaymentLog)
+    private readonly feePaymentLogRepo: Repository<CondominiumFeeChargePaymentLog>,
     @InjectRepository(TransactionUnitShare)
     private readonly shareRepo: Repository<TransactionUnitShare>,
     @InjectRepository(FinancialTransaction)
@@ -99,6 +126,20 @@ export class CondominiumFeesService {
     }
 
     const rows = await qb.getMany();
+    const uids = [...new Set(rows.map((r) => r.unitId))];
+    if (uids.length > 0) {
+      const units = await this.unitRepo.find({
+        where: { id: In(uids) },
+        relations: UNIT_REL_FOR_FEE_VIEW,
+      });
+      const map = new Map(units.map((uu) => [uu.id, uu]));
+      for (const c of rows) {
+        const u = map.get(c.unitId);
+        if (u) {
+          c.unit = u;
+        }
+      }
+    }
     return rows.map((c) => this.toView(c));
   }
 
@@ -178,7 +219,7 @@ export class CondominiumFeesService {
     });
     if (paidCount > 0) {
       throw new BadRequestException(
-        'Cannot regenerate: there are paid charges for this month. Unlink payments first.',
+        'Não é possível regenerar: existem cobranças quitadas neste mês. Reabra o pagamento (POST …/reopen-payment) nas cobranças necessárias e tente de novo.',
       );
     }
 
@@ -225,7 +266,7 @@ export class CondominiumFeesService {
     await this.governance.assertManagement(condominiumId, userId);
     const charge = await this.chargeRepo.findOne({
       where: { id: chargeId, condominiumId },
-      relations: { unit: { grouping: true } },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
     });
     if (!charge) {
       throw new NotFoundException('Charge not found');
@@ -283,12 +324,165 @@ export class CondominiumFeesService {
     await this.chargeRepo.save(charge);
     const fresh = await this.chargeRepo.findOne({
       where: { id: charge.id, condominiumId },
-      relations: { unit: { grouping: true } },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
     });
     if (!fresh) {
       throw new NotFoundException('Charge not found');
     }
     return this.toView(fresh);
+  }
+
+  /**
+   * Reabre uma cobrança quitada: volta a «em aberto», desvincula receita e anexo
+   * actual, registando um histórico com o estado anterior (ficheiros no storage
+   * mantêm-se para auditoria; a chave antiga fica no log).
+   */
+  async reopenPayment(
+    condominiumId: string,
+    userId: string,
+    chargeId: string,
+    reason?: string | null,
+  ): Promise<CondominiumFeeChargeView> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const charge = await this.chargeRepo.findOne({
+      where: { id: chargeId, condominiumId },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
+    });
+    if (!charge) {
+      throw new NotFoundException('Cobrança não encontrada.');
+    }
+    if (charge.status !== 'paid') {
+      throw new BadRequestException(
+        'Só é possível reabrir uma cobrança já quitada.',
+      );
+    }
+
+    const detail: Record<string, unknown> = {
+      reason: reason?.trim() || null,
+      previousPaidAt: charge.paidAt
+        ? formatDateOnlyYmdUtc(charge.paidAt)
+        : null,
+      previousIncomeTransactionId: charge.incomeTransactionId,
+      previousReceiptKey: charge.paymentReceiptStorageKey,
+    };
+
+    await this.chargeRepo.manager.transaction(async (mgr) => {
+      await mgr.save(
+        mgr.create(CondominiumFeeChargePaymentLog, {
+          chargeId: charge.id,
+          actorUserId: userId,
+          action: 'payment_reopened',
+          detail,
+        }),
+      );
+      charge.status = 'open';
+      charge.paidAt = null;
+      charge.incomeTransactionId = null;
+      charge.paymentReceiptStorageKey = null;
+      await mgr.save(charge);
+    });
+
+    const fresh = await this.chargeRepo.findOne({
+      where: { id: charge.id, condominiumId },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
+    });
+    if (!fresh) {
+      throw new NotFoundException('Cobrança não encontrada.');
+    }
+    return this.toView(fresh);
+  }
+
+  /**
+   * Troca só o anexo de comprovante (quitação) numa cobrança ainda quitada.
+   * O ficheiro deve ter sido enviado antes (`transaction-receipts`); usa
+   * `RECEIPT_STORAGE` (local ou Nextcloud). Remove o ficheiro antigo do storage.
+   */
+  async replacePaymentReceipt(
+    condominiumId: string,
+    userId: string,
+    chargeId: string,
+    newReceiptKey: string,
+  ): Promise<CondominiumFeeChargeView> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const key = newReceiptKey.trim();
+    if (!this.storage.isValidReceiptKey(key)) {
+      throw new BadRequestException('Chave de comprovante inválida.');
+    }
+    await this.storage.assertReceiptExists(condominiumId, key);
+
+    const charge = await this.chargeRepo.findOne({
+      where: { id: chargeId, condominiumId },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
+    });
+    if (!charge) {
+      throw new NotFoundException('Cobrança não encontrada.');
+    }
+    if (charge.status !== 'paid') {
+      throw new BadRequestException(
+        'Só é possível substituir o anexo numa cobrança quitada.',
+      );
+    }
+
+    const oldKey = charge.paymentReceiptStorageKey;
+    if (oldKey === key) {
+      throw new BadRequestException('O anexo indicado já é o actual.');
+    }
+
+    const detail: Record<string, unknown> = {
+      previousReceiptKey: oldKey,
+      newReceiptKey: key,
+    };
+
+    await this.chargeRepo.manager.transaction(async (mgr) => {
+      await mgr.save(
+        mgr.create(CondominiumFeeChargePaymentLog, {
+          chargeId: charge.id,
+          actorUserId: userId,
+          action: 'receipt_replaced',
+          detail,
+        }),
+      );
+      charge.paymentReceiptStorageKey = key;
+      await mgr.save(charge);
+    });
+
+    if (oldKey) {
+      await this.storage.deleteReceipt(condominiumId, oldKey);
+    }
+
+    const fresh = await this.chargeRepo.findOne({
+      where: { id: charge.id, condominiumId },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
+    });
+    if (!fresh) {
+      throw new NotFoundException('Cobrança não encontrada.');
+    }
+    return this.toView(fresh);
+  }
+
+  async listPaymentHistory(
+    condominiumId: string,
+    userId: string,
+    chargeId: string,
+  ): Promise<CondominiumFeeChargePaymentLogView[]> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const charge = await this.chargeRepo.findOne({
+      where: { id: chargeId, condominiumId },
+    });
+    if (!charge) {
+      throw new NotFoundException('Cobrança não encontrada.');
+    }
+    const rows = await this.feePaymentLogRepo.find({
+      where: { chargeId: charge.id },
+      order: { createdAt: 'DESC' },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      action: r.action,
+      actorUserId: r.actorUserId,
+      detail: r.detail,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   /**
@@ -337,7 +531,7 @@ export class CondominiumFeesService {
 
     const fresh = await this.chargeRepo.find({
       where: uniqueIds.map((id) => ({ id, condominiumId })),
-      relations: { unit: { grouping: true } },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
     });
     return fresh.map((c) => this.toView(c));
   }
@@ -378,7 +572,7 @@ export class CondominiumFeesService {
     );
     const charge = await this.chargeRepo.findOne({
       where: { id: chargeId, condominiumId },
-      relations: { unit: { grouping: true } },
+      relations: { unit: UNIT_REL_FOR_FEE_VIEW },
     });
     if (!charge) {
       throw new NotFoundException('Charge not found');
@@ -399,6 +593,13 @@ export class CondominiumFeesService {
     const u = charge.unit;
     const unitLabel = u?.identifier ?? '—';
     const groupingName = u?.grouping?.name ?? '—';
+    const financialRefName = u
+      ? resolveUnitFinancialResponsibleDisplayName({
+          financialResponsiblePerson: u.financialResponsiblePerson ?? null,
+          responsibleLinks: u.responsibleLinks ?? null,
+          responsibleDisplayName: u.responsibleDisplayName ?? null,
+        })
+      : null;
     const competenceYm = charge.competenceYm;
     const dueOn = formatDateOnlyYmdUtc(charge.dueOn);
     const paidAt = charge.paidAt
@@ -483,6 +684,11 @@ export class CondominiumFeesService {
       doc.font('Helvetica').fontSize(10.5);
       doc.text(`Unidade: ${unitLabel}`, { width: w });
       doc.text(`Agrupamento: ${groupingName}`, { width: w });
+      if (financialRefName) {
+        doc.text(`Responsável (referência financeira): ${financialRefName}`, {
+          width: w,
+        });
+      }
       doc.text(`Competência: ${competenceYm}`, { width: w });
       doc.text(`Vencimento: ${this.ymdToPtBr(dueOn)}`, { width: w });
       doc.moveDown(0.75);
@@ -569,6 +775,13 @@ export class CondominiumFeesService {
     const due = formatDateOnlyYmdUtc(c.dueOn);
     const paid =
       c.paidAt == null ? null : formatDateOnlyYmdUtc(c.paidAt);
+    const financialResponsibleName = u
+      ? resolveUnitFinancialResponsibleDisplayName({
+          financialResponsiblePerson: u.financialResponsiblePerson ?? null,
+          responsibleLinks: u.responsibleLinks ?? null,
+          responsibleDisplayName: u.responsibleDisplayName ?? null,
+        })
+      : null;
     return {
       id: c.id,
       competenceYm: c.competenceYm,
@@ -581,6 +794,7 @@ export class CondominiumFeesService {
       paidAt: paid,
       incomeTransactionId: c.incomeTransactionId,
       hasPaymentReceipt: !!c.paymentReceiptStorageKey,
+      financialResponsibleName,
     };
   }
 

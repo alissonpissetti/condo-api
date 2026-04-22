@@ -11,6 +11,7 @@ import { AllocationResolverService } from './allocation-resolver.service';
 import { CondominiumFeesController } from './condominium-fees.controller';
 import { CondominiumFeesService } from './condominium-fees.service';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
+import { CondominiumFeeChargePaymentLog } from './entities/condominium-fee-charge-payment-log.entity';
 import { FinancialFund } from './entities/financial-fund.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
@@ -35,6 +36,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       TransactionUnitShare,
       FundMonthlyAccrual,
       CondominiumFeeCharge,
+      CondominiumFeeChargePaymentLog,
       Unit,
       UnitResponsiblePerson,
       Grouping,

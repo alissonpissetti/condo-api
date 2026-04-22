@@ -30,6 +30,15 @@ export class CreateTransactionDto {
   @IsDateString()
   occurredOn: string;
 
+  @ApiPropertyOptional({
+    example: '2026-04-01',
+    description:
+      'Competência contábil (YYYY-MM-DD). Se omitir, usa-se a mesma data de ocorrência.',
+  })
+  @IsOptional()
+  @IsDateString()
+  competencyOn?: string;
+
   @ApiProperty({ example: 'Conta de luz abril' })
   @IsString()
   @MinLength(1)

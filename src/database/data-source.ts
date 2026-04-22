@@ -37,6 +37,7 @@ import { SaasPlanPeriodsChangeRequests1750280000000 } from '../migrations/175028
 import { SaasPlanUnitPriceTiers1750290000000 } from '../migrations/1750290000000-saas-plan-unit-price-tiers';
 import { TransactionRecurringSeries1750300000000 } from '../migrations/1750300000000-transaction-recurring-series';
 import { CondominiumBillingContact1750310000000 } from '../migrations/1750310000000-condominium-billing-contact';
+import { TransactionCompetencyRecurrence1750310000000 } from '../migrations/1750310000000-transaction-competency-recurrence';
 import { CondominiumManagementLogo1750320000000 } from '../migrations/1750320000000-condominium-management-logo';
 import { UnitMemberDisplayNames1750330000000 } from '../migrations/1750330000000-unit-member-display-names';
 import { DropCondominiumDocumentMembersNote1750350000000 } from '../migrations/1750350000000-drop-condominium-document-members-note';
@@ -54,6 +55,9 @@ import { CommunicationReadAccessLogs1751200000000 } from '../migrations/17512000
 import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
+import { EnsureTransactionCompetencyColumns1751240000000 } from '../migrations/1751240000000-ensure-transaction-competency-columns';
+import { CondominiumFeeChargePaymentLogs1751250000000 } from '../migrations/1751250000000-condominium-fee-charge-payment-logs';
+import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751260000000-units-financial-responsible-person';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
@@ -125,6 +129,7 @@ export const AppDataSource = new DataSource({
     SaasPlanUnitPriceTiers1750290000000,
     TransactionRecurringSeries1750300000000,
     CondominiumBillingContact1750310000000,
+    TransactionCompetencyRecurrence1750310000000,
     CondominiumManagementLogo1750320000000,
     UnitMemberDisplayNames1750330000000,
     DropCondominiumDocumentMembersNote1750350000000,
@@ -142,6 +147,9 @@ export const AppDataSource = new DataSource({
     CommunicationDisplayNames1751210000000,
     SupportTickets1751220000000,
     SupportTicketMessagesViewToken1751230000000,
+    EnsureTransactionCompetencyColumns1751240000000,
+    CondominiumFeeChargePaymentLogs1751250000000,
+    UnitsFinancialResponsiblePerson1751260000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

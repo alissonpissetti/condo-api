@@ -1,9 +1,9 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
@@ -23,7 +23,8 @@ import { CondominiumDocumentStatus } from './enums/condominium-document-status.e
 import { AssemblyType } from './enums/assembly-type.enum';
 import { GovernanceRole } from './enums/governance-role.enum';
 import { PlanningPollStatus } from './enums/planning-poll-status.enum';
-import { DocumentStorageHelper } from './document-storage.helper';
+import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
+import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { GovernanceService } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { Person } from '../people/person.entity';
@@ -32,8 +33,6 @@ import { stripPollBodyToPlainText } from './poll-body-sanitize';
 
 @Injectable()
 export class PlanningDocumentsService {
-  private readonly storage: DocumentStorageHelper;
-
   constructor(
     @InjectRepository(CondominiumDocument)
     private readonly docRepo: Repository<CondominiumDocument>,
@@ -47,10 +46,9 @@ export class PlanningDocumentsService {
     private readonly personRepo: Repository<Person>,
     private readonly governance: GovernanceService,
     private readonly usersService: UsersService,
-    config: ConfigService,
-  ) {
-    this.storage = new DocumentStorageHelper(config);
-  }
+    @Inject(RECEIPT_STORAGE)
+    private readonly fileStorage: ReceiptStoragePort,
+  ) {}
 
   async list(condominiumId: string, userId: string) {
     const access = await this.governance.assertAnyAccess(condominiumId, userId);
@@ -111,7 +109,10 @@ export class PlanningDocumentsService {
       unitsVoted,
     );
 
-    const storageKey = await this.storage.savePdf(condominiumId, pdfBuffer);
+    const storageKey = await this.fileStorage.savePlanningDocumentPdf(
+      condominiumId,
+      pdfBuffer,
+    );
     const title = `Ata — ${poll.title}`.slice(0, 500);
     return this.docRepo.save(
       this.docRepo.create({
@@ -142,7 +143,10 @@ export class PlanningDocumentsService {
       dto,
       userId,
     );
-    const storageKey = await this.storage.savePdf(condominiumId, pdfBuffer);
+    const storageKey = await this.fileStorage.savePlanningDocumentPdf(
+      condominiumId,
+      pdfBuffer,
+    );
     const title = `Ata de reunião — ${dto.title.trim()}`.slice(0, 500);
     return this.docRepo.save(
       this.docRepo.create({
@@ -1006,7 +1010,10 @@ export class PlanningDocumentsService {
     if (!isMgmt && !row.visibleToAllResidents) {
       throw new BadRequestException('Documento não disponível.');
     }
-    return this.storage.readFile(condominiumId, row.storageKey);
+    return this.fileStorage.readPlanningDocument(
+      condominiumId,
+      row.storageKey,
+    );
   }
 
   async uploadFinalPdf(
@@ -1027,7 +1034,10 @@ export class PlanningDocumentsService {
         ? CondominiumDocumentKind.MeetingMinutesFinal
         : CondominiumDocumentKind.AssemblyMinutesFinal;
     row.status = CondominiumDocumentStatus.PendingUpload;
-    const key = await this.storage.savePdf(condominiumId, buffer);
+    const key = await this.fileStorage.savePlanningDocumentPdf(
+      condominiumId,
+      buffer,
+    );
     row.storageKey = key;
     row.mimeType = 'application/pdf';
     return this.docRepo.save(row);

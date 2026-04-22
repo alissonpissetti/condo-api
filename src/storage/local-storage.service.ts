@@ -15,6 +15,9 @@ const RECEIPT_KEY_RE =
 const MANAGEMENT_LOGO_KEY_RE =
   /^management-logo\/logo\.(png|jpg|jpeg|webp)$/i;
 
+const PLANNING_DOC_KEY_RE =
+  /^documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/i;
+
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -49,6 +52,11 @@ export class LocalStorageService implements ReceiptStoragePort {
   isValidManagementLogoKey(key: string | null | undefined): boolean {
     if (!key || typeof key !== 'string') return false;
     return MANAGEMENT_LOGO_KEY_RE.test(key);
+  }
+
+  isValidPlanningDocumentKey(key: string | null | undefined): boolean {
+    if (!key || typeof key !== 'string') return false;
+    return PLANNING_DOC_KEY_RE.test(key);
   }
 
   async saveTransactionReceipt(
@@ -191,6 +199,43 @@ export class LocalStorageService implements ReceiptStoragePort {
     } catch {
       /* ignore */
     }
+  }
+
+  async savePlanningDocumentPdf(
+    condominiumId: string,
+    buffer: Buffer,
+  ): Promise<string> {
+    const maxBytes = 12 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('PDF muito grande (máx. 12 MB).');
+    }
+    const id = randomUUID();
+    const relativeKey = `documents/${id}.pdf`;
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, buffer);
+    return relativeKey;
+  }
+
+  async readPlanningDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    if (!this.isValidPlanningDocumentKey(relativeKey)) {
+      throw new BadRequestException('Chave de documento inválida.');
+    }
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = await fs.readFile(abs);
+    } catch {
+      throw new NotFoundException('Arquivo não encontrado.');
+    }
+    return {
+      buffer: fileBuffer,
+      contentType: 'application/pdf',
+      filename: path.basename(relativeKey),
+    };
   }
 
   private absolutePath(condominiumId: string, relativeKey: string): string {
