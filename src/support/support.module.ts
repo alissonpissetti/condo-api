@@ -9,6 +9,7 @@ import { SupportTicketMessage } from './entities/support-ticket-message.entity';
 import { SupportTicket } from './entities/support-ticket.entity';
 import { SupportPublicController } from './support-public.controller';
 import { SupportTicketsController } from './support-tickets.controller';
+import { SupportAttachmentStorageService } from './support-attachment-storage.service';
 import { SupportService } from './support.service';
 
 @Module({
@@ -24,7 +25,7 @@ import { SupportService } from './support.service';
     MailModule,
   ],
   controllers: [SupportTicketsController, SupportPublicController],
-  providers: [SupportService],
+  providers: [SupportService, SupportAttachmentStorageService],
   exports: [SupportService],
 })
 export class SupportModule {}

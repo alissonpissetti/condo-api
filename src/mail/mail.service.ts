@@ -208,7 +208,7 @@ export class MailService {
     });
   }
 
-  /** Nova resposta da equipa no chamado de suporte (link com token para acompanhar). */
+  /** Nova resposta da equipe no chamado de suporte (link com token para acompanhar). */
   async sendSupportTicketReply(params: {
     to: string;
     ticketTitle: string;
@@ -220,12 +220,72 @@ export class MailService {
         ? `${params.replyPreview.slice(0, 400)}…`
         : params.replyPreview;
     const subject = `Nova resposta no suporte — «${params.ticketTitle}»`;
-    const text = `Olá,\n\nA equipa deixou uma nova resposta no seu chamado de suporte «${params.ticketTitle}».\n\n---\n${preview}\n---\n\nAcompanhe o andamento e responda quando quiser, usando o link seguro abaixo (é o mesmo do e-mail; guarde-o se precisar voltar mais tarde):\n${params.followUrl}\n\nSe não abriu este chamado na plataforma, ignore este e-mail.\n\n— Meu Condomínio`;
+    const text = `Olá,\n\nA equipe deixou uma nova resposta no seu chamado de suporte «${params.ticketTitle}».\n\n---\n${preview}\n---\n\nAcompanhe o andamento e responda quando quiser, usando o link seguro abaixo (é o mesmo do e-mail; guarde-o se precisar voltar mais tarde):\n${params.followUrl}\n\nSe você não abriu este chamado na plataforma, ignore este e-mail.\n\n— Meu Condomínio`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {
       this.logger.warn(
         `[e-mail não configurado — defina SMTP_HOST] Resposta suporte para ${params.to}\n${text}`,
+      );
+      return;
+    }
+
+    const port = parseInt(this.config.get<string>('SMTP_PORT', '587'), 10);
+    const secure =
+      this.config.get<string>('SMTP_SECURE', 'false').toLowerCase() === 'true';
+    const user = this.config.get<string>('SMTP_USER');
+    const pass = this.config.get<string>('SMTP_PASS');
+    const from = this.config.get<string>(
+      'EMAIL_FROM',
+      user ?? 'noreply@localhost',
+    );
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    await transporter.sendMail({
+      from,
+      to: params.to,
+      subject,
+      text,
+    });
+  }
+
+  /**
+   * Cópia para o síndico (dono do condomínio): chamado à plataforma com contexto do condomínio,
+   * ou solicitação dirigida à gestão do condomínio.
+   */
+  async sendSupportTicketOpenedSyndicCopy(params: {
+    to: string;
+    condominiumName: string;
+    requesterName: string;
+    requesterEmail: string;
+    categoryLabel: string;
+    ticketTitle: string;
+    bodyPreview: string;
+    /** true = pedido à gestão do condomínio; false = pedido à plataforma com este condomínio como contexto. */
+    directedToCondominiumManagement: boolean;
+  }): Promise<void> {
+    const preview =
+      params.bodyPreview.length > 800
+        ? `${params.bodyPreview.slice(0, 800)}…`
+        : params.bodyPreview;
+    const subject = params.directedToCondominiumManagement
+      ? `[${params.condominiumName}] Nova solicitação à gestão do condomínio`
+      : `[${params.condominiumName}] Novo chamado à plataforma Meu Condomínio (contexto)`;
+    const intro = params.directedToCondominiumManagement
+      ? `Um usuário com acesso ao condomínio «${params.condominiumName}» registrou uma solicitação dirigida à gestão do condomínio (você como síndico(a)). O registro também fica no sistema para a equipe da plataforma acompanhar quando necessário.`
+      : `Um usuário com acesso ao condomínio «${params.condominiumName}» abriu um chamado à plataforma Meu Condomínio e indicou este condomínio como contexto. Você recebe esta mensagem como síndico(a) — o atendimento principal é feito pela equipe da plataforma; este e-mail é para ciência.`;
+    const text = `Olá,\n\n${intro}\n\nQuem abriu: ${params.requesterName} <${params.requesterEmail}>\nCategoria: ${params.categoryLabel}\nAssunto: ${params.ticketTitle}\n\n---\n${preview}\n---\n\nSe precisar alinhar algo com a pessoa que abriu, use o contato acima.\n\n— Meu Condomínio`;
+
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    if (!host) {
+      this.logger.warn(
+        `[e-mail não configurado — defina SMTP_HOST] Cópia chamado suporte (síndico) para ${params.to}\n${text}`,
       );
       return;
     }

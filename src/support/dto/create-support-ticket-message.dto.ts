@@ -1,10 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import { IsString, MaxLength } from 'class-validator';
 
 export class CreateSupportTicketMessageDto {
-  @ApiProperty({ maxLength: 20000 })
+  @ApiProperty({
+    maxLength: 20000,
+    description: 'Texto da mensagem (pode ficar vazio se houver anexos no multipart).',
+  })
   @IsString()
-  @MinLength(1)
   @MaxLength(20000)
   body: string;
 }

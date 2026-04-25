@@ -34,6 +34,10 @@ export class SupportTicketMessage {
   @Column({ type: 'text' })
   body: string;
 
+  /** JSON array de anexos: storageKey, originalFilename, mimeType, sizeBytes. */
+  @Column({ name: 'attachments_json', type: 'text', nullable: true })
+  attachmentsJson: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

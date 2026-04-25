@@ -13,6 +13,7 @@ import { User } from '../../users/user.entity';
 import { SupportTicketMessage } from './support-ticket-message.entity';
 import { SupportTicketCategory } from '../enums/support-ticket-category.enum';
 import { SupportTicketStatus } from '../enums/support-ticket-status.enum';
+import { SupportTicketTarget } from '../enums/support-ticket-target.enum';
 
 @Entity('support_tickets')
 export class SupportTicket {
@@ -33,6 +34,10 @@ export class SupportTicket {
   @ManyToOne(() => Condominium, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'condominium_id' })
   condominium: Condominium | null;
+
+  /** `platform` = Meu Condomínio (produto); `condominium` = gestão do condomínio. */
+  @Column({ type: 'varchar', length: 20, default: SupportTicketTarget.Platform })
+  target: SupportTicketTarget;
 
   @Column({ type: 'varchar', length: 24 })
   category: SupportTicketCategory;
