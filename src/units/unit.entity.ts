@@ -57,6 +57,22 @@ export class Unit {
   })
   responsibleDisplayName: string | null;
 
+  /**
+   * Quando há vários responsáveis na ficha, indica qual nome usar em taxas e
+   * relatórios financeiros. Tem de existir em `unit_responsible_people`.
+   */
+  @Column({
+    name: 'financial_responsible_person_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  financialResponsiblePersonId: string | null;
+
+  @ManyToOne(() => Person, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'financial_responsible_person_id' })
+  financialResponsiblePerson: Person | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GovernanceService } from '../planning/governance.service';
@@ -6,6 +10,7 @@ import { Grouping } from '../groupings/grouping.entity';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
 import { Unit } from './unit.entity';
+import { UnitResponsiblePerson } from './unit-responsible-person.entity';
 import { flattenUnitResponsiblesForApi } from './unit-response.util';
 
 @Injectable()
@@ -22,8 +27,27 @@ export class UnitsService {
     private readonly unitRepo: Repository<Unit>,
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
+    @InjectRepository(UnitResponsiblePerson)
+    private readonly unitResponsibleRepo: Repository<UnitResponsiblePerson>,
     private readonly governanceService: GovernanceService,
   ) {}
+
+  private async assertFinancialResponsiblePerson(
+    unitId: string,
+    personId: string | null | undefined,
+  ): Promise<void> {
+    if (personId === undefined || personId === null) {
+      return;
+    }
+    const ok = await this.unitResponsibleRepo.exist({
+      where: { unitId, personId },
+    });
+    if (!ok) {
+      throw new BadRequestException(
+        'O responsável financeiro tem de ser uma das pessoas já associadas como responsável desta unidade.',
+      );
+    }
+  }
 
   private async requireGroupingInCondo(
     condominiumId: string,
@@ -64,7 +88,11 @@ export class UnitsService {
     await this.assertGroupingReadable(condominiumId, groupingId, userId);
     const rows = await this.unitRepo.find({
       where: { groupingId },
-      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+      relations: {
+        ownerPerson: true,
+        responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
+      },
       order: { createdAt: 'ASC' },
     });
     for (const u of rows) {
@@ -107,7 +135,11 @@ export class UnitsService {
     await this.assertGroupingReadable(condominiumId, groupingId, userId);
     const unit = await this.unitRepo.findOne({
       where: { id: unitId, groupingId },
-      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+      relations: {
+        ownerPerson: true,
+        responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
+      },
     });
     if (!unit) {
       throw new NotFoundException('Unit not found');
@@ -126,7 +158,11 @@ export class UnitsService {
     await this.assertGroupingManaged(condominiumId, groupingId, userId);
     const unit = await this.unitRepo.findOne({
       where: { id: unitId, groupingId },
-      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+      relations: {
+        ownerPerson: true,
+        responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
+      },
     });
     if (!unit) {
       throw new NotFoundException('Unit not found');
@@ -150,10 +186,22 @@ export class UnitsService {
         dto.responsibleDisplayName,
       );
     }
+    if (dto.financialResponsiblePersonId !== undefined) {
+      const pid =
+        dto.financialResponsiblePersonId === null
+          ? null
+          : dto.financialResponsiblePersonId.trim();
+      await this.assertFinancialResponsiblePerson(unit.id, pid);
+      unit.financialResponsiblePersonId = pid;
+    }
     const saved = await this.unitRepo.save(unit);
     const withLinks = await this.unitRepo.findOne({
       where: { id: saved.id, groupingId },
-      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+      relations: {
+        ownerPerson: true,
+        responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
+      },
     });
     if (withLinks) {
       flattenUnitResponsiblesForApi(withLinks);

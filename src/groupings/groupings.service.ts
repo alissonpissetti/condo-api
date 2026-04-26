@@ -54,6 +54,7 @@ export class GroupingsService {
       .leftJoinAndSelect('u.ownerPerson', 'op')
       .leftJoinAndSelect('u.responsibleLinks', 'url')
       .leftJoinAndSelect('url.person', 'urlp')
+      .leftJoinAndSelect('u.financialResponsiblePerson', 'ufin')
       .where('g.condominiumId = :cid', { cid: condominiumId })
       .orderBy('g.createdAt', 'ASC')
       .addOrderBy('u.createdAt', 'ASC')

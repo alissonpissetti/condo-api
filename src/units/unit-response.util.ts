@@ -1,4 +1,5 @@
 import type { Unit } from './unit.entity';
+import { resolveUnitFinancialResponsibleDisplayName } from './unit-financial-responsible.util';
 
 /**
  * Expõe `responsiblePeople` + campos legados (`responsiblePerson` = primeiro)
@@ -18,6 +19,7 @@ export function flattenUnitResponsiblesForApi(unit: Unit): void {
     } | null;
     responsiblePersonId?: string | null;
     responsibleLinks?: unknown;
+    financialResponsibleName?: string | null;
   };
   const links = u.responsibleLinks as
     | Array<{
@@ -44,5 +46,10 @@ export function flattenUnitResponsiblesForApi(unit: Unit): void {
   u.responsiblePeople = people;
   u.responsiblePerson = people[0] ?? null;
   u.responsiblePersonId = people[0]?.id ?? null;
+  u.financialResponsibleName = resolveUnitFinancialResponsibleDisplayName({
+    financialResponsiblePerson: (unit as Unit).financialResponsiblePerson,
+    responsibleLinks: links,
+    responsibleDisplayName: u.responsibleDisplayName,
+  });
   Reflect.deleteProperty(unit as object, 'responsibleLinks');
 }

@@ -121,6 +121,7 @@ export class FinancialTransactionsService {
   async createInternal(
     condominiumId: string,
     dto: CreateTransactionDto,
+    opts?: { recurrenceId?: string },
   ): Promise<FinancialTransaction> {
     this.validateAllocationForKind(dto.kind, dto.allocationRule);
     if (!isAllocationRule(dto.allocationRule)) {
@@ -134,7 +135,7 @@ export class FinancialTransactionsService {
       dto.allocationRule,
     );
     const shares = this.buildShares(dto.kind, dto.amountCents, unitIds);
-    const id = await this.persistTransaction(condominiumId, dto, shares);
+    const id = await this.persistTransaction(condominiumId, dto, shares, opts);
     const t = await this.txRepo.findOne({
       where: { id, condominiumId },
       relations: { fund: true, unitShares: { unit: true } },
@@ -195,9 +196,11 @@ export class FinancialTransactionsService {
       });
       existing.kind = kind;
       existing.amountCents = String(amountCents);
-      existing.occurredOn = dto.occurredOn
-        ? parseDateOnlyFromApi(dto.occurredOn)
-        : existing.occurredOn;
+      if (dto.occurredOn) {
+        const d = parseDateOnlyFromApi(dto.occurredOn);
+        existing.occurredOn = d;
+        existing.competencyOn = d;
+      }
       existing.title = dto.title ?? existing.title;
       existing.description =
         dto.description !== undefined ? dto.description : existing.description;
@@ -409,19 +412,26 @@ export class FinancialTransactionsService {
     condominiumId: string,
     dto: CreateTransactionDto,
     shares: { unitId: string; shareCents: string }[],
+    opts?: { recurrenceId?: string },
   ): Promise<string> {
+    const occurredOn = parseDateOnlyFromApi(dto.occurredOn);
+    const competencyOn = dto.competencyOn
+      ? parseDateOnlyFromApi(dto.competencyOn)
+      : occurredOn;
     return this.dataSource.transaction(async (manager) => {
       const tx = manager.create(FinancialTransaction, {
         condominiumId,
         fundId: dto.fundId ?? null,
         kind: dto.kind,
         amountCents: String(dto.amountCents),
-        occurredOn: parseDateOnlyFromApi(dto.occurredOn),
+        occurredOn,
+        competencyOn,
         title: dto.title,
         description: dto.description ?? null,
         allocationRule: dto.allocationRule,
         receiptStorageKey: dto.receiptStorageKey ?? null,
         recurringSeriesId: dto.recurringSeriesId ?? null,
+        recurrenceId: opts?.recurrenceId ?? null,
       });
       const saved = await manager.save(tx);
       for (const row of shares) {

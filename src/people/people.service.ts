@@ -504,7 +504,10 @@ export class PeopleService {
     await this.unitResponsibleRepo.delete({ unitId: unit.id });
     await this.unitRepo.update(
       { id: unit.id },
-      { responsibleDisplayName: null },
+      {
+        responsibleDisplayName: null,
+        financialResponsiblePersonId: null,
+      },
     );
   }
 
@@ -529,6 +532,16 @@ export class PeopleService {
     if ((del.affected ?? 0) < 1) {
       throw new NotFoundException(
         'Esta pessoa não está associada como responsável desta unidade.',
+      );
+    }
+    const row = await this.unitRepo.findOne({
+      where: { id: unit.id },
+      select: { id: true, financialResponsiblePersonId: true },
+    });
+    if (row?.financialResponsiblePersonId === personId) {
+      await this.unitRepo.update(
+        { id: unit.id },
+        { financialResponsiblePersonId: null },
       );
     }
   }

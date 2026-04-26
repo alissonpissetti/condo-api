@@ -33,4 +33,15 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+
+  /** PDFs de atas / planeamento (`documents/{uuid}.pdf`). */
+  isValidPlanningDocumentKey(key: string | null | undefined): boolean;
+  savePlanningDocumentPdf(
+    condominiumId: string,
+    buffer: Buffer,
+  ): Promise<string>;
+  readPlanningDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
 }

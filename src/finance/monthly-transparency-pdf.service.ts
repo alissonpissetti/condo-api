@@ -34,6 +34,7 @@ import {
 import { isAllocationRule } from './allocation.types';
 import { distributePositiveCents } from './distribute-cents';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
+import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import { FundBalanceService } from './fund-balance.service';
 import {
   buildPixBrCode,
@@ -49,7 +50,7 @@ type UnitCol = {
   identifier: string;
   groupingName: string;
   groupingId: string;
-  /** Responsável identificado (ficha) ou rótulo livre na unidade. */
+  /** Nome único para referência financeira (responsável financeiro, único responsável ou rótulo livre). */
   responsibleName: string | null;
 };
 
@@ -187,6 +188,7 @@ export class MonthlyTransparencyPdfService {
         grouping: true,
         ownerPerson: true,
         responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
       },
     });
     const unitById = new Map(allUnitsForAlloc.map((u) => [u.id, u]));
@@ -213,13 +215,12 @@ export class MonthlyTransparencyPdfService {
             u.ownerPerson?.fullName?.trim() ||
             u.ownerDisplayName?.trim() ||
             null;
-          const respNames = (u.responsibleLinks ?? [])
-            .map((l) => l.person?.fullName?.trim())
-            .filter((x): x is string => !!x);
           const resp =
-            (respNames.length ? respNames.join(', ') : null) ||
-            u.responsibleDisplayName?.trim() ||
-            '—';
+            resolveUnitFinancialResponsibleDisplayName({
+              financialResponsiblePerson: u.financialResponsiblePerson ?? null,
+              responsibleLinks: u.responsibleLinks ?? null,
+              responsibleDisplayName: u.responsibleDisplayName ?? null,
+            }) ?? '—';
           const parts = [id];
           if (owner) {
             parts.push(`Proprietário: ${owner}`);
@@ -398,7 +399,11 @@ export class MonthlyTransparencyPdfService {
   private async loadUnitColumns(condominiumId: string): Promise<UnitCol[]> {
     const units = await this.unitRepo.find({
       where: { grouping: { condominiumId } },
-      relations: { grouping: true, responsibleLinks: { person: true } },
+      relations: {
+        grouping: true,
+        responsibleLinks: { person: true },
+        financialResponsiblePerson: true,
+      },
     });
     units.sort((a, b) => {
       const ga = a.grouping?.name ?? '';
@@ -410,13 +415,11 @@ export class MonthlyTransparencyPdfService {
       return a.identifier.localeCompare(b.identifier, 'pt');
     });
     return units.map((u) => {
-      const fromLinks = (u.responsibleLinks ?? [])
-        .map((l) => l.person?.fullName?.trim())
-        .filter((x): x is string => !!x);
-      const responsibleName =
-        (fromLinks.length ? fromLinks.join(', ') : null) ||
-        u.responsibleDisplayName?.trim() ||
-        null;
+      const responsibleName = resolveUnitFinancialResponsibleDisplayName({
+        financialResponsiblePerson: u.financialResponsiblePerson ?? null,
+        responsibleLinks: u.responsibleLinks ?? null,
+        responsibleDisplayName: u.responsibleDisplayName ?? null,
+      });
       return {
         unitId: u.id,
         identifier: u.identifier,

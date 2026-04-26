@@ -13,6 +13,9 @@ const RECEIPT_KEY_RE =
 const MANAGEMENT_LOGO_KEY_RE =
   /^management-logo\/logo\.(png|jpg|jpeg|webp)$/i;
 
+const PLANNING_DOC_KEY_RE =
+  /^documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/i;
+
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -80,6 +83,11 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     return MANAGEMENT_LOGO_KEY_RE.test(key);
   }
 
+  isValidPlanningDocumentKey(key: string | null | undefined): boolean {
+    if (!key || typeof key !== 'string') return false;
+    return PLANNING_DOC_KEY_RE.test(key);
+  }
+
   async saveTransactionReceipt(
     condominiumId: string,
     buffer: Buffer,
@@ -102,10 +110,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     await this.ensureHierarchy(condominiumId, relativeKey);
     const res = await fetch(url, {
       method: 'PUT',
-      headers: {
-        Authorization: this.authHeader,
-        'Content-Type': mimeType,
-      },
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
       body: new Uint8Array(buffer),
     });
     if (!res.ok) {
@@ -128,7 +133,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const url = this.objectUrl(condominiumId, relativeKey);
     const res = await fetch(url, {
       method: 'HEAD',
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (res.status !== 200) {
       throw new BadRequestException(
@@ -147,7 +152,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
     const url = this.objectUrl(condominiumId, relativeKey);
     const res = await fetch(url, {
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (!res.ok) {
       throw new NotFoundException('Arquivo não encontrado.');
@@ -171,7 +176,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const url = this.objectUrl(condominiumId, relativeKey);
     const res = await fetch(url, {
       method: 'DELETE',
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (!res.ok && res.status !== 404) {
       /*404 = já removido */
@@ -203,10 +208,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     await this.ensureHierarchy(condominiumId, relativeKey);
     const res = await fetch(url, {
       method: 'PUT',
-      headers: {
-        Authorization: this.authHeader,
-        'Content-Type': mimeType,
-      },
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
       body: new Uint8Array(buffer),
     });
     if (!res.ok) {
@@ -228,7 +230,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
     const url = this.objectUrl(condominiumId, relativeKey);
     const res = await fetch(url, {
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (!res.ok) {
       throw new NotFoundException('Logo não encontrada.');
@@ -253,11 +255,63 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const url = this.objectUrl(condominiumId, relativeKey);
     const res = await fetch(url, {
       method: 'DELETE',
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (!res.ok && res.status !== 404) {
       /* ignore */
     }
+  }
+
+  async savePlanningDocumentPdf(
+    condominiumId: string,
+    buffer: Buffer,
+  ): Promise<string> {
+    this.ensureReady();
+    const maxBytes = 12 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('PDF muito grande (máx. 12 MB).');
+    }
+    const id = randomUUID();
+    const relativeKey = `documents/${id}.pdf`;
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': 'application/pdf' },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Falha ao enviar documento ao Nextcloud (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  async readPlanningDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    this.ensureReady();
+    if (!this.isValidPlanningDocumentKey(relativeKey)) {
+      throw new BadRequestException('Chave de documento inválida.');
+    }
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      headers: this.webdavFetchHeaders(),
+    });
+    if (!res.ok) {
+      throw new NotFoundException('Arquivo não encontrado.');
+    }
+    const fileBuffer = Buffer.from(await res.arrayBuffer());
+    const contentType =
+      res.headers.get('content-type') ?? 'application/pdf';
+    return {
+      buffer: fileBuffer,
+      contentType,
+      filename: relativeKey.split('/').pop() ?? 'documento.pdf',
+    };
   }
 
   /** URL do arquivo (sem criar pastas). */
@@ -295,10 +349,18 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
   }
 
+  private webdavFetchHeaders(): Record<string, string> {
+    return {
+      Authorization: this.authHeader,
+      /** Alguns proxies exigem User-Agent explícito para não devolver página HTML genérica. */
+      'User-Agent': 'CondoAPI-NextcloudWebDAV/1',
+    };
+  }
+
   private async mkcol(url: string): Promise<void> {
     const res = await fetch(url, {
       method: 'MKCOL',
-      headers: { Authorization: this.authHeader },
+      headers: this.webdavFetchHeaders(),
     });
     if (
       res.ok ||
@@ -310,8 +372,14 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
       return;
     }
     const t = await res.text().catch(() => '');
+    const ct = (res.headers.get('content-type') ?? '').toLowerCase();
+    const looksLikeHtml =
+      ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(t);
+    const hint = looksLikeHtml
+      ? ' Resposta HTML (não é WebDAV): confira NEXTCLOUD_URL (raiz da instância, ex. https://domínio sem /login), credenciais Basic e se o proxy/CDN (ex. Cloudflare) permite o método MKCOL.'
+      : '';
     throw new BadRequestException(
-      `Nextcloud: não foi possível criar pasta (${res.status}). ${t.slice(0, 160)}`,
+      `Nextcloud: não foi possível criar pasta (${res.status}).${hint} ${t.slice(0, 120).replace(/\s+/g, ' ')}`,
     );
   }
 }

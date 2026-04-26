@@ -47,6 +47,10 @@ export class FinancialTransaction {
   @Column({ name: 'occurred_on', type: 'date' })
   occurredOn: Date;
 
+  /** Competência contábil (pode diferir de occurred_on, ex. recorrência «início do mês»). */
+  @Column({ name: 'competency_on', type: 'date' })
+  competencyOn: Date;
+
   @Column({ type: 'varchar', length: 500 })
   title: string;
 
@@ -74,6 +78,10 @@ export class FinancialTransaction {
     nullable: true,
   })
   recurringSeriesId: string | null;
+
+  /** Preenchido quando a linha é gerada por `FinancialTransactionRecurrence`. */
+  @Column({ name: 'recurrence_id', type: 'varchar', length: 36, nullable: true })
+  recurrenceId: string | null;
 
   @OneToMany(() => TransactionUnitShare, (s) => s.transaction)
   unitShares: TransactionUnitShare[];

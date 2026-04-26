@@ -22,9 +22,12 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import {
   CondominiumFeesService,
+  type CondominiumFeeChargePaymentLogView,
   type CondominiumFeeChargeView,
 } from './condominium-fees.service';
 import { CompetenceYmDto } from './dto/competence-ym.dto';
+import { ReopenFeeChargePaymentDto } from './dto/reopen-fee-charge-payment.dto';
+import { ReplaceFeeChargeReceiptDto } from './dto/replace-fee-charge-receipt.dto';
 import { SettleFeeChargeDto } from './dto/settle-fee-charge.dto';
 import { UpdateFeeChargesDueDateDto } from './dto/update-fee-charges-due-date.dto';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
@@ -170,6 +173,67 @@ export class CondominiumFeesController {
       'Content-Disposition': `attachment; filename="comprovante-taxa-${chargeId.slice(0, 8)}.pdf"`,
     });
     return new StreamableFile(pdf);
+  }
+
+  @Get(':chargeId/payment-history')
+  @ApiOperation({
+    summary:
+      'Histórico de reaberturas e substituições de anexo de quitação (gestão).',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'chargeId', format: 'uuid' })
+  paymentHistory(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+  ): Promise<CondominiumFeeChargePaymentLogView[]> {
+    return this.feesService.listPaymentHistory(
+      condominiumId,
+      userId,
+      chargeId,
+    );
+  }
+
+  @Post(':chargeId/reopen-payment')
+  @ApiOperation({
+    summary:
+      'Reabrir pagamento da cobrança quitada: volta a «em aberto», desvincula receita e anexo; regista histórico (ficheiros antigos permanecem no storage para auditoria).',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'chargeId', format: 'uuid' })
+  reopenPayment(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+    @Body() body: ReopenFeeChargePaymentDto,
+  ): Promise<CondominiumFeeChargeView> {
+    return this.feesService.reopenPayment(
+      condominiumId,
+      userId,
+      chargeId,
+      body?.reason,
+    );
+  }
+
+  @Post(':chargeId/replace-payment-receipt')
+  @ApiOperation({
+    summary:
+      'Substituir apenas o anexo de comprovante de quitação (cobrança quitada). O ficheiro deve ser enviado antes (transaction-receipts); usa o mesmo storage que comprovantes (ex.: Nextcloud).',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'chargeId', format: 'uuid' })
+  replacePaymentReceipt(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+    @Body() body: ReplaceFeeChargeReceiptDto,
+  ): Promise<CondominiumFeeChargeView> {
+    return this.feesService.replacePaymentReceipt(
+      condominiumId,
+      userId,
+      chargeId,
+      body.paymentReceiptStorageKey,
+    );
   }
 
   @Post(':chargeId/settle')
