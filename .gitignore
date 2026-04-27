@@ -8,6 +8,7 @@ build/
 .env.local
 .env.*.local
 !.env.example
+twillio.txt
 
 # Arquivos enviados (comprovantes, etc.) — local por padrão; use STORAGE_PATH
 /storage
