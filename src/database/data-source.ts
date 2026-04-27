@@ -55,16 +55,17 @@ import { CommunicationReadAccessLogs1751200000000 } from '../migrations/17512000
 import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
-<<<<<<< HEAD
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
 import { SupportMessageAttachments1751310000000 } from '../migrations/1751310000000-support-message-attachments';
-=======
+import { CondominiumLibraryDocuments1751320000000 } from '../migrations/1751320000000-condominium-library-documents';
+import { TransactionDocument1751330000000 } from '../migrations/1751330000000-transaction-document';
+import { TransactionMultiDocuments1751340000000 } from '../migrations/1751340000000-transaction-multi-documents';
 import { EnsureTransactionCompetencyColumns1751240000000 } from '../migrations/1751240000000-ensure-transaction-competency-columns';
 import { CondominiumFeeChargePaymentLogs1751250000000 } from '../migrations/1751250000000-condominium-fee-charge-payment-logs';
 import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751260000000-units-financial-responsible-person';
->>>>>>> 70fecde61edaa8dbade0d6d1938abfb52fd5d758
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
+import { CondominiumLibraryDocument } from '../condominium-library/entities/condominium-library-document.entity';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { TransactionUnitShare } from '../finance/entities/transaction-unit-share.entity';
@@ -102,6 +103,7 @@ export const AppDataSource = new DataSource({
     SaasCharge,
     SaasPlan,
     SaasVoucher,
+    CondominiumLibraryDocument,
   ],
   /** Cada migration em `src/migrations` precisa ser importada e incluída aqui; o CLI não varre a pasta sozinho. */
   migrations: [
@@ -154,6 +156,9 @@ export const AppDataSource = new DataSource({
     SupportTicketMessagesViewToken1751230000000,
     SupportTicketTarget1751300000000,
     SupportMessageAttachments1751310000000,
+    CondominiumLibraryDocuments1751320000000,
+    TransactionDocument1751330000000,
+    TransactionMultiDocuments1751340000000,
     EnsureTransactionCompetencyColumns1751240000000,
     CondominiumFeeChargePaymentLogs1751250000000,
     UnitsFinancialResponsiblePerson1751260000000,

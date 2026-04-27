@@ -35,12 +35,24 @@ export class FinancialTransactionsController {
   @ApiOperation({ summary: 'Listar transações' })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'fundId', required: false })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'Data inicial (AAAA-MM-DD), inclusive, filtro por occurred_on',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'Data final (AAAA-MM-DD), inclusive, filtro por occurred_on',
+  })
   findAll(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @Query('fundId') fundId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.txService.findAll(condominiumId, userId, fundId);
+    return this.txService.findAll(condominiumId, userId, fundId, from, to);
   }
 
   @Post()

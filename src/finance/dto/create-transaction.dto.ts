@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsEnum,
   IsInt,
@@ -56,7 +58,33 @@ export class CreateTransactionDto {
 
   @ApiPropertyOptional({
     description:
-      'Chave retornada por POST /condominiums/:id/transaction-receipts (opcional).',
+      'Chave do documento (boleto/contrato/print) retornada por POST /condominiums/:id/transaction-receipts (opcional).',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(RECEIPT_KEY_RE, {
+    message: 'documentStorageKey inválida',
+  })
+  documentStorageKey?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Lista de documentos da transação (boleto/contrato/print), com chaves retornadas por upload.',
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Matches(RECEIPT_KEY_RE, {
+    each: true,
+    message: 'documentStorageKeys contém chave inválida',
+  })
+  documentStorageKeys?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Chave do comprovante de pagamento retornada por POST /condominiums/:id/transaction-receipts (opcional).',
   })
   @IsOptional()
   @IsString()

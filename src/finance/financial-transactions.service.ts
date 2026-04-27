@@ -38,8 +38,17 @@ export class FinancialTransactionsService {
     condominiumId: string,
     userId: string,
     fundId?: string,
+    occurredFromYmd?: string,
+    occurredToYmd?: string,
   ): Promise<Array<FinancialTransaction & { runningBalanceCents?: string }>> {
     await this.condominiumsService.assertOwner(condominiumId, userId);
+    const fromTrim = occurredFromYmd?.trim();
+    const toTrim = occurredToYmd?.trim();
+    if (fromTrim && toTrim && fromTrim > toTrim) {
+      throw new BadRequestException(
+        'Período inválido: a data inicial não pode ser posterior à data final.',
+      );
+    }
     const qb = this.txRepo
       .createQueryBuilder('t')
       .leftJoinAndSelect('t.fund', 'fund')
@@ -50,6 +59,16 @@ export class FinancialTransactionsService {
       .addOrderBy('t.created_at', 'DESC');
     if (fundId) {
       qb.andWhere('t.fund_id = :fundId', { fundId });
+    }
+    if (fromTrim) {
+      qb.andWhere('t.occurred_on >= :occurredFrom', {
+        occurredFrom: parseDateOnlyFromApi(fromTrim),
+      });
+    }
+    if (toTrim) {
+      qb.andWhere('t.occurred_on <= :occurredTo', {
+        occurredTo: parseDateOnlyFromApi(toTrim),
+      });
     }
     const list = await qb.getMany();
     if (!fundId?.trim()) {
@@ -105,6 +124,8 @@ export class FinancialTransactionsService {
         dto.receiptStorageKey,
       );
     }
+    const createDocumentKeys = this.resolveCreateDocumentKeys(dto);
+    await this.assertDocumentKeysExist(condominiumId, createDocumentKeys);
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
       dto.allocationRule,
@@ -130,6 +151,14 @@ export class FinancialTransactionsService {
     if (dto.fundId) {
       await this.fundsService.findOneInCondominium(condominiumId, dto.fundId);
     }
+    if (dto.receiptStorageKey) {
+      await this.storage.assertReceiptExists(
+        condominiumId,
+        dto.receiptStorageKey,
+      );
+    }
+    const createDocumentKeys = this.resolveCreateDocumentKeys(dto);
+    await this.assertDocumentKeysExist(condominiumId, createDocumentKeys);
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
       dto.allocationRule,
@@ -185,6 +214,17 @@ export class FinancialTransactionsService {
         }
       }
     }
+    const prevDocKeys = this.getExistingDocumentKeys(existing);
+    const hasDocPatch =
+      dto.documentStorageKeys !== undefined ||
+      dto.documentStorageKey !== undefined;
+    const nextDocKeys = hasDocPatch
+      ? this.resolveUpdateDocumentKeys(dto)
+      : prevDocKeys;
+    if (hasDocPatch) {
+      await this.assertDocumentKeysExist(condominiumId, nextDocKeys);
+      await this.deleteRemovedDocumentKeys(condominiumId, prevDocKeys, nextDocKeys);
+    }
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
       allocationRule,
@@ -209,6 +249,10 @@ export class FinancialTransactionsService {
       if (dto.receiptStorageKey !== undefined) {
         existing.receiptStorageKey = dto.receiptStorageKey;
       }
+      if (hasDocPatch) {
+        existing.documentStorageKeys = nextDocKeys.length ? nextDocKeys : null;
+        existing.documentStorageKey = nextDocKeys[0] ?? null;
+      }
       await manager.save(existing);
       for (const row of shares) {
         await manager.save(
@@ -229,6 +273,9 @@ export class FinancialTransactionsService {
     userId: string,
   ): Promise<void> {
     const t = await this.findOne(condominiumId, transactionId, userId);
+    for (const key of this.getExistingDocumentKeys(t)) {
+      await this.storage.deleteReceipt(condominiumId, key);
+    }
     await this.storage.deleteReceipt(condominiumId, t.receiptStorageKey);
     await this.txRepo.delete(transactionId);
   }
@@ -241,7 +288,12 @@ export class FinancialTransactionsService {
     await this.condominiumsService.assertOwner(condominiumId, userId);
     const rows = await this.txRepo.find({
       where: { condominiumId, recurringSeriesId: seriesId },
-      select: { id: true, receiptStorageKey: true },
+      select: {
+        id: true,
+        receiptStorageKey: true,
+        documentStorageKey: true,
+        documentStorageKeys: true,
+      },
     });
     if (rows.length === 0) {
       throw new NotFoundException('Recurring series not found');
@@ -250,6 +302,9 @@ export class FinancialTransactionsService {
     for (const r of rows) {
       if (r.receiptStorageKey) {
         keys.add(r.receiptStorageKey);
+      }
+      for (const k of this.getExistingDocumentKeys(r)) {
+        keys.add(k);
       }
     }
     for (const key of keys) {
@@ -273,6 +328,8 @@ export class FinancialTransactionsService {
       dto.fundId,
       dto.allocationRule,
       dto.amountCents,
+      dto.documentStorageKeys,
+      dto.documentStorageKey,
       dto.receiptStorageKey,
     ].some((v) => v !== undefined);
     if (!hasPatch) {
@@ -320,6 +377,24 @@ export class FinancialTransactionsService {
         }
       }
     }
+    const hasDocPatch =
+      dto.documentStorageKeys !== undefined ||
+      dto.documentStorageKey !== undefined;
+    const seriesDocKeys = hasDocPatch ? this.resolveUpdateDocumentKeys(dto) : null;
+    if (hasDocPatch) {
+      await this.assertDocumentKeysExist(condominiumId, seriesDocKeys ?? []);
+      const allCurrentKeys = new Set<string>();
+      for (const t of rows) {
+        for (const k of this.getExistingDocumentKeys(t)) {
+          allCurrentKeys.add(k);
+        }
+      }
+      for (const key of allCurrentKeys) {
+        if (!(seriesDocKeys ?? []).includes(key)) {
+          await this.storage.deleteReceipt(condominiumId, key);
+        }
+      }
+    }
 
     await this.dataSource.transaction(async (manager) => {
       for (let i = 0; i < rows.length; i++) {
@@ -355,6 +430,11 @@ export class FinancialTransactionsService {
         if (dto.receiptStorageKey !== undefined) {
           existing.receiptStorageKey = dto.receiptStorageKey;
         }
+        if (hasDocPatch) {
+          existing.documentStorageKeys =
+            seriesDocKeys && seriesDocKeys.length ? seriesDocKeys : null;
+          existing.documentStorageKey = seriesDocKeys?.[0] ?? null;
+        }
         await manager.save(existing);
         for (const row of shares) {
           await manager.save(
@@ -373,6 +453,66 @@ export class FinancialTransactionsService {
       relations: { fund: true, unitShares: { unit: true } },
       order: { occurredOn: 'ASC', id: 'ASC' },
     });
+  }
+
+  private resolveCreateDocumentKeys(dto: CreateTransactionDto): string[] {
+    if (Array.isArray(dto.documentStorageKeys)) {
+      return [...new Set(dto.documentStorageKeys.map((k) => k.trim()).filter(Boolean))];
+    }
+    if (dto.documentStorageKey?.trim()) {
+      return [dto.documentStorageKey.trim()];
+    }
+    return [];
+  }
+
+  private resolveUpdateDocumentKeys(dto: {
+    documentStorageKeys?: string[] | null;
+    documentStorageKey?: string | null;
+  }): string[] {
+    if (dto.documentStorageKeys === null) {
+      return [];
+    }
+    if (Array.isArray(dto.documentStorageKeys)) {
+      return [...new Set(dto.documentStorageKeys.map((k) => k.trim()).filter(Boolean))];
+    }
+    if (dto.documentStorageKey === null) {
+      return [];
+    }
+    if (dto.documentStorageKey?.trim()) {
+      return [dto.documentStorageKey.trim()];
+    }
+    return [];
+  }
+
+  private getExistingDocumentKeys(t: Pick<FinancialTransaction, 'documentStorageKey' | 'documentStorageKeys'>): string[] {
+    if (Array.isArray(t.documentStorageKeys) && t.documentStorageKeys.length) {
+      return [...new Set(t.documentStorageKeys.map((k) => k.trim()).filter(Boolean))];
+    }
+    if (t.documentStorageKey?.trim()) {
+      return [t.documentStorageKey.trim()];
+    }
+    return [];
+  }
+
+  private async assertDocumentKeysExist(
+    condominiumId: string,
+    keys: string[],
+  ): Promise<void> {
+    for (const key of keys) {
+      await this.storage.assertReceiptExists(condominiumId, key);
+    }
+  }
+
+  private async deleteRemovedDocumentKeys(
+    condominiumId: string,
+    before: string[],
+    after: string[],
+  ): Promise<void> {
+    for (const key of before) {
+      if (!after.includes(key)) {
+        await this.storage.deleteReceipt(condominiumId, key);
+      }
+    }
   }
 
   private validateAllocationForKind(
@@ -418,6 +558,7 @@ export class FinancialTransactionsService {
     const competencyOn = dto.competencyOn
       ? parseDateOnlyFromApi(dto.competencyOn)
       : occurredOn;
+    const documentKeys = this.resolveCreateDocumentKeys(dto);
     return this.dataSource.transaction(async (manager) => {
       const tx = manager.create(FinancialTransaction, {
         condominiumId,
@@ -429,6 +570,8 @@ export class FinancialTransactionsService {
         title: dto.title,
         description: dto.description ?? null,
         allocationRule: dto.allocationRule,
+        documentStorageKeys: documentKeys.length ? documentKeys : null,
+        documentStorageKey: documentKeys[0] ?? null,
         receiptStorageKey: dto.receiptStorageKey ?? null,
         recurringSeriesId: dto.recurringSeriesId ?? null,
         recurrenceId: opts?.recurrenceId ?? null,

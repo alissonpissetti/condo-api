@@ -16,11 +16,20 @@ const MANAGEMENT_LOGO_KEY_RE =
 const PLANNING_DOC_KEY_RE =
   /^documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/i;
 
+const LIBRARY_DOC_KEY_RE =
+  /^library-documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
+
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
+  'image/gif': 'gif',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'docx',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
 };
 
 const EXT_MIME: Record<string, string> = {
@@ -86,6 +95,11 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
   isValidPlanningDocumentKey(key: string | null | undefined): boolean {
     if (!key || typeof key !== 'string') return false;
     return PLANNING_DOC_KEY_RE.test(key);
+  }
+
+  isValidLibraryDocumentKey(key: string | null | undefined): boolean {
+    if (!key || typeof key !== 'string') return false;
+    return LIBRARY_DOC_KEY_RE.test(key);
   }
 
   async saveTransactionReceipt(
@@ -312,6 +326,87 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
       contentType,
       filename: relativeKey.split('/').pop() ?? 'documento.pdf',
     };
+  }
+
+  async saveLibraryDocument(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    this.ensureReady();
+    const ext = MIME_EXT[mimeType];
+    if (!ext) {
+      throw new BadRequestException(
+        'Tipo de arquivo não permitido. Use PDF, imagem, Word, TXT ou CSV.',
+      );
+    }
+    const maxBytes = 20 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('Arquivo muito grande (máx. 20 MB).');
+    }
+    const id = randomUUID();
+    const relativeKey = `library-documents/${id}.${ext}`;
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Falha ao enviar documento ao Nextcloud (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  async readLibraryDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    this.ensureReady();
+    if (!this.isValidLibraryDocumentKey(relativeKey)) {
+      throw new BadRequestException('Chave de documento inválida.');
+    }
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      headers: this.webdavFetchHeaders(),
+    });
+    if (!res.ok) {
+      throw new NotFoundException('Arquivo não encontrado.');
+    }
+    const fileBuffer = Buffer.from(await res.arrayBuffer());
+    const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
+    const contentType =
+      res.headers.get('content-type') ??
+      EXT_MIME[ext] ??
+      Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0] ??
+      'application/octet-stream';
+    return {
+      buffer: fileBuffer,
+      contentType,
+      filename: relativeKey.split('/').pop() ?? 'documento',
+    };
+  }
+
+  async deleteLibraryDocument(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void> {
+    if (!relativeKey || !this.isValidLibraryDocumentKey(relativeKey)) {
+      return;
+    }
+    this.ensureReady();
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: this.webdavFetchHeaders(),
+    });
+    if (!res.ok && res.status !== 404) {
+      /* ignore */
+    }
   }
 
   /** URL do arquivo (sem criar pastas). */

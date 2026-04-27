@@ -57,6 +57,23 @@ export class FinancialTransaction {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  /** Documento de suporte (boleto, contrato, acordo, print etc.). */
+  @Column({
+    name: 'document_storage_key',
+    type: 'varchar',
+    length: 512,
+    nullable: true,
+  })
+  documentStorageKey: string | null;
+
+  /** Documentos de suporte (boleto, contrato, acordo, print etc.). */
+  @Column({
+    name: 'document_storage_keys',
+    type: 'json',
+    nullable: true,
+  })
+  documentStorageKeys: string[] | null;
+
   /** Caminho relativo ao armazenamento do condomínio (ex.: receipts/uuid.pdf). */
   @Column({
     name: 'receipt_storage_key',

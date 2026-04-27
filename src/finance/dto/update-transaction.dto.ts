@@ -1,5 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsEnum,
   IsInt,
@@ -54,6 +56,33 @@ export class UpdateTransactionDto {
   @IsOptional()
   @IsObject()
   allocationRule?: AllocationRule;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Nova chave de documento; use null para remover o documento.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  @Matches(RECEIPT_KEY_RE, { message: 'documentStorageKey inválida' })
+  documentStorageKey?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Lista completa de documentos da transação; []/null remove todos os documentos.',
+    type: [String],
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Matches(RECEIPT_KEY_RE, {
+    each: true,
+    message: 'documentStorageKeys contém chave inválida',
+  })
+  documentStorageKeys?: string[] | null;
 
   @ApiPropertyOptional({
     nullable: true,

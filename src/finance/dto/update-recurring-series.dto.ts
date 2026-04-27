@@ -1,5 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsEnum,
   IsInt,
   IsObject,
@@ -55,6 +57,33 @@ export class UpdateRecurringSeriesDto {
   @IsInt()
   @Min(1)
   amountCents?: number;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Nova chave de documento para todas as parcelas; null remove de todas.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  @Matches(RECEIPT_KEY_RE, { message: 'documentStorageKey inválida' })
+  documentStorageKey?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Lista completa de documentos para todas as parcelas; []/null remove todos.',
+    type: [String],
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Matches(RECEIPT_KEY_RE, {
+    each: true,
+    message: 'documentStorageKeys contém chave inválida',
+  })
+  documentStorageKeys?: string[] | null;
 
   @ApiPropertyOptional({
     nullable: true,

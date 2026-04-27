@@ -44,4 +44,20 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string,
   ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
+
+  /** Biblioteca de documentos do condomínio (`library-documents/{uuid}.{ext}`). */
+  isValidLibraryDocumentKey(key: string | null | undefined): boolean;
+  saveLibraryDocument(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string>;
+  readLibraryDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
+  deleteLibraryDocument(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void>;
 }
