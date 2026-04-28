@@ -26,6 +26,9 @@ ENV NODE_ENV=production
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/build ./build
 COPY package.json ./
+# STORAGE_DRIVER=local (padrão) grava em STORAGE_PATH relativo a cwd → /app/storage.
+# O processo corre como USER node, que não pode mkdir em /app sem esta pasta acessível.
+RUN mkdir -p /app/storage && chown -R node:node /app/storage
 USER node
 EXPOSE 3000
 CMD ["node", "build/main.js"]

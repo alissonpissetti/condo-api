@@ -1,7 +1,9 @@
 import {
-  Injectable,
   BadRequestException,
+  Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
@@ -43,7 +45,10 @@ const EXT_MIME: Record<string, string> = {
 };
 
 @Injectable()
-export class LocalStorageService implements ReceiptStoragePort {
+export class LocalStorageService
+  implements ReceiptStoragePort, OnModuleInit
+{
+  private readonly logger = new Logger(LocalStorageService.name);
   private readonly root: string;
 
   constructor(private readonly config: ConfigService) {
@@ -51,6 +56,29 @@ export class LocalStorageService implements ReceiptStoragePort {
       process.cwd(),
       this.config.get<string>('STORAGE_PATH') ?? 'storage',
     );
+  }
+
+  /**
+   * Falha cedo (com mensagem legível) se o diretório de storage não puder ser criado,
+   * em vez de só no primeiro upload — típico em contentores a correr sem root.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await fs.mkdir(this.root, { recursive: true });
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      this.logger.error(
+        `Não é possível criar ou aceder a STORAGE_PATH (${this.root}): ${
+          err?.message ?? String(e)
+        }. ` +
+          `Com STORAGE_DRIVER=local, o processo precisa de permissão de escrita. ` +
+          `Em imagem Docker: crie a pasta no Dockerfile (antes de USER node) com ` +
+          `chown para o utilizador do processo, ou defina STORAGE_PATH num volume montado ` +
+          `gravável (ex. /data/storage) e crie com o mesmo dono. ` +
+          `Em alternativa: STORAGE_DRIVER=nextcloud (WebDAV).`,
+      );
+      throw e;
+    }
   }
 
   isValidReceiptKey(key: string | null | undefined): boolean {

@@ -245,6 +245,16 @@ export class MonthlyTransparencyPdfService {
     const administracaoDisplay =
       await this.loadAdministracaoForPdf(condominiumId);
 
+    /** Quando o PDF é pedido com `unitId`, o slip PIX deve refletir todas as taxas em aberto (soma e detalhe), não só a competência do relatório. */
+    let openChargesForTargetPix: CondominiumFeeCharge[] = [];
+    if (targetUnitId) {
+      openChargesForTargetPix = await this.chargeRepo.find({
+        where: { condominiumId, unitId: targetUnitId, status: 'open' },
+        relations: { unit: { grouping: true } },
+        order: { competenceYm: 'ASC' },
+      });
+    }
+
     return await this.renderPdf({
       condoName: condo.name,
       competenceYm: ym,
@@ -266,6 +276,7 @@ export class MonthlyTransparencyPdfService {
       transparencyPdfIncludePixQrCode:
         condo.transparencyPdfIncludePixQrCode !== false,
       syndicWhatsappForReceipts: condo.syndicWhatsappForReceipts,
+      openChargesForTargetPix,
     });
   }
 
@@ -1073,21 +1084,56 @@ export class MonthlyTransparencyPdfService {
   }
 
   /**
-   * Capa do PDF por unidade: valor da taxa, dados do PIX e (opcionalmente) QR Code + «Copia e cola».
+   * Mensagem curta (BR Code) a partir de uma ou mais cobranças em aberto.
+   */
+  private buildPixMessageForOpenCharges(
+    charges: CondominiumFeeCharge[],
+    condoName: string,
+  ): string | undefined {
+    if (charges.length === 0) {
+      return undefined;
+    }
+    if (charges.length === 1) {
+      const c = charges[0]!;
+      const parts = c.competenceYm.split('-');
+      const yy = parts[0] ?? '';
+      const mo = parts[1] ?? '';
+      return (
+        sanitizePixMessage(`${condoName} ${mo}/${yy}`, 25) ||
+        sanitizePixName(condoName, 25) ||
+        undefined
+      );
+    }
+    return (
+      sanitizePixMessage(`${condoName} ${charges.length} taxas`, 25) ||
+      sanitizePixName(condoName, 25) ||
+      undefined
+    );
+  }
+
+  /**
+   * Capa do PDF por unidade: valor a pagar, dados do PIX e (opcionalmente) QR Code + «Copia e cola».
+   * Quando há mais de uma taxa em aberto, a soma e a tabela deixam o consolidado claro.
    */
   private renderUnitPixPaymentSlipCoverPage(
     doc: InstanceType<typeof PDFDocument>,
     p: {
       margin: number;
       contentW: number;
-      competenceYmPtBr: string;
       condoName: string;
       unitIdentifier: string;
       groupingName: string;
       responsibleName: string | null;
+      competenceBlockTitle: string;
+      competenceBlockSubtitle: string | null;
       dueOnBr: string;
       statusLabel: string;
-      amountBrl: string;
+      totalAmountBrl: string;
+      referenceLine: string;
+      showOpenChargesBreakdown: boolean;
+      openChargeRows: { competencia: string; vencimento: string; valor: string }[];
+      /** Subtítulo sob o título (ex.: explicar quitação total) */
+      hintLine: string | null;
       pixKeyDisplay: string;
       beneficiaryDisplay: string;
       pixBrPayload: string | null;
@@ -1108,18 +1154,24 @@ export class MonthlyTransparencyPdfService {
     doc.text('Pagamento da taxa condominial', margin + 12, y + 2, {
       lineBreak: false,
     });
-    doc.font('Helvetica').fontSize(10).fillColor(muted);
-    doc.text(
-      'Slip de pagamento via PIX — específico para a unidade',
-      margin + 12,
-      y + 28,
-      { lineBreak: false },
-    );
-    y += 56;
+    const hint = p.hintLine ?? 'Slip de pagamento via PIX — específico para a unidade';
+    doc.font('Helvetica').fontSize(9.2).fillColor(muted);
+    const hintW = contentW - 20;
+    const hintLines = this.wrapWordsToLines(doc, hint, hintW);
+    let hy = y + 30;
+    const hLh = doc.currentLineHeight(true) + 1.1;
+    for (const hl of hintLines) {
+      doc.text(hl, margin + 12, hy, { width: hintW, lineBreak: false });
+      hy += hLh;
+    }
+    y = hy + 8;
 
     const infoPad = 10;
     const half = (contentW - 14) / 2;
-    const infoH = 82;
+    const infoH =
+      p.competenceBlockSubtitle != null || p.showOpenChargesBreakdown
+        ? 100
+        : 82;
     doc.save();
     doc.roundedRect(margin, y, contentW, infoH, 4).fill('#f1f5f9');
     doc.restore();
@@ -1139,25 +1191,126 @@ export class MonthlyTransparencyPdfService {
     doc.font('Helvetica').fontSize(7.5).fillColor(muted);
     doc.text('Responsável', margin + infoPad, iy + 56, { lineBreak: false });
     doc.font('Helvetica').fontSize(8).fillColor('#64748b');
-    doc.text((p.responsibleName || '—').slice(0, 52), margin + infoPad, iy + 66, {
-      lineBreak: false,
-    });
+    doc.text(
+      (p.responsibleName || '—').slice(0, 52),
+      margin + infoPad,
+      infoH > 88 ? iy + 68 : iy + 66,
+      { lineBreak: false },
+    );
 
     const col2x = margin + half + 6;
+    const col2w = contentW - half - infoPad - 10;
     doc.font('Helvetica').fontSize(7.5).fillColor(muted);
-    doc.text('COMPETÊNCIA', col2x, iy, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f172a');
-    doc.text(p.competenceYmPtBr, col2x, iy + 12, { lineBreak: false });
-    doc.font('Helvetica').fontSize(7.5).fillColor(muted);
-    doc.text('VENCIMENTO', col2x, iy + 28, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#0f172a');
-    doc.text(p.dueOnBr, col2x, iy + 40, { lineBreak: false });
-    doc.font('Helvetica').fontSize(7.5).fillColor(muted);
-    doc.text('SITUAÇÃO', col2x, iy + 56, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#b45309');
-    doc.text(p.statusLabel, col2x, iy + 66, { lineBreak: false });
+    doc.text(
+      p.competenceBlockSubtitle != null ? 'COMPETÊNCIAS' : 'COMPETÊNCIA',
+      col2x,
+      iy,
+      { lineBreak: false },
+    );
+    if (p.competenceBlockSubtitle) {
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(9.2)
+        .fillColor('#0f172a');
+      doc.text(p.competenceBlockTitle, col2x, iy + 9, {
+        width: col2w,
+        lineGap: 0.2,
+      });
+      doc
+        .font('Helvetica')
+        .fontSize(7.1)
+        .fillColor('#475569');
+      doc.text(p.competenceBlockSubtitle, col2x, iy + 28, {
+        width: col2w,
+        lineBreak: true,
+        lineGap: 0.2,
+      });
+      const v0 = iy + 44;
+      doc.font('Helvetica').fontSize(7.5).fillColor(muted);
+      doc.text('VENCIMENTO', col2x, v0, { lineBreak: false });
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(9.5)
+        .fillColor('#0f172a');
+      doc.text(p.dueOnBr, col2x, v0 + 10, { lineBreak: false, width: col2w });
+      doc.font('Helvetica').fontSize(7.5).fillColor(muted);
+      doc.text('SITUAÇÃO', col2x, v0 + 28, { lineBreak: false });
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#b45309');
+      doc.text(p.statusLabel, col2x, v0 + 38, {
+        lineBreak: true,
+        width: col2w,
+      });
+    } else {
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(10)
+        .fillColor('#0f172a');
+      doc.text(p.competenceBlockTitle, col2x, iy + 12, {
+        lineBreak: true,
+        width: col2w,
+      });
+      doc.font('Helvetica').fontSize(7.5).fillColor(muted);
+      doc.text('VENCIMENTO', col2x, iy + 28, { lineBreak: false });
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(10)
+        .fillColor('#0f172a');
+      doc.text(p.dueOnBr, col2x, iy + 40, { lineBreak: false, width: col2w });
+      doc.font('Helvetica').fontSize(7.5).fillColor(muted);
+      doc.text('SITUAÇÃO', col2x, iy + 56, { lineBreak: false });
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#b45309');
+      doc.text(p.statusLabel, col2x, iy + 66, {
+        lineBreak: true,
+        width: col2w,
+      });
+    }
 
     y += infoH + 10;
+
+    if (p.showOpenChargesBreakdown && p.openChargeRows.length > 0) {
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(9.2)
+        .fillColor('#0f172a');
+      doc.text('Detalhamento das taxas em aberto', margin, y, { width: contentW });
+      y = doc.y + 6;
+      const rowH = 14;
+      const col1w = contentW * 0.42;
+      const col2m = contentW * 0.26;
+      const col3m = contentW * 0.32;
+      doc.save();
+      doc
+        .rect(margin, y, contentW, rowH)
+        .fill('#e2e8f0')
+        .lineWidth(0.2);
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(7.5);
+      doc.text('Competência (taxa)', margin + 3, y + 3, { width: col1w - 6 });
+      doc.text('Vencimento', margin + col1w, y + 3, { width: col2m - 4 });
+      doc.text('Valor', margin + col1w + col2m, y + 3, {
+        width: col3m - 4,
+        align: 'right',
+      });
+      y += rowH;
+      for (const row of p.openChargeRows) {
+        doc.save();
+        doc
+          .rect(margin, y, contentW, rowH)
+          .stroke('#e2e8f0')
+          .lineWidth(0.25);
+        doc.restore();
+        doc.font('Helvetica').fontSize(7.8);
+        doc.text(row.competencia, margin + 3, y + 3, { width: col1w - 6 });
+        doc.text(row.vencimento, margin + col1w, y + 3, { width: col2m - 4 });
+        doc.font('Helvetica').fontSize(7.8);
+        doc.text(row.valor, margin + col1w + col2m, y + 3, {
+          width: col3m - 4,
+          align: 'right',
+        });
+        y += rowH;
+      }
+      y += 8;
+    }
 
     const blkH = 58;
     doc.save();
@@ -1166,13 +1319,12 @@ export class MonthlyTransparencyPdfService {
     doc.font('Helvetica').fontSize(8.5).fillColor('#e2e8f0');
     doc.text('VALOR A PAGAR', margin + 12, y + 8, { lineBreak: false });
     doc.font('Helvetica-Bold').fontSize(21).fillColor('#ffffff');
-    doc.text(p.amountBrl, margin + 12, y + 24, { lineBreak: false });
+    doc.text(p.totalAmountBrl, margin + 12, y + 24, { lineBreak: false });
     doc.font('Helvetica').fontSize(7.5).fillColor('#94a3b8');
-    const refLine = `Referência: ${p.condoName.slice(0, 40)} - ${p.competenceYmPtBr}`.slice(
-      0,
-      88,
-    );
-    doc.text(refLine, margin + 12, y + blkH - 14, { lineBreak: false });
+    doc.text(p.referenceLine.slice(0, 96), margin + 12, y + blkH - 14, {
+      width: contentW - 20,
+      lineBreak: true,
+    });
     y += blkH + 12;
 
     doc.font('Helvetica-Bold').fontSize(11.5).fillColor('#1d4ed8');
@@ -1292,6 +1444,11 @@ export class MonthlyTransparencyPdfService {
     billingPixCity?: string | null;
     transparencyPdfIncludePixQrCode?: boolean;
     syndicWhatsappForReceipts?: string | null;
+    /**
+     * Cobranças em aberto desta unidade, para a capa PIX: soma paga e detalhamento
+     * (a competência do PDF de transparência pode ser só a mais recente, mas a quitação é total).
+     */
+    openChargesForTargetPix: CondominiumFeeCharge[];
   }): Promise<Buffer> {
     const margin = 56;
     /** Faixa inferior para rodapé (logo meucondominio.cloud à direita + linha). */
@@ -1302,16 +1459,17 @@ export class MonthlyTransparencyPdfService {
 
     const competenceYmPtBr = this.formatCompetenceYmPtBr(ctx.competenceYm);
 
-    const targetCharge =
-      ctx.targetUnit != null
-        ? (ctx.charges.find((c) => c.unitId === ctx.targetUnit!.unitId) ?? null)
-        : null;
+    const pixOpenCharges = ctx.openChargesForTargetPix;
     const pixKeySan = sanitizePixKey(ctx.billingPixKey);
     const prependPixSlip =
       ctx.targetUnit != null &&
-      targetCharge != null &&
-      targetCharge.status === 'open' &&
+      pixOpenCharges.length > 0 &&
       pixKeySan.length > 0;
+
+    let totalOpenCents = 0n;
+    for (const c of pixOpenCharges) {
+      totalOpenCents += BigInt(String(c.amountDueCents));
+    }
 
     let pixBrPayload: string | null = null;
     let pixQrPng: Buffer | null = null;
@@ -1325,13 +1483,11 @@ export class MonthlyTransparencyPdfService {
           ctx.billingPixCity?.trim() || 'Brasil',
           15,
         );
-        const parts = ctx.competenceYm.split('-');
-        const yy = parts[0] ?? '';
-        const mo = parts[1] ?? '';
-        const msg =
-          sanitizePixMessage(`${ctx.condoName} ${mo}/${yy}`, 25) || undefined;
-        const cents = BigInt(String(targetCharge!.amountDueCents));
-        const amt = Number(cents) / 100;
+        const msg = this.buildPixMessageForOpenCharges(
+          pixOpenCharges,
+          ctx.condoName,
+        );
+        const amt = Number(totalOpenCents) / 100;
         pixBrPayload = buildPixBrCode({
           key: pixKeySan,
           name: benName || sanitizePixName(ctx.condoName, 25),
@@ -1376,11 +1532,27 @@ export class MonthlyTransparencyPdfService {
       const pageW = doc.page.width;
       const contentW = pageW - margin * 2;
 
-      if (prependPixSlip && ctx.targetUnit && targetCharge) {
+      if (prependPixSlip && ctx.targetUnit) {
+        const n = pixOpenCharges.length;
+        const isConsolidated = n > 1;
+        const firstC = pixOpenCharges[0]!;
+        const lastC = pixOpenCharges[n - 1]!;
+        const totalBrl = this.brl(totalOpenCents);
+        const openChargeRows = pixOpenCharges.map((c) => ({
+          competencia: this.formatCompetenceYmPtBr(c.competenceYm),
+          vencimento: this.formatDateBr(c.dueOn),
+          valor: this.brl(BigInt(String(c.amountDueCents))),
+        }));
+        const refLine = isConsolidated
+          ? `Referência: ${ctx.condoName} — quitação de ${n} competências em aberto (${this.formatCompetenceYmPtBr(firstC.competenceYm)} a ${this.formatCompetenceYmPtBr(lastC.competenceYm)})`
+              .slice(0, 100)
+          : `Referência: ${ctx.condoName} — ${this.formatCompetenceYmPtBr(firstC.competenceYm)}`.slice(
+                0,
+                100,
+              );
         this.renderUnitPixPaymentSlipCoverPage(doc, {
           margin,
           contentW,
-          competenceYmPtBr,
           condoName: ctx.condoName,
           unitIdentifier: ctx.targetUnit.identifier.trim() || '—',
           groupingName: (ctx.targetUnit.groupingName?.trim() || '—').slice(
@@ -1388,9 +1560,23 @@ export class MonthlyTransparencyPdfService {
             56,
           ),
           responsibleName: ctx.targetUnit.responsibleName,
-          dueOnBr: this.formatDateBr(targetCharge.dueOn),
-          statusLabel: this.feeChargeStatusLabelPt(targetCharge.status),
-          amountBrl: this.brl(BigInt(String(targetCharge.amountDueCents))),
+          competenceBlockTitle: isConsolidated
+            ? `Soma de ${n} taxas condominiais em aberto`
+            : this.formatCompetenceYmPtBr(firstC.competenceYm),
+          competenceBlockSubtitle: isConsolidated
+            ? `De ${this.formatCompetenceYmPtBr(firstC.competenceYm)} a ${this.formatCompetenceYmPtBr(lastC.competenceYm)}`
+            : null,
+          dueOnBr: isConsolidated ? 'Diversos' : this.formatDateBr(firstC.dueOn),
+          statusLabel: isConsolidated
+            ? 'Em aberto (soma a quitar)'
+            : this.feeChargeStatusLabelPt(firstC.status),
+          totalAmountBrl: totalBrl,
+          referenceLine: refLine,
+          showOpenChargesBreakdown: isConsolidated,
+          openChargeRows,
+          hintLine: isConsolidated
+            ? 'O valor a pagar corresponde à quitação total de todas as taxas condominiais em aberto listadas abaixo (inclui competências anteriores à do relatório anexo, se aplicável). O QR e o PIX têm o montante agregado.'
+            : 'Slip de pagamento via PIX — específico para a unidade',
           pixKeyDisplay: (ctx.billingPixKey ?? pixKeySan).trim().slice(0, 64),
           beneficiaryDisplay: (
             ctx.billingPixBeneficiaryName?.trim() || ctx.condoName

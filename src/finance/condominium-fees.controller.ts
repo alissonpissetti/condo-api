@@ -124,7 +124,7 @@ export class CondominiumFeesController {
     required: false,
     format: 'uuid',
     description:
-      'Opcional: PDF da unidade — primeira página slip PIX (QR e «Copia e cola» conforme configuração do condomínio) quando houver cobrança em aberto; em seguida o PDF de transparência com destaque da unidade.',
+      'Opcional: PDF da unidade — capa slip PIX (QR e «Copia e cola» conforme configuração) quando houver taxa em aberto: o valor e o PIX refletem a soma de todas as competências em aberto para a unidade, com detalhamento na capa se forem mais de uma; em seguida o PDF de transparência da competência pedida com destaque da unidade.',
   })
   async transparencyPdf(
     @CurrentUser() userId: string,

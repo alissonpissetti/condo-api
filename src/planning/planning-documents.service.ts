@@ -29,6 +29,7 @@ import { GovernanceService } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { Person } from '../people/person.entity';
 import { UsersService } from '../users/users.service';
+import { Unit } from '../units/unit.entity';
 import { stripPollBodyToPlainText } from './poll-body-sanitize';
 
 @Injectable()
@@ -42,6 +43,8 @@ export class PlanningDocumentsService {
     private readonly voteRepo: Repository<PlanningPollVote>,
     @InjectRepository(CondominiumParticipant)
     private readonly participantRepo: Repository<CondominiumParticipant>,
+    @InjectRepository(Unit)
+    private readonly unitRepo: Repository<Unit>,
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     private readonly governance: GovernanceService,
@@ -101,12 +104,17 @@ export class PlanningDocumentsService {
       .getRawOne<{ cnt: string }>();
     const unitsVoted = Number(unitsRow?.cnt ?? 0);
 
+    const attendanceUnitLabels = await this.loadCondominiumUnitAttendanceLabels(
+      condominiumId,
+    );
+
     const pdfBuffer = await this.buildPollAssemblyMinutesPdf(
       condo.name,
       condominiumId,
       poll,
       counts,
       unitsVoted,
+      attendanceUnitLabels,
     );
 
     const storageKey = await this.fileStorage.savePlanningDocumentPdf(
@@ -197,6 +205,103 @@ export class PlanningDocumentsService {
     return `${dd}/${mm}/${yyyy}`;
   }
 
+  /**
+   * Ex.: "Aos 28 dias do mês de abril de 2026" (data civil da competência da pauta).
+   */
+  private formatAosDiasDoMesEAnoLine(poll: PlanningPoll): string {
+    const monthsPt = [
+      'janeiro',
+      'fevereiro',
+      'março',
+      'abril',
+      'maio',
+      'junho',
+      'julho',
+      'agosto',
+      'setembro',
+      'outubro',
+      'novembro',
+      'dezembro',
+    ];
+    const raw = String(poll.competenceDate ?? '').trim().slice(0, 10);
+    let d: Date;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      const [y, m, day] = raw.split('-').map((x) => parseInt(x, 10));
+      d = new Date(y, m - 1, day);
+    } else {
+      const c = poll.createdAt;
+      d = c instanceof Date ? c : new Date(String(c));
+    }
+    if (Number.isNaN(d.getTime())) {
+      return 'Aos ___ dias do mês de ___________ de _______';
+    }
+    const day = d.getDate();
+    const monthName = monthsPt[d.getMonth()] ?? '';
+    const year = d.getFullYear();
+    return `Aos ${day} dias do mês de ${monthName} de ${year}`;
+  }
+
+  /** Hora de referência (abertura da pauta), p.ex. "20:00". */
+  private formatHoraAberturaPoll(poll: PlanningPoll): string {
+    try {
+      const t = new Date(poll.opensAt);
+      if (Number.isNaN(t.getTime())) {
+        return '____:____';
+      }
+      return t.toLocaleString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'America/Sao_Paulo',
+      });
+    } catch {
+      return '____:____';
+    }
+  }
+
+  /** Hora de encerramento (data da pauta), p.ex. "21:00". */
+  private formatHoraEncerramentoPoll(poll: PlanningPoll): string {
+    try {
+      const t = new Date(poll.closesAt);
+      if (Number.isNaN(t.getTime())) {
+        return '____:____';
+      }
+      return t.toLocaleString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'America/Sao_Paulo',
+      });
+    } catch {
+      return '____:____';
+    }
+  }
+
+  /**
+   * Nome do síndico designado no condomínio (ficha de pessoa), actualizado a cada geração do PDF.
+   */
+  private async getSyndicDisplayName(
+    condominiumId: string,
+  ): Promise<string | null> {
+    const row = await this.participantRepo.findOne({
+      where: { condominiumId, role: GovernanceRole.Syndic },
+      order: { createdAt: 'ASC' },
+      relations: { person: true },
+    });
+    if (!row) {
+      return null;
+    }
+    const linked = row.person?.fullName?.trim();
+    if (linked) {
+      return linked;
+    }
+    const person = await this.personRepo.findOne({
+      where: { userId: row.userId },
+      order: { createdAt: 'DESC' },
+    });
+    return person?.fullName?.trim() ?? null;
+  }
+
   private async loadDraftSigner(userId: string): Promise<{
     signaturePng: Buffer | null;
     displayName: string | null;
@@ -211,217 +316,162 @@ export class PlanningDocumentsService {
     return { signaturePng, displayName };
   }
 
-  private async participantDisplayName(
-    row: CondominiumParticipant,
-  ): Promise<string | null> {
-    const linked = row.person?.fullName?.trim();
-    if (linked) {
-      return linked;
-    }
-    const person = await this.personRepo.findOne({
-      where: { userId: row.userId },
-      order: { createdAt: 'DESC' },
+  /**
+   * Frações do condomínio (agrupamento + identificador), para lista de presença no PDF da ata.
+   */
+  private async loadCondominiumUnitAttendanceLabels(
+    condominiumId: string,
+  ): Promise<string[]> {
+    const raw = await this.unitRepo
+      .createQueryBuilder('u')
+      .innerJoin('u.grouping', 'g')
+      .where('g.condominiumId = :cid', { cid: condominiumId })
+      .select('u.identifier', 'identifier')
+      .addSelect('g.name', 'groupingName')
+      .orderBy('g.name', 'ASC')
+      .addOrderBy('u.identifier', 'ASC')
+      .getRawMany<{ identifier: string; groupingName: string }>();
+    return raw.map((r) => {
+      const id = String(r.identifier ?? '').trim() || '—';
+      const gn = String(r.groupingName ?? '').trim();
+      return gn.length ? `${gn} — ${id}` : id;
     });
-    return person?.fullName?.trim() ?? null;
-  }
-
-  /** Síndico e subsíndico registados na gestão do condomínio (para assinaturas no PDF da ata). */
-  private async resolveCondominiumMgmtSigners(condominiumId: string): Promise<{
-    syndic: { displayName: string | null; signaturePng: Buffer | null } | null;
-    subSyndic: { displayName: string | null; signaturePng: Buffer | null } | null;
-  }> {
-    const syndRow = await this.participantRepo.findOne({
-      where: { condominiumId, role: GovernanceRole.Syndic },
-      order: { createdAt: 'ASC' },
-      relations: { person: true },
-    });
-    const subRow = await this.participantRepo.findOne({
-      where: { condominiumId, role: GovernanceRole.SubSyndic },
-      order: { createdAt: 'ASC' },
-      relations: { person: true },
-    });
-    let syndic: {
-      displayName: string | null;
-      signaturePng: Buffer | null;
-    } | null = null;
-    if (syndRow) {
-      syndic = {
-        displayName: await this.participantDisplayName(syndRow),
-        signaturePng: await this.usersService.getUserSignatureBuffer(
-          syndRow.userId,
-        ),
-      };
-    }
-    let subSyndic: {
-      displayName: string | null;
-      signaturePng: Buffer | null;
-    } | null = null;
-    if (subRow) {
-      subSyndic = {
-        displayName: await this.participantDisplayName(subRow),
-        signaturePng: await this.usersService.getUserSignatureBuffer(
-          subRow.userId,
-        ),
-      };
-    }
-    return { syndic, subSyndic };
   }
 
   /**
-   * Bloco de assinatura (síndico / subsíndico). Só deve ser chamado quando `signaturePng` existe.
-   * `boxTop` em coordenadas absolutas; devolve a coordenada Y imediatamente abaixo do bloco.
+   * Tabela estilo ata residencial: Nome completo | Unidade | Assinatura (título de secção é
+   * desenhado pelo chamador).
    */
-  private drawPdfMgmtRoleSignatureBlock(
-    doc: any,
-    boxLeft: number,
-    boxTop: number,
-    boxWidth: number,
-    roleTitle: string,
-    displayName: string | null,
-    signaturePng: Buffer,
-  ): number {
-    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- PDFKit */
-    const innerPad = 11;
-    const border = '#e2e8f0';
-    const accent = '#0f172a';
-    const boxH = 82;
-    doc.save();
-    doc.roundedRect(boxLeft, boxTop, boxWidth, boxH, 4).fill('#ffffff');
-    doc.strokeColor(border).lineWidth(0.45);
-    doc.roundedRect(boxLeft, boxTop, boxWidth, boxH, 4).stroke();
-    doc.restore();
-    doc.x = boxLeft + innerPad;
-    doc.y = boxTop + innerPad;
-    doc.font('Helvetica-Bold').fontSize(8.8).fillColor(accent).text(roleTitle, {
-      characterSpacing: 0.25,
-    });
-    doc.moveDown(0.25);
-    doc.font('Helvetica').fontSize(9.1).fillColor('#1e293b');
-    doc.text(
-      displayName?.trim() || '— (nome não encontrado na ficha de pessoa)',
-      { width: boxWidth - innerPad * 2, lineGap: 1.2, characterSpacing: 0 },
-    );
-    doc.moveDown(0.32);
-    const imgMaxW = Math.min(168, boxWidth - innerPad * 2);
-    const imgMaxH = 40;
-    const iy = doc.y;
-    try {
-      doc.image(signaturePng, boxLeft + innerPad, iy, {
-        fit: [imgMaxW, imgMaxH],
-      });
-      doc.y = iy + imgMaxH + 3;
-    } catch {
-      doc
-        .font('Helvetica-Oblique')
-        .fontSize(8)
-        .fillColor('#94a3b8')
-        .text('(Imagem da assinatura indisponível.)');
-    }
-    doc.fillColor('#000000');
-    return boxTop + boxH + 8;
-    /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
-  }
-
-  /**
-   * Ata (pauta): assinaturas digitais do síndico e do subsíndico — só aparecem responsáveis com assinatura gravada em «Meus dados».
-   */
-  private drawCondominiumMgmtSignaturesAndPaperClosing(
+  private drawPollAttendanceListTable(
     doc: any,
     margin: number,
     contentWidth: number,
-    mgmt: {
-      syndic: { displayName: string | null; signaturePng: Buffer | null } | null;
-      subSyndic: { displayName: string | null; signaturePng: Buffer | null } | null;
-    },
+    unitLabels: string[],
+    pageBottomReserve: number,
   ): void {
     /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- PDFKit */
-    const bar = '#334155';
-    const ink = '#0f172a';
-    const muted = '#64748b';
-    const hasSyndic = !!mgmt.syndic;
-    const hasSubSyndic = !!mgmt.subSyndic;
-    const showSyndic = hasSyndic && !!mgmt.syndic!.signaturePng;
-    const showSubSyndic = hasSubSyndic && !!mgmt.subSyndic!.signaturePng;
+    const ink = '#1a1a1a';
+    const rowH = 36;
+    const wNome = contentWidth * 0.4;
+    const wUnit = contentWidth * 0.2;
+    const wSig = contentWidth - wNome - wUnit;
+    const lineInk = '#111111';
+    const maxY = () => doc.page.height - pageBottomReserve;
 
-    doc.moveDown(0.55);
-    const y0 = doc.y;
-    doc.save();
-    doc.rect(margin, y0, 2.5, 12).fill(bar);
-    doc.restore();
-    doc.x = margin + 9;
-    doc.y = y0;
-    doc
-      .font('Helvetica-Bold')
-      .fontSize(11)
-      .fillColor(ink)
-      .text('Assinaturas digitais da gestão', margin + 9, y0, {
-        width: contentWidth - 9,
+    const drawTableHeader = (): void => {
+      const y0 = doc.y;
+      doc.save();
+      doc
+        .rect(margin, y0, contentWidth, 18)
+        .strokeColor(lineInk)
+        .lineWidth(0.55)
+        .stroke();
+      doc
+        .moveTo(margin + wNome, y0)
+        .lineTo(margin + wNome, y0 + 18)
+        .stroke();
+      doc
+        .moveTo(margin + wNome + wUnit, y0)
+        .lineTo(margin + wNome + wUnit, y0 + 18)
+        .stroke();
+      doc.restore();
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(8.5)
+        .fillColor(ink)
+        .text('Nome completo', margin + 5, y0 + 5, { width: wNome - 8 });
+      doc.text('Unidade', margin + wNome + 4, y0 + 5, {
+        width: wUnit - 8,
       });
-    doc.fillColor(ink);
-    doc.x = margin;
-    doc.y = y0 + 15;
-    doc.font('Helvetica').fontSize(9).fillColor(muted);
-    doc.text(
-      'Só constam abaixo os responsáveis com assinatura digital gravada em «Meus dados». Cada pedido de PDF gera um ficheiro novo com os dados actuais.',
-      { width: contentWidth, align: 'justify', lineGap: 1.4 },
-    );
-    doc.moveDown(0.55);
-    doc.fillColor('#000000');
-
-    if (!hasSyndic) {
-      doc.font('Helvetica').fontSize(9.1).fillColor('#94a3b8').text(
-        'Não existe síndico designado para este condomínio na plataforma.',
-        { width: contentWidth, align: 'left' },
-      );
-      doc.moveDown(0.55);
-    }
-
-    if (showSyndic && showSubSyndic) {
-      const gap = 12;
-      const colW = (contentWidth - gap) / 2;
-      const rowTop = doc.y;
-      const bottomL = this.drawPdfMgmtRoleSignatureBlock(
-        doc,
-        margin,
-        rowTop,
-        colW,
-        'Síndico(a)',
-        mgmt.syndic!.displayName,
-        mgmt.syndic!.signaturePng!,
-      );
-      const bottomR = this.drawPdfMgmtRoleSignatureBlock(
-        doc,
-        margin + colW + gap,
-        rowTop,
-        colW,
-        'Subsíndico(a)',
-        mgmt.subSyndic!.displayName,
-        mgmt.subSyndic!.signaturePng!,
-      );
-      doc.y = Math.max(bottomL, bottomR);
+      doc.text('Assinatura', margin + wNome + wUnit + 4, y0 + 5, {
+        width: wSig - 8,
+      });
+      doc.y = y0 + 20;
       doc.x = margin;
-    } else if (showSyndic) {
-      doc.y = this.drawPdfMgmtRoleSignatureBlock(
-        doc,
-        margin,
-        doc.y,
-        contentWidth,
-        'Síndico(a)',
-        mgmt.syndic!.displayName,
-        mgmt.syndic!.signaturePng!,
-      );
-    } else if (showSubSyndic) {
-      doc.y = this.drawPdfMgmtRoleSignatureBlock(
-        doc,
-        margin,
-        doc.y,
-        contentWidth,
-        'Subsíndico(a)',
-        mgmt.subSyndic!.displayName,
-        mgmt.subSyndic!.signaturePng!,
-      );
-    }
+    };
 
+    const ensureRowSpace = (): void => {
+      if (doc.y + rowH + 14 > maxY()) {
+        doc.addPage();
+        doc.x = margin;
+        doc.y = margin;
+        drawTableHeader();
+      }
+    };
+
+    doc
+      .font('Helvetica')
+      .fontSize(9.5)
+      .fillColor(ink)
+      .text(
+        'Preenchimento no ato da reunião. A coluna Unidade traz a identificação cadastrada no sistema. Acrescente linhas ou anexo se for necessário.',
+        { width: contentWidth, align: 'left', lineGap: 1.2 },
+      );
+    doc.moveDown(0.55);
+    if (unitLabels.length === 0) {
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(9)
+        .fillColor('#333333')
+        .text('Não há unidades no cadastro; utilize as linhas abaixo ou anexe folha apartada.');
+      doc.moveDown(0.45);
+    }
+    doc.fillColor(ink);
+    if (doc.y + 32 + rowH * 2 > maxY()) {
+      doc.addPage();
+      doc.x = margin;
+      doc.y = margin;
+    }
+    drawTableHeader();
+    const labels =
+      unitLabels.length > 0
+        ? unitLabels
+        : Array.from({ length: 8 }, () => ' ');
+    for (const label of labels) {
+      ensureRowSpace();
+      const y0 = doc.y;
+      doc.save();
+      doc
+        .rect(margin, y0, contentWidth, rowH)
+        .strokeColor(lineInk)
+        .lineWidth(0.4)
+        .stroke();
+      doc
+        .moveTo(margin + wNome, y0)
+        .lineTo(margin + wNome, y0 + rowH)
+        .stroke();
+      doc
+        .moveTo(margin + wNome + wUnit, y0)
+        .lineTo(margin + wNome + wUnit, y0 + rowH)
+        .stroke();
+      doc.restore();
+      const t = String(label).trim();
+      if (t.length) {
+        doc
+          .font('Helvetica')
+          .fontSize(8.5)
+          .fillColor(ink)
+          .text(t, margin + wNome + 4, y0 + 8, {
+            width: wUnit - 8,
+            lineGap: 0.5,
+          });
+      }
+      const lineY = y0 + rowH - 6;
+      doc
+        .strokeColor('#b0b0b0')
+        .lineWidth(0.3)
+        .moveTo(margin + 4, lineY)
+        .lineTo(margin + wNome - 3, lineY)
+        .stroke();
+      doc
+        .moveTo(margin + wNome + wUnit + 3, lineY)
+        .lineTo(margin + contentWidth - 4, lineY)
+        .stroke();
+      doc.fillColor('#000000');
+      doc.y = y0 + rowH;
+      doc.x = margin;
+    }
+    doc.moveDown(0.4);
     /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
   }
 
@@ -477,7 +527,7 @@ export class PlanningDocumentsService {
     doc.font('Helvetica').fontSize(9).fillColor(muted);
     doc.text(
       'Utilizador que gerou este rascunho. A imagem abaixo corresponde à assinatura digital gravada em «Meus dados».',
-      { width: contentWidth - innerPad * 2, align: 'justify' },
+      { width: contentWidth - innerPad * 2, align: 'left' },
     );
     doc.moveDown(0.35);
     const nameLine =
@@ -508,8 +558,31 @@ export class PlanningDocumentsService {
   }
 
   /**
-   * Ata em PDF (rascunho) gerada a partir de uma pauta: layout claro, quadro de identificação,
-   * apuração em tabela e destaque da decisão; assinaturas digitais do síndico e subsíndico.
+   * Itens numerados para o campo «Ordem do dia» (modelo ata de reunião de condomínio).
+   */
+  private buildOrdemDiaLines(poll: PlanningPoll): string[] {
+    if (poll.assemblyType === AssemblyType.Ata) {
+      return [`1. ${poll.title}`];
+    }
+    const out: string[] = [];
+    const opts = [...(poll.options ?? [])].sort(
+      (a, b) => a.sortOrder - b.sortOrder,
+    );
+    if (opts.length > 0) {
+      let i = 1;
+      for (const o of opts) {
+        out.push(`${i}. ${o.label}`);
+        i += 1;
+      }
+      return out;
+    }
+    return [`1. ${poll.title}`];
+  }
+
+  /**
+   * Ata (rascunho) a partir da pauta, alinhada ao modelo «ata de reunião de condomínio»
+   * (texto introdutório, ordem do dia, deliberações, encerramento, linhas Síndico/Secretário;
+   * lista Nome / Unidade / Assinatura ao final).
    */
   private async buildPollAssemblyMinutesPdf(
     condominiumName: string,
@@ -517,11 +590,25 @@ export class PlanningDocumentsService {
     poll: PlanningPoll,
     counts: Record<string, number>,
     unitsVoted: number,
+    attendanceUnitLabels: string[],
   ): Promise<Buffer> {
-    const mgmtSigners = await this.resolveCondominiumMgmtSigners(condominiumId);
+    const syndicName = (await this.getSyndicDisplayName(condominiumId))?.trim() || null;
+    const horaEnc = this.formatHoraEncerramentoPoll(poll);
+    const fraseHoraEncerramento =
+      horaEnc !== '____:____' && !horaEnc.startsWith('__')
+        ? `às ${horaEnc} horas`
+        : 'às ______ horas';
+    const frasePresidencia = syndicName
+      ? `sob a presidência do síndico ${syndicName}.`
+      : 'sob a presidência do síndico ________________________________.';
+    const nomeLavreiAta = syndicName ?? '_______________________________';
+    const textoNadaMais = `Nada mais havendo a tratar, a reunião foi encerrada ${fraseHoraEncerramento}. Eu, ${nomeLavreiAta}, lavrei a presente ata, que após lida e aprovada, segue assinada.`;
+    const linhaSindico = syndicName
+      ? `Síndico: ${syndicName} — assinatura: ______________________________`
+      : 'Síndico: ________________________________________________';
     return new Promise((resolve, reject) => {
-      const margin = 52;
-      const bottom = 70;
+      const margin = 56;
+      const bottom = 72;
       const doc = new PDFDocument({
         size: 'A4',
         bufferPages: true,
@@ -531,30 +618,19 @@ export class PlanningDocumentsService {
           Author: condominiumName.slice(0, 120),
         },
       });
-      installPlatformWatermarkUnderAllContent(doc, { opacity: 0.01 });
+      installPlatformWatermarkUnderAllContent(doc, { opacity: 0.022 });
       const chunks: Buffer[] = [];
       const pageW = doc.page.width;
       const contentWidth = pageW - margin * 2;
-      const ink = '#0f172a';
-      const muted = '#64748b';
-      const line = '#e2e8f0';
-      const lineStrong = '#cbd5e1';
-      const sectionBar = '#334155';
-      const cardBg = '#f8fafc';
-      const metaKeyBg = '#f1f5f9';
+      const ink = '#1a1a1a';
+      const lineTable = '#111111';
+      const lineGrid = '#cccccc';
       const asDate = (x: Date | string): Date =>
         x instanceof Date ? x : new Date(String(x));
 
       doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
-
-      const assemblyKind =
-        poll.assemblyType === AssemblyType.Election
-          ? 'Assembleia geral — fins eleitorais'
-          : poll.assemblyType === AssemblyType.Ata
-            ? 'Registro de assembleia / reunião (sem votação por opções no sistema)'
-            : 'Assembleia geral ordinária ou extraordinária (conforme convocação)';
 
       const voteMode = poll.allowMultiple
         ? 'Escolha múltipla por fração'
@@ -566,189 +642,93 @@ export class PlanningDocumentsService {
           : null;
 
       const totalMarks = Object.values(counts).reduce((a, b) => a + b, 0);
+      const ordemDia = this.buildOrdemDiaLines(poll);
 
-      const drawSectionLabel = (label: string) => {
-        doc.moveDown(0.85);
-        const y0 = doc.y;
-        doc.save();
-        doc.rect(margin, y0, 2.4, 14).fill(sectionBar);
-        doc.restore();
-        const textLeft = margin + 10;
+      const drawSection = (title: string) => {
+        doc.moveDown(0.9);
         doc
           .font('Helvetica-Bold')
-          .fontSize(11.3)
+          .fontSize(11)
           .fillColor(ink)
-          .text(label, textLeft, y0, { width: contentWidth - 10 });
-        const yRule = doc.y + 4;
-        doc
-          .moveTo(textLeft, yRule)
-          .lineTo(margin + contentWidth, yRule)
-          .strokeColor(lineStrong)
-          .lineWidth(0.4)
-          .stroke();
-        doc.y = yRule + 11;
-        doc.x = margin;
-      };
-
-      const drawMetaTable = (rows: { k: string; v: string }[]) => {
-        const keyW = 122;
-        const pad = 10;
-        let y = doc.y;
-        let ri = 0;
-        for (const { k, v } of rows) {
-          doc.font('Helvetica').fontSize(9.1);
-          const rowH =
-            Math.max(
-              38,
-              doc.heightOfString(v, { width: contentWidth - keyW - 16 }) +
-                pad * 2,
-            ) + 2;
-          const rowTint = ri % 2 === 0 ? '#ffffff' : '#fafbfc';
-          doc.save();
-          doc.rect(margin + keyW, y, contentWidth - keyW, rowH).fill(rowTint);
-          doc.rect(margin, y, keyW, rowH).fill(metaKeyBg);
-          doc
-            .rect(margin, y, contentWidth, rowH)
-            .strokeColor(line)
-            .lineWidth(0.35)
-            .stroke();
-          doc.moveTo(margin + keyW, y).lineTo(margin + keyW, y + rowH).stroke();
-          doc.restore();
-          doc.font('Helvetica-Bold').fontSize(8.7).fillColor('#475569').text(k, margin + 8, y + pad, {
-            width: keyW - 14,
-            lineGap: 0.5,
-            characterSpacing: 0,
-          });
-          doc.font('Helvetica').fontSize(9.1).fillColor(ink).text(v, margin + keyW + 8, y + pad, {
-            width: contentWidth - keyW - 16,
-            align: 'left',
-            lineGap: 1,
-            characterSpacing: 0,
-          });
-          y += rowH;
-          ri += 1;
-        }
-        doc.y = y + 10;
-        doc.x = margin;
+          .text(title, { width: contentWidth, align: 'left' });
+        doc.moveDown(0.4);
       };
 
       doc.x = margin;
       doc.y = margin;
       doc
-        .moveTo(margin, doc.y)
-        .lineTo(margin + contentWidth, doc.y)
-        .strokeColor(sectionBar)
-        .lineWidth(1.1)
-        .stroke();
-      doc.moveDown(0.55);
-      const headerCardH = 64;
-      const yCard = doc.y;
-      doc.save();
-      doc.roundedRect(margin, yCard, contentWidth, headerCardH, 5).fill(cardBg);
-      doc.strokeColor(line).lineWidth(0.5);
-      doc.roundedRect(margin, yCard, contentWidth, headerCardH, 5).stroke();
-      doc.restore();
-      doc.font('Helvetica-Bold').fontSize(18.5).fillColor(ink).text('Ata da deliberação', margin, yCard + 14, {
-        width: contentWidth,
-        align: 'center',
-      });
-      doc.font('Helvetica').fontSize(9).fillColor(muted).text(
-        'Rascunho eletrónico para conferência. Substituir por via definitiva quando aplicável.',
-        margin,
-        yCard + 40,
-        { width: contentWidth, align: 'center', lineGap: 1.2 },
-      );
-      doc.y = yCard + headerCardH + 16;
-      doc.x = margin;
-
-      doc.font('Helvetica-Bold').fontSize(8.3).fillColor('#475569').text('Identificação', {
-        width: contentWidth,
-        characterSpacing: 0.4,
-      });
-      doc.moveDown(0.35);
-
-      drawMetaTable([
-        { k: 'Condomínio', v: condominiumName },
-        { k: 'Natureza', v: assemblyKind },
-        { k: 'Matéria', v: poll.title },
-        {
-          k: 'Competência (data civil)',
-          v: this.formatPollCompetenceDatePtBr(poll),
-        },
-        {
-          k: 'Período (ref.)',
-          v: `de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}`,
-        },
-        { k: 'Ref. pauta', v: poll.id },
-      ]);
-
-      drawSectionLabel('Matéria em deliberação');
-      doc.font('Helvetica').fontSize(10.4).fillColor(ink);
+        .font('Helvetica-Bold')
+        .fontSize(14)
+        .fillColor(ink)
+        .text('ATA DE REUNIÃO DE CONDOMÍNIO', {
+          width: contentWidth,
+          align: 'center',
+        });
+      doc.moveDown(0.75);
+      doc
+        .font('Helvetica')
+        .fontSize(10.5)
+        .fillColor(ink)
+        .text(
+          `${this.formatAosDiasDoMesEAnoLine(poll)}, às ${this.formatHoraAberturaPoll(poll)} horas, nas dependências do ${condominiumName}, realizou-se reunião de condomínio, ${frasePresidencia}`,
+          { width: contentWidth, align: 'left', lineGap: 1.45 },
+        );
+      doc.moveDown(0.5);
       doc.text(
-        poll.assemblyType === AssemblyType.Ata
-          ? 'Objeto: registro da matéria indicada no título, com suporte na descrição, anexos e documentação de convocação, quando existirem.'
-          : 'Objeto: apreciação e deliberação da matéria identificada no título, mediante as opções de voto registradas no sistema.',
-        { width: contentWidth, align: 'justify', lineGap: 2 },
+        'Estiveram presentes os condôminos conforme a lista de presença apresentada ao final deste documento.',
+        { width: contentWidth, align: 'left', lineGap: 1.2 },
       );
-      doc.fillColor('#000000');
+      doc.moveDown(0.65);
+      doc.font('Helvetica-Bold').fontSize(10.5).text('Ordem do dia:');
+      doc.moveDown(0.3);
+      doc.font('Helvetica').fontSize(10.5);
+      for (const line of ordemDia) {
+        doc.text(line, { width: contentWidth, lineGap: 1.3 });
+      }
+      doc.moveDown(0.55);
+      doc.font('Helvetica-Bold').fontSize(10.5).text('Discussões e deliberações:');
+      doc.moveDown(0.35);
+      doc.font('Helvetica').fontSize(10.5);
       if (poll.body) {
         const plain = stripPollBodyToPlainText(poll.body);
         if (plain) {
-          doc.moveDown(0.45);
-          doc.font('Helvetica-Bold').fontSize(10).text('Resumo / fundamentação');
-          doc.moveDown(0.25);
-          doc.font('Helvetica').fontSize(10).text(plain, {
-            width: contentWidth,
-            align: 'justify',
-            lineGap: 2,
-          });
+          doc.text(plain, { width: contentWidth, align: 'left', lineGap: 1.45 });
+          doc.moveDown(0.4);
         }
       }
-
-      drawSectionLabel('Processo de votação');
-      doc.font('Helvetica').fontSize(10.35);
       if (poll.assemblyType === AssemblyType.Ata) {
         doc.text(
-          'Pauta do tipo «Ata»: não houve votação por opções no sistema. Consigne deliberações na descrição, anexos e na versão final da ata.',
-          { width: contentWidth, align: 'justify', lineGap: 2 },
+          'Pauta de registo de assuntos sem votação eletrónica por opções no sistema; consignem-se as deliberações na presente ata e em documentos de suporte, nos termos estatutários.',
+          { width: contentWidth, align: 'left', lineGap: 1.35 },
         );
+        doc.moveDown(0.4);
       } else {
         doc.text(
-          `Modo de escrutínio: ${voteMode}. Cada fração possui, no máximo, um registro de voto vigente; novo registro substitui o anterior.`,
-          { width: contentWidth, align: 'justify', lineGap: 2 },
+          `O escrutínio no sistema: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Registo no sistema: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
+          { width: contentWidth, align: 'left', lineGap: 1.3 },
         );
-      }
-
-      drawSectionLabel('Apuração');
-      if (poll.assemblyType === AssemblyType.Ata) {
-        doc.font('Helvetica').fontSize(10.3).text(
-          'Não aplicável: sem opções de voto no sistema.',
-          { width: contentWidth, align: 'justify', lineGap: 2 },
-        );
-      } else {
-        doc
-          .font('Helvetica')
-          .fontSize(10.2)
-          .text(
-            `Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}.`,
-            { width: contentWidth, align: 'justify', lineGap: 2 },
-          );
-        doc.moveDown(0.55);
-        const colLabel = margin + 10;
-        const colVotes = margin + contentWidth * 0.68;
-        const rowH = 18;
+        doc.moveDown(0.45);
+        if (decidedOption) {
+          doc
+            .font('Helvetica-Bold')
+            .text(`Opção vencedora: «${decidedOption.label}».`);
+          doc.moveDown(0.45);
+        }
+        doc.font('Helvetica');
+        const colLabel = margin + 4;
+        const colVotes = margin + contentWidth * 0.66;
+        const rowH = 15;
         const tableTop = doc.y;
         let y = tableTop;
         doc.save();
-        doc.rect(margin, y, contentWidth, rowH).fill('#f1f5f9');
-        doc.strokeColor(lineStrong).lineWidth(0.4);
-        doc.moveTo(margin, y + rowH).lineTo(margin + contentWidth, y + rowH).stroke();
+        doc
+          .rect(margin, y, contentWidth, rowH)
+          .strokeColor(lineTable)
+          .lineWidth(0.45)
+          .stroke();
         doc.restore();
-        doc.font('Helvetica-Bold').fontSize(9).fillColor('#334155');
-        doc.text('Opção', colLabel, y + 6, { width: colVotes - colLabel - 8 });
-        doc.text('Votos', colVotes, y + 6, {
-          width: margin + contentWidth - colVotes - 10,
-          align: 'right',
+        doc.font('Helvetica-Bold').fontSize(8.2).text('Apuração (sistema)', margin, y + 3, {
+          width: contentWidth,
         });
         doc.y = y + rowH;
         let i = 0;
@@ -757,80 +737,62 @@ export class PlanningDocumentsService {
         )) {
           const c = counts[o.id] ?? 0;
           y = doc.y;
-          const stripe = i % 2 === 0 ? '#ffffff' : '#fafbfc';
           doc.save();
-          doc.rect(margin, y, contentWidth, rowH).fill(stripe);
-          doc.strokeColor(line).lineWidth(0.35);
-          doc.moveTo(margin, y + rowH).lineTo(margin + contentWidth, y + rowH).stroke();
+          doc
+            .rect(margin, y, contentWidth, rowH)
+            .strokeColor(lineGrid)
+            .lineWidth(0.3)
+            .stroke();
           doc.restore();
-          doc.font('Helvetica').fontSize(9.65).fillColor(ink);
-          doc.text(`${i + 1}. ${o.label}`, colLabel, y + 5, {
-            width: colVotes - colLabel - 10,
-          });
-          doc.font('Helvetica-Bold').fontSize(9.65).fillColor(sectionBar).text(String(c), colVotes, y + 5, {
-            width: margin + contentWidth - colVotes - 10,
-            align: 'right',
-          });
+          doc
+            .font('Helvetica')
+            .fontSize(8.8)
+            .text(`${i + 1}. ${o.label}`, colLabel, y + 3, {
+              width: colVotes - colLabel - 4,
+            });
+          doc
+            .font('Helvetica-Bold')
+            .text(String(c), colVotes, y + 3, {
+              width: margin + contentWidth - colVotes - 6,
+              align: 'right',
+            });
           doc.y = y + rowH;
           i += 1;
         }
         const tableBottom = doc.y;
         doc.save();
-        doc.roundedRect(margin, tableTop, contentWidth, tableBottom - tableTop, 4).strokeColor(lineStrong).lineWidth(0.55).stroke();
+        doc
+          .rect(margin, tableTop, contentWidth, tableBottom - tableTop)
+          .strokeColor(lineTable)
+          .lineWidth(0.4)
+          .stroke();
         doc.restore();
         doc.moveDown(0.45);
       }
-
-      drawSectionLabel('Deliberação');
-      if (decidedOption) {
-        const par =
-          'Ante o escrutínio e nos termos aplicáveis, a assembleia delibera e consagra a seguinte opção como decisão desta pauta:';
-        const optQuoted = `« ${decidedOption.label} »`;
-        const foot =
-          'A decisão deve ser juntada aos livros e registros do condomínio, na forma da lei e da convenção.';
-
-        doc.x = margin;
-        doc
-          .font('Helvetica-Bold')
-          .fontSize(11)
-          .fillColor(ink)
-          .text('Decisão registrada', { width: contentWidth });
-        doc.moveDown(0.35);
-        doc.font('Helvetica').fontSize(10.15).fillColor(ink);
-        doc.text(par, { width: contentWidth, align: 'justify', lineGap: 1.8 });
-        doc.moveDown(0.45);
-        doc.font('Helvetica-Bold').fontSize(11.2).fillColor(sectionBar);
-        doc.text(optQuoted, { width: contentWidth, align: 'left' });
-        doc.moveDown(0.45);
-        doc.font('Helvetica').fontSize(9.85).fillColor(ink);
-        doc.text(foot, { width: contentWidth, align: 'justify', lineGap: 1.6 });
-        doc.fillColor('#000000');
-        doc.x = margin;
-      } else if (poll.assemblyType === AssemblyType.Ata) {
-        doc.font('Helvetica').fontSize(10.3).text(
-          'As deliberações devem constar da ata lavrada após a reunião e dos documentos de suporte arquivados.',
-          { width: contentWidth, align: 'justify', lineGap: 2 },
-        );
-      } else {
-        doc.font('Helvetica').fontSize(10.3).text(
-          'Enquanto não for escolhida e registrada a opção vencedora nos termos estatutários, o quadro da apuração subsiste apenas como resumo do escrutínio.',
-          { width: contentWidth, align: 'justify', lineGap: 2 },
-        );
-      }
-
-      doc.moveDown(0.9);
-      doc.font('Helvetica-Oblique').fontSize(8.4).fillColor(muted).text(
-        `Gerado eletronicamente em ${this.formatDateTimePtBr(new Date())}. Não substitui a via definitiva nem exigências legais de forma autónoma.`,
-        { width: contentWidth, align: 'justify', lineGap: 1.2 },
+      doc.font('Helvetica').fontSize(10.3);
+      doc.moveDown(0.5);
+      doc.text(
+        textoNadaMais,
+        { width: contentWidth, align: 'left', lineGap: 1.35 },
       );
-      doc.fillColor('#000000');
-      doc.moveDown(0.6);
+      doc.moveDown(1.0);
+      doc.text(linhaSindico);
+      doc.moveDown(0.9);
+      doc.text(
+        'Secretário: ________________________________________________',
+      );
+      doc.moveDown(0.55);
 
-      this.drawCondominiumMgmtSignaturesAndPaperClosing(
+      doc.addPage();
+      doc.x = margin;
+      doc.y = margin;
+      drawSection('LISTA DE PRESENÇA');
+      this.drawPollAttendanceListTable(
         doc,
         margin,
         contentWidth,
-        mgmtSigners,
+        attendanceUnitLabels,
+        bottom,
       );
 
       stampPlatformFooterOnAllPages(doc);
@@ -897,7 +859,7 @@ export class PlanningDocumentsService {
       doc.font('Helvetica').fontSize(10.5);
       doc.text(
         'Fica lavrada a presente ata da reunião abaixo identificada, nos termos da convenção e da legislação aplicável, quando couber.',
-        { width: contentWidth, align: 'justify' },
+        { width: contentWidth, align: 'left' },
       );
       doc.moveDown(0.5);
       doc.text(`Condomínio: ${condominiumName}`, { width: contentWidth });
@@ -914,7 +876,7 @@ export class PlanningDocumentsService {
       doc.moveDown(0.4);
       doc.font('Helvetica').fontSize(10.5);
       if (agenda) {
-        doc.text(agenda, { width: contentWidth, align: 'justify' });
+        doc.text(agenda, { width: contentWidth, align: 'left' });
       } else {
         doc.text(
           '1. _________________________________________________________________',
@@ -936,7 +898,7 @@ export class PlanningDocumentsService {
       doc.font('Helvetica').fontSize(10.5);
       doc.text(
         'Registre os presentes (síndico, conselho, condôminos ou procuradores, conforme o caso):',
-        { width: contentWidth, align: 'justify' },
+        { width: contentWidth, align: 'left' },
       );
       doc.moveDown(0.45);
       for (let i = 0; i < 8; i++) {
@@ -951,7 +913,7 @@ export class PlanningDocumentsService {
       doc.font('Helvetica').fontSize(10.5);
       doc.text(
         'Resumo do que foi tratado e decidido (ou deliberado nos limites da competência da reunião):',
-        { width: contentWidth, align: 'justify' },
+        { width: contentWidth, align: 'left' },
       );
       doc.moveDown(0.5);
       for (let i = 0; i < 12; i++) {
@@ -977,7 +939,7 @@ export class PlanningDocumentsService {
         .fillColor('#444444')
         .text(
           `Documento gerado eletronicamente em ${this.formatDateTimePtBr(new Date())}, para conferência e preenchimento após a reunião.`,
-          { width: contentWidth, align: 'justify' },
+          { width: contentWidth, align: 'left' },
         );
       doc.fillColor('#000000');
       doc.moveDown(0.75);
