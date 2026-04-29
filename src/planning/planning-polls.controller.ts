@@ -98,7 +98,8 @@ export class PlanningPollsController {
   )
   @ApiOperation({
     summary:
-      'Anexar arquivo à pauta (PDF, imagem, Word, texto ou áudio Opus / Ogg, ex.: .opus do WhatsApp)',
+      'Anexar ficheiro à pauta (síndico/titular), em qualquer estado, incl. após encerrar ou decidir. ' +
+      'Formatos: PDF, imagem, Word, texto ou áudio Opus / Ogg (ex.: .opus do WhatsApp).',
   })
   @ApiParam({ name: 'pollId' })
   uploadAttachment(

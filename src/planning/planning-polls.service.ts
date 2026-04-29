@@ -78,17 +78,6 @@ export class PlanningPollsService {
     }
   }
 
-  private assertCanEditAttachments(poll: PlanningPoll): void {
-    if (
-      poll.status !== PlanningPollStatus.Draft &&
-      poll.status !== PlanningPollStatus.Open
-    ) {
-      throw new BadRequestException(
-        'Anexos só podem ser alterados em rascunho ou com votação aberta.',
-      );
-    }
-  }
-
   private async loadPollForCondo(condominiumId: string, pollId: string) {
     const poll = await this.pollRepo.findOne({
       where: { id: pollId, condominiumId },
@@ -449,7 +438,6 @@ export class PlanningPollsService {
     }
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    this.assertCanEditAttachments(poll);
     const mimeType = this.normalizePollAttachmentMimeType(file);
     if (!this.attachmentStorage.isAllowedMime(mimeType)) {
       throw new BadRequestException(
@@ -494,7 +482,6 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    this.assertCanEditAttachments(poll);
     const att = await this.attachmentRepo.findOne({
       where: { id: attachmentId, pollId: poll.id },
     });
