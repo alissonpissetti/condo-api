@@ -360,10 +360,26 @@ export class GovernanceService {
     condominiumId: string,
     userId: string,
   ): Promise<void> {
+    if (
+      !(await this.canViewAggregatesWithUnitDetail(condominiumId, userId))
+    ) {
+      throw new ForbiddenException('Não pode ver resultados agregados.');
+    }
+  }
+
+  /**
+   * Dono, síndico, subsíndico ou admin: vêem totais e o detalhe de voto por unidade.
+   * Morador com papel «member» ou acesso de residente: não (recebem vista agregada
+   * controlada noutro ponto, após encerrar a pauta).
+   */
+  async canViewAggregatesWithUnitDetail(
+    condominiumId: string,
+    userId: string,
+  ): Promise<boolean> {
     await this.ensureBootstrapParticipants(condominiumId);
     const access = await this.resolveAccess(condominiumId, userId);
     if (access?.kind === 'owner') {
-      return;
+      return true;
     }
     if (
       access?.kind === 'participant' &&
@@ -371,9 +387,9 @@ export class GovernanceService {
         access.role === GovernanceRole.SubSyndic ||
         access.role === GovernanceRole.Admin)
     ) {
-      return;
+      return true;
     }
-    throw new ForbiddenException('Não pode ver resultados agregados.');
+    return false;
   }
 
   async assertCanManageRoles(

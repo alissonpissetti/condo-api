@@ -1,5 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CreateCondominiumInviteDto {
   @ApiProperty({ format: 'uuid' })
@@ -10,13 +17,23 @@ export class CreateCondominiumInviteDto {
   @IsUUID()
   unitId: string;
 
-  @ApiProperty({ example: 'morador@example.com' })
+  @ApiPropertyOptional({ example: 'morador@example.com' })
+  @IsOptional()
   @IsEmail()
-  email: string;
+  email?: string;
 
   @ApiPropertyOptional({
     description:
-      'Obrigatório se ainda não existir ficha de pessoa com este email.',
+      'Celular com DDD (Brasil). Pode ser usado sozinho (convite por WhatsApp via Twilio) ou com o e-mail (envia nos dois canais).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  phone?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Obrigatório se ainda não existir ficha de pessoa com o contato indicado.',
   })
   @IsOptional()
   @IsString()

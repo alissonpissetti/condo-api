@@ -3,6 +3,7 @@ import {
   ConflictException,
   GoneException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -10,13 +11,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { IsNull, Not, QueryFailedError, Repository } from 'typeorm';
-import { MailService } from '../mail/mail.service';
+import { buildCondominiumMemberInviteSms, MailService } from '../mail/mail.service';
+import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.service';
 import { CondominiumsService } from '../condominiums/condominiums.service';
 import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { Unit } from '../units/unit.entity';
 import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { SaasPlansService } from '../platform/saas-plans.service';
+import { User } from '../users/user.entity';
 import { UsersService } from '../users/users.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { AssignUnitPersonDto } from './dto/assign-unit-person.dto';
@@ -57,6 +60,8 @@ function normalizeInviteMobile(raw: string): string {
 
 @Injectable()
 export class PeopleService {
+  private readonly logger = new Logger(PeopleService.name);
+
   constructor(
     private readonly saasPlans: SaasPlansService,
     @InjectRepository(Person)
@@ -75,6 +80,7 @@ export class PeopleService {
     private readonly governanceService: GovernanceService,
     private readonly usersService: UsersService,
     private readonly mailService: MailService,
+    private readonly twilioWhatsapp: TwilioWhatsappService,
     private readonly config: ConfigService,
   ) {}
 
@@ -213,6 +219,35 @@ export class PeopleService {
     const masked =
       local.length <= 1 ? '*' : `${local[0]}***${local[local.length - 1]}`;
     return `${masked}@${domain}`;
+  }
+
+  private maskPhoneE164(phone: string): string {
+    const d = phone.replace(/\D/g, '');
+    const n =
+      d.length >= 12 && d.startsWith('55')
+        ? d.slice(2)
+        : d.length === 11
+          ? d
+          : d.slice(-11);
+    if (n.length === 11) {
+      return `(${n.slice(0, 2)}) ${n[2]}****-${n.slice(7)}`;
+    }
+    return '••••';
+  }
+
+  private async inviterDisplayNameForUser(userId: string): Promise<string> {
+    const p = await this.personRepo.findOne({ where: { userId } });
+    const t = p?.fullName?.trim();
+    if (t && t.length > 0) {
+      return t;
+    }
+    return 'A gestão do condomínio';
+  }
+
+  private syntheticUserEmailForPersonWithNoRealEmail(
+    personId: string,
+  ): string {
+    return `convcad+${personId.replace(/-/g, '')}@convite-interno.local`;
   }
 
   /** Pesquisa pessoa ou usuário por CPF/email (gestor da unidade). */
@@ -582,6 +617,7 @@ export class PeopleService {
         condominiumName: condoName,
         unitIdentifier: unitInv.unit.identifier,
         emailMasked: this.maskEmail(unitInv.email),
+        phoneMasked: null,
         roles,
         expiresAt: unitInv.expiresAt.toISOString(),
         pendingRegistration: !unitInv.person.userId,
@@ -606,7 +642,10 @@ export class PeopleService {
       inviteKind: 'condominium' as const,
       condominiumName: condoInv.condominium.name,
       unitIdentifier: condoInv.unit.identifier,
-      emailMasked: this.maskEmail(condoInv.email),
+      emailMasked: condoInv.email ? this.maskEmail(condoInv.email) : null,
+      phoneMasked: condoInv.phone
+        ? this.maskPhoneE164(condoInv.phone)
+        : null,
       roles: ['responsável pela unidade'],
       expiresAt: condoInv.expiresAt.toISOString(),
       pendingRegistration: !condoInv.person.userId,
@@ -725,21 +764,29 @@ export class PeopleService {
     }
 
     const phoneNorm = normalizeInviteMobile(dto.phone);
-
     const person = inv.person;
-    const existingUser = await this.usersService.findByEmail(inv.email);
+    const invEmail = inv.email ? inv.email.trim().toLowerCase() : null;
+    const invPhone = inv.phone ?? null;
+
+    let existingUser: User | null = null;
+    if (invEmail) {
+      existingUser = await this.usersService.findByEmail(invEmail);
+    }
+    if (!existingUser && invPhone) {
+      existingUser = await this.usersService.findByPhone(invPhone);
+    }
 
     if (existingUser) {
       if (!person.userId) {
         person.userId = existingUser.id;
-        if (!person.email) {
-          person.email = existingUser.email;
+        if (invEmail && !person.email) {
+          person.email = invEmail;
         }
         await this.personRepo.save(person);
       }
       if (person.userId !== existingUser.id) {
         throw new ConflictException(
-          'Este convite não corresponde à conta associada a este email.',
+          'Este convite não corresponde à sua conta. Entre com o e-mail ou o celular associado a este convite.',
         );
       }
       await this.usersService.assertOrSetPhoneForInviteAccept(
@@ -763,7 +810,7 @@ export class PeopleService {
         userId: existingUser.id,
         personId: person.id,
         condominiumId: inv.condominiumId,
-        unitId: unit.id,
+        unitId: inv.unit.id,
       };
     }
 
@@ -786,10 +833,12 @@ export class PeopleService {
       );
     }
 
+    const emailForUser = invEmail ?? this.syntheticUserEmailForPersonWithNoRealEmail(person.id);
+
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
     const user = await this.usersService.create({
-      email: inv.email,
+      email: emailForUser,
       passwordHash,
       planId,
       phone: phoneNorm,
@@ -797,6 +846,9 @@ export class PeopleService {
 
     person.userId = user.id;
     person.phone = phoneNorm;
+    if (invEmail) {
+      person.email = invEmail;
+    }
     if (dto.fullName?.trim()) {
       person.fullName = dto.fullName.trim();
     }
@@ -819,17 +871,45 @@ export class PeopleService {
     };
   }
 
-  async lookupEmailForCondominiumInvite(
+  async lookupContactForCondominiumInvite(
     condominiumId: string,
     userId: string,
     emailRaw?: string,
+    phoneRaw?: string,
   ) {
     await this.governanceService.assertManagement(condominiumId, userId);
-    const email = normalizeEmail(emailRaw);
-    if (!email) {
-      throw new BadRequestException('Indique o email na query (?email=).');
+    const hasEmail = !!emailRaw?.trim();
+    const hasPhone = !!phoneRaw?.trim();
+    if (!hasEmail && !hasPhone) {
+      throw new BadRequestException(
+        'Indique ?email= ou ?phone= (celular com DDD) na identificação.',
+      );
     }
+    if (hasEmail && hasPhone) {
+      throw new BadRequestException(
+        'Use somente o e-mail ou somente o celular na identificação.',
+      );
+    }
+    if (hasEmail) {
+      const email = normalizeEmail(emailRaw);
+      if (!email) {
+        throw new BadRequestException('E-mail inválido na query.');
+      }
+      return this.lookupCondominiumByEmailForInvite(email);
+    }
+    try {
+      return await this.lookupCondominiumByPhoneForInvite(
+        normalizeInviteMobile(phoneRaw!),
+      );
+    } catch (e) {
+      if (e instanceof BadRequestException) {
+        throw e;
+      }
+      throw new BadRequestException('Celular inválido na query.');
+    }
+  }
 
+  private async lookupCondominiumByEmailForInvite(email: string) {
     const person = await this.personRepo.findOne({ where: { email } });
     if (person) {
       if (person.userId) {
@@ -874,6 +954,51 @@ export class PeopleService {
     };
   }
 
+  private async lookupCondominiumByPhoneForInvite(phone: string) {
+    const person = await this.personRepo.findOne({ where: { phone } });
+    if (person) {
+      if (person.userId) {
+        return {
+          found: true,
+          fullName: person.fullName,
+          hasUserAccount: true,
+          canInvite: true,
+          message:
+            'Esta pessoa já tem conta. Pode enviar o convite: receberá o link (por e-mail e/ou WhatsApp) para aceitar e ficar como responsável pela unidade.',
+        };
+      }
+      return {
+        found: true,
+        fullName: person.fullName,
+        hasUserAccount: false,
+        canInvite: true,
+      };
+    }
+
+    const user = await this.usersService.findByPhone(phone);
+    if (user) {
+      const byUser = await this.personRepo.findOne({
+        where: { userId: user.id },
+      });
+      return {
+        found: true,
+        fullName: byUser?.fullName ?? null,
+        hasUserAccount: true,
+        canInvite: true,
+        message:
+          'Já existe conta com este celular. Pode enviar o convite; a pessoa confirma pelo link (WhatsApp e/ou e-mail) com a conta existente.',
+      };
+    }
+
+    return {
+      found: false,
+      fullName: null,
+      hasUserAccount: false,
+      canInvite: true,
+      message: 'Indique o nome completo de quem vai receber o convite.',
+    };
+  }
+
   async listPendingCondominiumInvitations(
     condominiumId: string,
     userId: string,
@@ -887,6 +1012,7 @@ export class PeopleService {
     return rows.map((r) => ({
       id: r.id,
       email: r.email,
+      phone: r.phone,
       expiresAt: r.expiresAt.toISOString(),
       createdAt: r.createdAt.toISOString(),
       personFullName: r.person.fullName,
@@ -910,6 +1036,7 @@ export class PeopleService {
     return rows.map((r) => ({
       id: r.id,
       email: r.email,
+      phone: r.phone,
       createdAt: r.createdAt.toISOString(),
       acceptedAt: r.consumedAt!.toISOString(),
       expiresAt: r.expiresAt.toISOString(),
@@ -951,14 +1078,39 @@ export class PeopleService {
       userId,
     );
 
-    const email = normalizeEmail(dto.email);
-    if (!email) {
-      throw new BadRequestException('Email inválido.');
+    const email = dto.email?.trim()
+      ? normalizeEmail(dto.email) || null
+      : null;
+    if (dto.email?.trim() && !email) {
+      throw new BadRequestException('E-mail inválido.');
     }
 
-    let person = await this.personRepo.findOne({ where: { email } });
+    let phone: string | null = null;
+    if (dto.phone?.trim()) {
+      try {
+        phone = normalizeInviteMobile(dto.phone);
+      } catch (e) {
+        if (e instanceof BadRequestException) {
+          throw e;
+        }
+        throw new BadRequestException('Celular inválido.');
+      }
+    }
 
-    if (!person) {
+    if (!email && !phone) {
+      throw new BadRequestException(
+        'Informe o e-mail e/ou o celular (com DDD) para o convite.',
+      );
+    }
+
+    let person: Person | null = null;
+    if (email) {
+      person = await this.personRepo.findOne({ where: { email } });
+    }
+    if (!person && phone) {
+      person = await this.personRepo.findOne({ where: { phone } });
+    }
+    if (!person && email) {
       const existingUser = await this.usersService.findByEmail(email);
       if (existingUser) {
         person = await this.personRepo.findOne({
@@ -991,45 +1143,94 @@ export class PeopleService {
         }
       }
     }
+    if (!person && phone) {
+      const userByPhone = await this.usersService.findByPhone(phone);
+      if (userByPhone) {
+        person = await this.personRepo.findOne({
+          where: { userId: userByPhone.id },
+        });
+        if (!person) {
+          const fullName = dto.fullName?.trim() ?? '';
+          if (fullName.length < 2) {
+            throw new BadRequestException(
+              'Nome completo obrigatório para convidar esta conta (criação da ficha de pessoa ligada ao usuário).',
+            );
+          }
+          person = this.personRepo.create({
+            email: userByPhone.email,
+            fullName,
+            userId: userByPhone.id,
+            cpf: null,
+            phone: userByPhone.phone,
+          });
+          try {
+            person = await this.personRepo.save(person);
+          } catch (e) {
+            if (e instanceof QueryFailedError) {
+              throw new ConflictException(
+                'Dados em conflito ao criar ficha de pessoa.',
+              );
+            }
+            throw e;
+          }
+        }
+      }
+    }
 
     if (!person) {
       const fullName = dto.fullName?.trim() ?? '';
       if (fullName.length < 2) {
         throw new BadRequestException(
-          'Nome completo obrigatório para convidar um email que ainda não está no sistema.',
+          'Nome completo obrigatório para convidar um contato ainda não cadastrado no sistema.',
         );
       }
       person = this.personRepo.create({
         email,
         fullName,
         cpf: null,
-        phone: null,
+        phone,
       });
       try {
         person = await this.personRepo.save(person);
       } catch (e) {
         if (e instanceof QueryFailedError) {
           throw new ConflictException(
-            'Email ou dados em conflito com outra ficha de pessoa.',
+            'Dados em conflito (e-mail, celular ou ficha de pessoa).',
           );
         }
         throw e;
       }
     } else {
+      if (email && !person.email) {
+        person.email = email;
+      }
+      if (phone && !person.phone) {
+        person.phone = phone;
+      }
       const fn = dto.fullName?.trim();
       if (fn && fn.length >= 2) {
         person.fullName = fn;
-        await this.personRepo.save(person);
       }
+      await this.personRepo.save(person);
     }
 
     const hasUserAccount = !!person.userId;
+    const inviterName = await this.inviterDisplayNameForUser(userId);
 
-    await this.condominiumInvitationRepo.delete({
-      condominiumId,
-      email,
-      consumedAt: IsNull(),
-    });
+    if (email) {
+      await this.condominiumInvitationRepo.delete({
+        condominiumId,
+        email,
+        consumedAt: IsNull(),
+      });
+    }
+    if (phone) {
+      await this.condominiumInvitationRepo.delete({
+        condominiumId,
+        phone,
+        consumedAt: IsNull(),
+      });
+    }
 
     const plainToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(plainToken).digest('hex');
@@ -1038,7 +1239,8 @@ export class PeopleService {
     const inv = this.condominiumInvitationRepo.create({
       tokenHash,
       inviteTokenPlain: plainToken,
-      email,
+      email: email,
+      phone,
       condominiumId,
       personId: person.id,
       unitId: unit.id,
@@ -1050,18 +1252,55 @@ export class PeopleService {
 
     const inviteLink = this.buildInvitePublicLink(plainToken);
 
-    await this.mailService.sendCondominiumMemberInvite({
-      to: email,
+    const inviteParams = {
       inviteLink,
       condominiumName,
       unitIdentifier: unit.identifier,
+      inviterName,
       existingAccount: hasUserAccount,
-    });
+    };
+
+    if (email) {
+      await this.mailService.sendCondominiumMemberInvite({
+        to: email,
+        ...inviteParams,
+      });
+    }
+
+    if (phone) {
+      const shortText = buildCondominiumMemberInviteSms({
+        to: phone,
+        ...inviteParams,
+      });
+      if (this.twilioWhatsapp.isConfigured()) {
+        try {
+          await this.twilioWhatsapp.sendCondominiumInvite(phone, {
+            inviterName,
+            condominiumName,
+            unitIdentifier: unit.identifier,
+            inviteLink,
+            existingAccount: hasUserAccount,
+          });
+        } catch (e) {
+          this.logger.error(e);
+          throw new BadRequestException(
+            'Não foi possível enviar o WhatsApp (Twilio). Tente de novo ou use o e-mail.',
+          );
+        }
+      } else {
+        this.logger.warn(
+          `[Twilio WhatsApp não configurado — defina TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM e o template] convite ${phone}\n${shortText}`,
+        );
+      }
+    }
 
     return {
       outcome: 'invite_sent' as const,
       personId: person.id,
       email,
+      phone,
+      sentEmail: !!email,
+      sentSms: !!phone,
       unitId: unit.id,
       inviteUrl: inviteLink,
     };

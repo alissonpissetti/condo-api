@@ -35,6 +35,19 @@ import { CondominiumLibraryService } from './condominium-library.service';
 export class CondominiumLibraryController {
   constructor(private readonly library: CondominiumLibraryService) {}
 
+  @Get('download-log')
+  @ApiOperation({
+    summary:
+      'Histórico de downloads da biblioteca (apenas titular do condomínio ou síndico)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  listDownloadLog(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+  ) {
+    return this.library.listDownloadLog(condominiumId, userId);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Listar documentos da biblioteca' })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
@@ -76,7 +89,7 @@ export class CondominiumLibraryController {
   }
 
   @Get(':documentId/file')
-  @ApiOperation({ summary: 'Descarregar documento da biblioteca' })
+  @ApiOperation({ summary: 'Download do arquivo da biblioteca' })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiParam({ name: 'documentId', format: 'uuid' })
   async download(

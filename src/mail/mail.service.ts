@@ -27,9 +27,23 @@ export type CondominiumMemberInviteMail = {
   inviteLink: string;
   condominiumName: string;
   unitIdentifier: string;
+  /** Nome de quem envia o convite (ex.: ficha vinculada à conta de gestão). */
+  inviterName: string;
   /** Conta já existente: texto do e-mail pede confirmação pelo link, sem cadastro. */
   existingAccount?: boolean;
 };
+
+/** Texto curto (log / fallback) — mesmo sentido do e-mail; canal celular = WhatsApp (Twilio). */
+export function buildCondominiumMemberInviteSms(
+  p: CondominiumMemberInviteMail,
+): string {
+  const who = p.inviterName?.trim() || 'A gestão do condomínio';
+  const l = p.inviteLink;
+  if (p.existingAccount) {
+    return `${who} enviou um convite p/ a unidade "${p.unitIdentifier}" no "${p.condominiumName}". Confirme: ${l}`;
+  }
+  return `${who} enviou um convite p/ a unidade "${p.unitIdentifier}" no "${p.condominiumName}". Cadastre-se: ${l}`;
+}
 
 @Injectable()
 export class MailService {
@@ -77,10 +91,14 @@ export class MailService {
   async sendCondominiumMemberInvite(
     params: CondominiumMemberInviteMail,
   ): Promise<void> {
-    const subject = `Convite — ${params.condominiumName} · unidade ${params.unitIdentifier}`;
+    const who = params.inviterName?.trim() || 'A gestão do condomínio';
+    const c = params.condominiumName;
+    const u = params.unitIdentifier;
+    const l = params.inviteLink;
+    const subject = `Convite — ${c} · unidade ${u}`;
     const text = params.existingAccount
-      ? `Você foi convidado(a) a ser responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nComo já tem conta neste e-mail, abra o link para confirmar a associação à unidade (não é necessário criar nova conta):\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`
-      : `Você foi convidado(a) como responsável pela unidade ${params.unitIdentifier} no condomínio «${params.condominiumName}».\n\nPara criar a sua conta e confirmar a associação à unidade, abra:\n${params.inviteLink}\n\nSe não esperava este e-mail, ignore.`;
+      ? `${who} enviou um convite para identificar você como responsável participante da unidade «${u}» no condomínio «${c}».\n\nJá possui cadastro: confirme a associação abrindo o link. Se não esperava este convite, ignore.\n\n${l}`
+      : `${who} enviou um convite para identificar você como responsável participante da unidade «${u}» no condomínio «${c}».\n\nClique no link abaixo para se cadastrar e aceitar. Se não esperava este convite, ignore.\n\n${l}`;
 
     const host = this.config.get<string>('SMTP_HOST')?.trim();
     if (!host) {

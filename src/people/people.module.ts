@@ -5,6 +5,7 @@ import { CondominiumsModule } from '../condominiums/condominiums.module';
 import { PlanningModule } from '../planning/planning.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { MailModule } from '../mail/mail.module';
+import { TwilioWhatsappModule } from '../twilio-whatsapp/twilio-whatsapp.module';
 import { Unit } from '../units/unit.entity';
 import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { SaasPlansModule } from '../platform/saas-plans.module';
@@ -33,6 +34,7 @@ import { UnitPeopleController } from './unit-people.controller';
     UsersModule,
     SaasPlansModule,
     MailModule,
+    TwilioWhatsappModule,
   ],
   controllers: [
     UnitPeopleController,

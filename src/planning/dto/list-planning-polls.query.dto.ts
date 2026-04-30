@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -62,4 +63,15 @@ export class ListPlanningPollsQueryDto {
   @Min(1)
   @Max(100)
   limit?: number = 100;
+
+  @ApiPropertyOptional({
+    description:
+      'Quando `true`, cada pauta com votação passa a incluir `myVote` (voto da(s) unidade(s) do utilizador, se existir).',
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === true || value === 'true' || value === '1',
+  )
+  @IsBoolean()
+  includeMyVotes?: boolean;
 }

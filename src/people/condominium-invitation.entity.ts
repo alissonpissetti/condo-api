@@ -30,8 +30,12 @@ export class CondominiumInvitation {
   })
   inviteTokenPlain: string | null;
 
-  @Column()
-  email: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  email: string | null;
+
+  /** E.164 (ex.: 5561999988888) — convite enviado por WhatsApp (Twilio). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  phone: string | null;
 
   @Column({ name: 'condominium_id' })
   condominiumId: string;

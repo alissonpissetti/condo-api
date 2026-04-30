@@ -23,6 +23,7 @@ import { PlanningGovernanceDocuments1750000000000 } from '../migrations/17500000
 import { PlanningPollMultipleChoice1750050000000 } from '../migrations/1750050000000-planning-poll-multiple-choice';
 import { PlanningPollAttachments1750100000000 } from '../migrations/1750100000000-planning-poll-attachments';
 import { CondominiumInvitations1750150000000 } from '../migrations/1750150000000-condominium-invitations';
+import { CondominiumInvitationsEmailOptionalPhone1751350000000 } from '../migrations/1751350000000-condominium-invitations-email-optional-phone';
 import { CondominiumInvitationsUnit1750160000000 } from '../migrations/1750160000000-condominium-invitations-unit';
 import { CondominiumInvitationPlainToken1750170000000 } from '../migrations/1750170000000-condominium-invitation-plain-token';
 import { UsersPlatformAdmin1750200000000 } from '../migrations/1750200000000-users-platform-admin';
@@ -58,6 +59,7 @@ import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/17512
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
 import { SupportMessageAttachments1751310000000 } from '../migrations/1751310000000-support-message-attachments';
 import { CondominiumLibraryDocuments1751320000000 } from '../migrations/1751320000000-condominium-library-documents';
+import { CondominiumLibraryDownloadLog1751400000000 } from '../migrations/1751400000000-condominium-library-download-log';
 import { TransactionDocument1751330000000 } from '../migrations/1751330000000-transaction-document';
 import { TransactionMultiDocuments1751340000000 } from '../migrations/1751340000000-transaction-multi-documents';
 import { EnsureTransactionCompetencyColumns1751240000000 } from '../migrations/1751240000000-ensure-transaction-competency-columns';
@@ -66,6 +68,7 @@ import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { CondominiumLibraryDocument } from '../condominium-library/entities/condominium-library-document.entity';
+import { CondominiumLibraryDocumentDownload } from '../condominium-library/entities/condominium-library-document-download.entity';
 import { FinancialFund } from '../finance/entities/financial-fund.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { TransactionUnitShare } from '../finance/entities/transaction-unit-share.entity';
@@ -104,6 +107,7 @@ export const AppDataSource = new DataSource({
     SaasPlan,
     SaasVoucher,
     CondominiumLibraryDocument,
+    CondominiumLibraryDocumentDownload,
   ],
   /** Cada migration em `src/migrations` precisa ser importada e incluída aqui; o CLI não varre a pasta sozinho. */
   migrations: [
@@ -157,8 +161,10 @@ export const AppDataSource = new DataSource({
     SupportTicketTarget1751300000000,
     SupportMessageAttachments1751310000000,
     CondominiumLibraryDocuments1751320000000,
+    CondominiumLibraryDownloadLog1751400000000,
     TransactionDocument1751330000000,
     TransactionMultiDocuments1751340000000,
+    CondominiumInvitationsEmailOptionalPhone1751350000000,
     EnsureTransactionCompetencyColumns1751240000000,
     CondominiumFeeChargePaymentLogs1751250000000,
     UnitsFinancialResponsiblePerson1751260000000,

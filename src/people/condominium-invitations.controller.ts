@@ -32,21 +32,24 @@ export class CondominiumInvitationsController {
 
   @Get('lookup')
   @ApiOperation({
-    summary: 'Pré-visualizar pessoa pelo email (convite ao condomínio)',
+    summary: 'Pré-visualizar pessoa (convite ao condomínio)',
     description:
-      'Se existir ficha ou usuário com o e-mail, devolve o nome para exibir no formulário.',
+      'Passe ?email= ou ?phone= (um por vez) para checar se já existe cadastro.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
-  @ApiQuery({ name: 'email', required: true })
-  lookupByEmail(
+  @ApiQuery({ name: 'email', required: false })
+  @ApiQuery({ name: 'phone', required: false })
+  lookup(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @Query('email') email?: string,
+    @Query('phone') phone?: string,
   ) {
-    return this.peopleService.lookupEmailForCondominiumInvite(
+    return this.peopleService.lookupContactForCondominiumInvite(
       condominiumId,
       userId,
       email,
+      phone,
     );
   }
 
@@ -81,9 +84,10 @@ export class CondominiumInvitationsController {
 
   @Post()
   @ApiOperation({
-    summary: 'Criar convite por email (membro / onboarding)',
+    summary: 'Criar convite (e-mail e/ou WhatsApp, onboarding)',
     description:
-      'Envia e-mail com link de cadastro. O convite fica pendente até ser aceito.',
+      'Envia o mesmo conteúdo por e-mail (SMTP) e/ou WhatsApp (Twilio), conforme o contato informado. ' +
+      'Falta pelo menos e-mail ou celular.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   create(

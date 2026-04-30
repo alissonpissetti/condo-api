@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Person } from '../people/person.entity';
 import { GovernanceService } from '../planning/governance.service';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
@@ -15,12 +15,15 @@ import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { User } from '../users/user.entity';
 import { CondominiumLibraryDocument } from './entities/condominium-library-document.entity';
+import { CondominiumLibraryDocumentDownload } from './entities/condominium-library-document-download.entity';
 
 @Injectable()
 export class CondominiumLibraryService {
   constructor(
     @InjectRepository(CondominiumLibraryDocument)
     private readonly docRepo: Repository<CondominiumLibraryDocument>,
+    @InjectRepository(CondominiumLibraryDocumentDownload)
+    private readonly downloadRepo: Repository<CondominiumLibraryDocumentDownload>,
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     @InjectRepository(User)
@@ -31,10 +34,43 @@ export class CondominiumLibraryService {
   ) {}
 
   async list(condominiumId: string, userId: string) {
-    await this.governance.assertManagement(condominiumId, userId);
+    await this.governance.assertAnyAccess(condominiumId, userId);
     return this.docRepo.find({
       where: { condominiumId },
       order: { createdAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Histórico de downloads: apenas titular do condomínio ou síndico (não admin/subsíndico).
+   */
+  async listDownloadLog(condominiumId: string, userId: string) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const rows = await this.downloadRepo.find({
+      where: { condominiumId },
+      relations: { document: true, user: true },
+      order: { downloadedAt: 'DESC' },
+      take: 500,
+    });
+    const userIds = [...new Set(rows.map((r) => r.userId))];
+    const nameByUser = await this.loadPreferredPersonNameByUserId(userIds);
+    return rows.map((r) => {
+      const docName = r.document?.originalFilename?.trim() || '—';
+      const u = r.user;
+      const fromPerson = nameByUser.get(r.userId);
+      const userLabel = (
+        fromPerson ||
+        u?.email?.trim() ||
+        'Usuário removido'
+      ).slice(0, 255);
+      return {
+        id: r.id,
+        documentId: r.documentId,
+        documentName: docName,
+        userId: r.userId,
+        userLabel,
+        downloadedAt: r.downloadedAt.toISOString(),
+      };
     });
   }
 
@@ -72,7 +108,7 @@ export class CondominiumLibraryService {
   }
 
   async readFile(condominiumId: string, documentId: string, userId: string) {
-    await this.governance.assertManagement(condominiumId, userId);
+    await this.governance.assertAnyAccess(condominiumId, userId);
     const row = await this.docRepo.findOne({
       where: { id: documentId, condominiumId },
     });
@@ -90,6 +126,7 @@ export class CondominiumLibraryService {
       /"/g,
       '',
     );
+    void this.recordDownload(condominiumId, row.id, userId);
     return { ...read, filename: safeName };
   }
 
@@ -123,6 +160,46 @@ export class CondominiumLibraryService {
       return personName.slice(0, 255);
     }
     const user = await this.userRepo.findOne({ where: { id: userId } });
-    return (user?.email?.trim() || 'Utilizador removido').slice(0, 255);
+    return (user?.email?.trim() || 'Usuário removido').slice(0, 255);
+  }
+
+  private async loadPreferredPersonNameByUserId(
+    userIds: string[],
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (userIds.length === 0) {
+      return out;
+    }
+    const people = await this.personRepo.find({
+      where: { userId: In(userIds) },
+      order: { createdAt: 'ASC' },
+    });
+    for (const p of people) {
+      const n = p.fullName?.trim();
+      const uid = p.userId;
+      if (n && uid && !out.has(uid)) {
+        out.set(uid, n);
+      }
+    }
+    return out;
+  }
+
+  private async recordDownload(
+    condominiumId: string,
+    documentId: string,
+    userId: string,
+  ): Promise<void> {
+    try {
+      await this.downloadRepo.save(
+        this.downloadRepo.create({
+          id: randomUUID(),
+          condominiumId,
+          documentId,
+          userId,
+        }),
+      );
+    } catch {
+      /* não bloqueia o download */
+    }
   }
 }

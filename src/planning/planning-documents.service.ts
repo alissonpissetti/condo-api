@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { Repository, Brackets } from 'typeorm';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import PDFDocument = require('pdfkit');
 import {
@@ -26,6 +26,7 @@ import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { GovernanceService } from './governance.service';
+import type { CondoAccess } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { Person } from '../people/person.entity';
 import { UsersService } from '../users/users.service';
@@ -53,23 +54,101 @@ export class PlanningDocumentsService {
     private readonly fileStorage: ReceiptStoragePort,
   ) {}
 
-  async list(condominiumId: string, userId: string) {
-    const access = await this.governance.assertAnyAccess(condominiumId, userId);
-    const isMgmt =
+  /**
+   * Vê rascunhos e não publicados: dono, síndico, subsíndico, administrador (papel).
+   * Alinhado a `GovernanceService.assertManagement` (menos cidadãos/«member» puro).
+   */
+  private seesAllPlanningDocuments(access: CondoAccess): boolean {
+    return (
       access.kind === 'owner' ||
       (access.kind === 'participant' &&
         (access.role === GovernanceRole.Syndic ||
-          access.role === GovernanceRole.Admin));
-    if (isMgmt) {
+          access.role === GovernanceRole.SubSyndic ||
+          access.role === GovernanceRole.Admin))
+    );
+  }
+
+  /**
+   * Morador: pode descarregar ata (rascunho/definitiva) de pauta já encerrada/decidida
+   * sem `visibleToAllResidents`, exceto assembleia de eleição (só após publicação).
+   */
+  private async residentCanReadUnpublishedAssemblyMinutes(
+    condominiumId: string,
+    row: CondominiumDocument,
+  ): Promise<boolean> {
+    if (!row.pollId) {
+      return false;
+    }
+    if (
+      row.kind !== CondominiumDocumentKind.AssemblyMinutesDraft &&
+      row.kind !== CondominiumDocumentKind.AssemblyMinutesFinal
+    ) {
+      return false;
+    }
+    const poll = await this.pollRepo.findOne({
+      where: { id: row.pollId, condominiumId },
+    });
+    if (
+      !poll ||
+      (poll.status !== PlanningPollStatus.Closed &&
+        poll.status !== PlanningPollStatus.Decided)
+    ) {
+      return false;
+    }
+    if (poll.assemblyType === AssemblyType.Election) {
+      return row.visibleToAllResidents;
+    }
+    return true;
+  }
+
+  async list(condominiumId: string, userId: string) {
+    const access = await this.governance.assertAnyAccess(condominiumId, userId);
+    if (this.seesAllPlanningDocuments(access)) {
       return this.docRepo.find({
         where: { condominiumId },
         order: { createdAt: 'DESC' },
       });
     }
-    return this.docRepo.find({
+    const publicDocs = await this.docRepo.find({
       where: { condominiumId, visibleToAllResidents: true },
       order: { createdAt: 'DESC' },
     });
+    /** Ata de assembleia ligada a pauta encerrada/decidida: morador pode listar ainda em rascunho (exc. eleições). */
+    const whenPollClosed = await this.docRepo
+      .createQueryBuilder('d')
+      .innerJoin('d.poll', 'p')
+      .where('d.condominiumId = :condominiumId', { condominiumId })
+      .andWhere('d.pollId IS NOT NULL')
+      .andWhere('d.kind IN (:...kinds)', {
+        kinds: [
+          CondominiumDocumentKind.AssemblyMinutesDraft,
+          CondominiumDocumentKind.AssemblyMinutesFinal,
+        ],
+      })
+      .andWhere('p.status IN (:...statuses)', {
+        statuses: [PlanningPollStatus.Closed, PlanningPollStatus.Decided],
+      })
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('p.assemblyType != :election', {
+            election: AssemblyType.Election,
+          }).orWhere('d.visibleToAllResidents = :v', { v: true });
+        }),
+      )
+      .orderBy('d.createdAt', 'DESC')
+      .getMany();
+    const byId = new Map<string, CondominiumDocument>();
+    for (const d of publicDocs) {
+      byId.set(d.id, d);
+    }
+    for (const d of whenPollClosed) {
+      if (!byId.has(d.id)) {
+        byId.set(d.id, d);
+      }
+    }
+    return Array.from(byId.values()).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
   }
 
   async generateMinutesDraft(
@@ -964,13 +1043,14 @@ export class PlanningDocumentsService {
       throw new NotFoundException('Documento não encontrado.');
     }
     const access = await this.governance.assertAnyAccess(condominiumId, userId);
-    const isMgmt =
-      access.kind === 'owner' ||
-      (access.kind === 'participant' &&
-        (access.role === GovernanceRole.Syndic ||
-          access.role === GovernanceRole.Admin));
-    if (!isMgmt && !row.visibleToAllResidents) {
-      throw new BadRequestException('Documento não disponível.');
+    if (!this.seesAllPlanningDocuments(access) && !row.visibleToAllResidents) {
+      const can = await this.residentCanReadUnpublishedAssemblyMinutes(
+        condominiumId,
+        row,
+      );
+      if (!can) {
+        throw new BadRequestException('Documento não disponível.');
+      }
     }
     return this.fileStorage.readPlanningDocument(
       condominiumId,
@@ -1002,6 +1082,19 @@ export class PlanningDocumentsService {
     );
     row.storageKey = key;
     row.mimeType = 'application/pdf';
+
+    const linkedPoll = row.pollId
+      ? await this.pollRepo.findOne({
+          where: { id: row.pollId, condominiumId },
+        })
+      : null;
+    const isElection =
+      linkedPoll?.assemblyType === AssemblyType.Election;
+    if (!isElection) {
+      row.visibleToAllResidents = true;
+      row.status = CondominiumDocumentStatus.Published;
+    }
+
     return this.docRepo.save(row);
   }
 

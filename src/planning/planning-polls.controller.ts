@@ -50,6 +50,7 @@ export class PlanningPollsController {
   @ApiQuery({ name: 'registeredFrom', required: false })
   @ApiQuery({ name: 'registeredTo', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'includeMyVotes', required: false })
   list(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -148,6 +149,20 @@ export class PlanningPollsController {
     @Param('pollId', ParseUUIDPipe) pollId: string,
   ) {
     return this.polls.results(condominiumId, pollId, userId);
+  }
+
+  @Get(':pollId/my-votes')
+  @ApiOperation({
+    summary: 'Votos das unidades do utilizador nesta pauta',
+    description:
+      'Por unidade em que o utilizador pode intervir, as opções atualmente registadas (mesmo se outro representante tiver submetido).',
+  })
+  myVotesInPoll(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.getMyUnitVotesInPoll(condominiumId, pollId, userId);
   }
 
   @Post()

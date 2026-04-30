@@ -174,7 +174,22 @@ export class PlanningPollsService {
     for (const p of list) {
       this.normalizePollRelations(p);
     }
-    return list;
+    if (!query.includeMyVotes) {
+      return list;
+    }
+    const pollIdsWithOptions = list
+      .filter((p) => (p.options ?? []).length > 0)
+      .map((p) => p.id);
+    const snapshot = await this.buildMyVotesSnapshotForPolls(
+      condominiumId,
+      userId,
+      pollIdsWithOptions,
+    );
+    return list.map((p) =>
+      Object.assign(p, {
+        myVote: snapshot[p.id] ?? { byUnit: [] },
+      }),
+    );
   }
 
   async getOne(condominiumId: string, pollId: string, userId: string) {
@@ -586,8 +601,21 @@ export class PlanningPollsService {
   }
 
   async results(condominiumId: string, pollId: string, userId: string) {
-    await this.governance.assertCanViewAggregates(condominiumId, userId);
+    await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
+    const canSeeUnitDetail = await this.governance.canViewAggregatesWithUnitDetail(
+      condominiumId,
+      userId,
+    );
+    if (
+      !canSeeUnitDetail &&
+      poll.status !== PlanningPollStatus.Closed &&
+      poll.status !== PlanningPollStatus.Decided
+    ) {
+      throw new ForbiddenException(
+        'Resultados ainda não estão disponíveis para a sua situação (a pauta ainda não foi encerrada).',
+      );
+    }
     const raw = await this.voteRepo
       .createQueryBuilder('v')
       .select('v.optionId', 'optionId')
@@ -647,8 +675,8 @@ export class PlanningPollsService {
       unitsVoted,
       /** Soma das marcações por opção (numa pauta multi, pode exceder o nº de unidades). */
       totalOptionSelections: optionSelections,
-      /** Uma linha por unidade que votou; cada unidade só tem um registro de voto (substituído ao reenviar). */
-      votesByUnit: [...byUnit.values()],
+      /** Uma linha por unidade que votou; só para gestão. */
+      votesByUnit: canSeeUnitDetail ? [...byUnit.values()] : [],
     };
   }
 
@@ -792,11 +820,27 @@ export class PlanningPollsService {
     return out;
   }
 
-  async myVotableUnits(
+  /**
+   * Unidades em que o utilizador é proprietário ou responsável (conta ligada).
+   * Não inclui o alargamento de «votar por qualquer unidade» (titular do
+   * condomínio / síndico). Usado para lembrete «o seu voto» (só as unidades
+   * pessoais).
+   */
+  private async myRepresentedUnitsOnly(
     condominiumId: string,
     userId: string,
   ): Promise<{ id: string; identifier: string }[]> {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    return this.representedUnitsList(condominiumId, userId);
+  }
+
+  /**
+   * Exige `assertAnyAccess` já feito pelo chamador.
+   */
+  private async representedUnitsList(
+    condominiumId: string,
+    userId: string,
+  ): Promise<{ id: string; identifier: string }[]> {
     const groupings = await this.groupingRepo.find({
       where: { condominiumId },
       select: ['id'],
@@ -810,9 +854,6 @@ export class PlanningPollsService {
       relations: { ownerPerson: true, responsibleLinks: { person: true } },
       order: { identifier: 'ASC' },
     });
-    if (await this.canVoteForAnyUnit(condominiumId, userId)) {
-      return units.map((u) => ({ id: u.id, identifier: u.identifier }));
-    }
     const out: { id: string; identifier: string }[] = [];
     for (const u of units) {
       try {
@@ -823,5 +864,163 @@ export class PlanningPollsService {
       }
     }
     return out;
+  }
+
+  async myVotableUnits(
+    condominiumId: string,
+    userId: string,
+  ): Promise<{ id: string; identifier: string }[]> {
+    await this.governance.assertAnyAccess(condominiumId, userId);
+    if (await this.canVoteForAnyUnit(condominiumId, userId)) {
+      const groupings = await this.groupingRepo.find({
+        where: { condominiumId },
+        select: ['id'],
+      });
+      const gids = groupings.map((x) => x.id);
+      if (gids.length === 0) {
+        return [];
+      }
+      const units = await this.unitRepo.find({
+        where: { groupingId: In(gids) },
+        relations: { ownerPerson: true, responsibleLinks: { person: true } },
+        order: { identifier: 'ASC' },
+      });
+      return units.map((u) => ({ id: u.id, identifier: u.identifier }));
+    }
+    return this.representedUnitsList(condominiumId, userId);
+  }
+
+  /**
+   * Voto(s) registado(s) para as unidades pessoais do utilizador (titular/
+   * responsável). Síndico/titular do condomínio vê o lembrete só destas, não
+   * de todas as unidades em que podem intervir.
+   */
+  private async buildMyVotesSnapshotForPolls(
+    condominiumId: string,
+    userId: string,
+    pollIds: string[],
+  ): Promise<
+    Record<
+      string,
+      {
+        byUnit: {
+          unitId: string;
+          identifier: string;
+          choices: { id: string; label: string }[];
+        }[];
+      }
+    >
+  > {
+    const out: Record<
+      string,
+      {
+        byUnit: {
+          unitId: string;
+          identifier: string;
+          choices: { id: string; label: string }[];
+        }[];
+      }
+    > = {};
+    for (const id of pollIds) {
+      out[id] = { byUnit: [] };
+    }
+    if (pollIds.length === 0) {
+      return out;
+    }
+    const myUnits = await this.myRepresentedUnitsOnly(condominiumId, userId);
+    if (myUnits.length === 0) {
+      return out;
+    }
+    const unitIds = myUnits.map((u) => u.id);
+    const idToLabel = new Map(
+      myUnits.map((u) => [u.id, u.identifier] as const),
+    );
+    const rows = await this.voteRepo.find({
+      where: { pollId: In(pollIds), unitId: In(unitIds) },
+      relations: { option: true, unit: true },
+    });
+    rows.sort((a, b) => {
+      const ua = a.unit?.identifier ?? '';
+      const ub = b.unit?.identifier ?? '';
+      if (ua !== ub) {
+        return ua.localeCompare(ub, 'pt', { numeric: true });
+      }
+      const sa = a.option?.sortOrder ?? 0;
+      const sb = b.option?.sortOrder ?? 0;
+      if (sa !== sb) {
+        return sa - sb;
+      }
+      return (a.option?.label ?? '').localeCompare(
+        b.option?.label ?? '',
+        'pt',
+        { numeric: true },
+      );
+    });
+    const byPoll = new Map<
+      string,
+      Map<string, { id: string; label: string }[]>
+    >();
+    for (const v of rows) {
+      if (!v.option) {
+        continue;
+      }
+      if (!byPoll.has(v.pollId)) {
+        byPoll.set(v.pollId, new Map());
+      }
+      const m = byPoll.get(v.pollId)!;
+      if (!m.has(v.unitId)) {
+        m.set(v.unitId, []);
+      }
+      m.get(v.unitId)!.push({
+        id: v.option.id,
+        label: v.option.label,
+      });
+    }
+    for (const pid of pollIds) {
+      const m = byPoll.get(pid);
+      if (!m) {
+        continue;
+      }
+      out[pid] = {
+        byUnit: [...m.entries()]
+          .sort((a, b) =>
+            (idToLabel.get(a[0]) ?? a[0]).localeCompare(
+              idToLabel.get(b[0]) ?? b[0],
+              'pt',
+              { numeric: true, sensitivity: 'base' },
+            ),
+          )
+          .map(([unitId, choices]) => ({
+            unitId,
+            identifier: idToLabel.get(unitId) ?? unitId,
+            choices,
+          })),
+      };
+    }
+    return out;
+  }
+
+  async getMyUnitVotesInPoll(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ): Promise<{
+    byUnit: {
+      unitId: string;
+      identifier: string;
+      choices: { id: string; label: string }[];
+    }[];
+  }> {
+    await this.governance.assertAnyAccess(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (!(poll.options ?? []).length) {
+      return { byUnit: [] };
+    }
+    const snap = await this.buildMyVotesSnapshotForPolls(
+      condominiumId,
+      userId,
+      [poll.id],
+    );
+    return snap[poll.id] ?? { byUnit: [] };
   }
 }

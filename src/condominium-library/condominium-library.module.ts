@@ -6,10 +6,16 @@ import { User } from '../users/user.entity';
 import { CondominiumLibraryController } from './condominium-library.controller';
 import { CondominiumLibraryService } from './condominium-library.service';
 import { CondominiumLibraryDocument } from './entities/condominium-library-document.entity';
+import { CondominiumLibraryDocumentDownload } from './entities/condominium-library-document-download.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([CondominiumLibraryDocument, Person, User]),
+    TypeOrmModule.forFeature([
+      CondominiumLibraryDocument,
+      CondominiumLibraryDocumentDownload,
+      Person,
+      User,
+    ]),
     PlanningModule,
   ],
   controllers: [CondominiumLibraryController],

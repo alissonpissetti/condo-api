@@ -126,7 +126,7 @@ Cada unidade pode ter **proprietário** e **responsável** (pessoas distintas, p
    - Se **não existir**, o campo **`email` é obrigatório**: cria-se a ficha `people`, gera-se convite e envia-se e-mail (a unidade só é atualizada quando o convite for aceite).  
 3. **Convite (público):** `GET /invitations/:token` (pré-visualização) e `POST /invitations/accept/:token` com `{"password":"...","fullName":"..."?}` — cria utilizador, liga à ficha e aplica os papéis na unidade.
 
-Configure `FRONTEND_PUBLIC_URL` com a URL base do **frontend** (ex.: `http://localhost:4200`). Os convites usam `{FRONTEND_PUBLIC_URL}/invitations/{token}` (a app redireciona para o registo). Sem SMTP (`SMTP_HOST`), o link é registado nos **logs** da API.
+Configure `FRONTEND_PUBLIC_URL` com a URL base do **frontend** (ex.: `http://localhost:4200`). Os convites usam `{FRONTEND_PUBLIC_URL}/invitations/{token}` (a app redireciona para o registo). Sem SMTP (`SMTP_HOST`), o link é registado nos **logs** da API. O **WhatsApp** dos convites ao condomínio usa a **Twilio** (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` e `TWILIO_WHATSAPP_CONTENT_SID`); ver o `.env.example`. O **login por SMS** continua a usar a **Comtele** (`COMTELE_AUTH_KEY`).
 
 Não é possível apagar o último agrupamento de um condomínio.
 
