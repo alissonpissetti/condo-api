@@ -15,7 +15,7 @@ import { toWhatsAppE164BrDigits } from '../lib/phone-br';
  * - **Código «esqueci minha senha»**: `TWILIO_WHATSAPP_CONTENT_SID_PASSWORD_RESET` (placeholder `1` = código de 6 dígitos)
  * - **Código de login (celular)**: `TWILIO_WHATSAPP_CONTENT_SID_LOGIN` (placeholder `1` = código de 6 dígitos)
  * - **Slip mensal taxas condominiais** (PDF): `TWILIO_WHATSAPP_CONTENT_SID_FEE_SLIP` + `TWILIO_WHATSAPP_FEE_SLIP_TEMPLATE_MODE`
- *   (`four` = 1..4 condomínio, unidade, competência AAAA-MM, URL do PDF; `two_summary_url`; `one_url` só URL).
+ *   (omissão `two_financial_pdf`: `1` nome do responsável financeiro, `2` URL do PDF; ver `four`, `two_summary_url`, `one_url`).
  *
  * @see https://www.twilio.com/docs/whatsapp/quickstart
  */
@@ -103,23 +103,29 @@ export class TwilioWhatsappService {
 
   /**
    * Mapeamento dos placeholders do template de slip (independente de `TWILIO_WHATSAPP_TEMPLATE_MODE` do convite).
-   * - `four` (omissão): `"1"` condomínio, `"2"` unidade, `"3"` competência (AAAA-MM), `"4"` URL HTTPS do PDF (token).
+   * - `two_financial_pdf` (omissão): `"1"` nome do responsável financeiro, `"2"` URL HTTPS do PDF (token).
+   * - `four`: `"1"` condomínio, `"2"` unidade, `"3"` competência (AAAA-MM), `"4"` URL do PDF.
    * - `two_summary_url`: `"1"` resumo (condomínio — unidade — Taxa …), `"2"` URL do PDF.
-   * - `one_url`: `"1"` = só URL do PDF (texto fixo no modelo Twilio).
+   * - `one_url`: `"1"` = só URL do PDF.
    */
-  private getFeeSlipContentTemplateMode(): 'four' | 'two_summary_url' | 'one_url' {
+  private getFeeSlipContentTemplateMode():
+    | 'two_financial_pdf'
+    | 'four'
+    | 'two_summary_url'
+    | 'one_url' {
     const m = this.config
       .get<string>('TWILIO_WHATSAPP_FEE_SLIP_TEMPLATE_MODE')
       ?.trim();
-    if (m === 'two_summary_url' || m === 'one_url') {
+    if (m === 'four' || m === 'two_summary_url' || m === 'one_url') {
       return m;
     }
-    return 'four';
+    return 'two_financial_pdf';
   }
 
   private buildFeeSlipContentVariables(
-    mode: 'four' | 'two_summary_url' | 'one_url',
+    mode: 'two_financial_pdf' | 'four' | 'two_summary_url' | 'one_url',
     params: {
+      financialResponsibleDisplayName: string;
       condominiumName: string;
       unitLabel: string;
       competenceYm: string;
@@ -130,8 +136,12 @@ export class TwilioWhatsappService {
     const u = params.unitLabel.trim() || 'Unidade';
     const ym = params.competenceYm.trim();
     const url = params.mediaUrl;
+    const fin = params.financialResponsibleDisplayName.trim() || 'Morador';
     if (mode === 'one_url') {
       return { '1': url };
+    }
+    if (mode === 'two_financial_pdf') {
+      return { '1': fin, '2': url };
     }
     if (mode === 'two_summary_url') {
       return {
@@ -409,6 +419,8 @@ export class TwilioWhatsappService {
   async sendFeeSlipWhatsapp(
     phoneE164: string,
     params: {
+      /** Placeholder `1` no modo `two_financial_pdf` (template de taxas). */
+      financialResponsibleDisplayName: string;
       condominiumName: string;
       unitLabel: string;
       competenceYm: string;
@@ -441,6 +453,7 @@ export class TwilioWhatsappService {
     const mode = this.getFeeSlipContentTemplateMode();
     const contentVariables = JSON.stringify(
       this.buildFeeSlipContentVariables(mode, {
+        financialResponsibleDisplayName: params.financialResponsibleDisplayName,
         condominiumName: params.condominiumName,
         unitLabel: params.unitLabel,
         competenceYm: params.competenceYm,

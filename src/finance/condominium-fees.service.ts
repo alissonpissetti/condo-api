@@ -225,6 +225,7 @@ export class CondominiumFeesService {
         'Configure API_PUBLIC_BASE_URL ou BACKEND_PUBLIC_URL (URL HTTPS pública desta API, sem barra final) para o WhatsApp poder obter o PDF. Opcionalmente use PUBLIC_BASE_URL.',
       );
     }
+    const slipPdfBase = this.resolveFeeSlipWhatsappPdfBase(publicBase);
     if (!this.twilioWhatsapp.canSendArbitraryWhatsapp()) {
       throw new ServiceUnavailableException(
         'WhatsApp (Twilio) não configurado: defina TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN e TWILIO_WHATSAPP_FROM.',
@@ -296,11 +297,13 @@ export class CondominiumFeesService {
         },
         { expiresIn: '25m' },
       );
-      const mediaUrl = `${publicBase}/public/fee-slip.pdf?token=${encodeURIComponent(token)}`;
+      const mediaUrl = `${slipPdfBase}/public/fee-slip.pdf?token=${encodeURIComponent(token)}`;
       const fallbackBody = `${condoName} — ${unitLabel} — Taxa ${ym}. Segue o PDF (slip PIX e relatório).`;
 
       try {
         await this.twilioWhatsapp.sendFeeSlipWhatsapp(phone, {
+          financialResponsibleDisplayName:
+            this.resolveFeeSlipWhatsappFinancialName(unit),
           condominiumName: condoName,
           unitLabel,
           competenceYm: ym,
@@ -322,6 +325,50 @@ export class CondominiumFeesService {
     }
 
     return { sent, skipped, failures };
+  }
+
+  /**
+   * Base HTTPS do link do PDF nas mensagens de slip (template {{2}} / anexo).
+   * Prioridade: `FEE_SLIP_WHATSAPP_PDF_BASE_URL` → `FRONTEND_PUBLIC_URL` → URL pública da API.
+   * O host tem de servir `GET /public/fee-slip.pdf` (p.ex. proxy para esta API).
+   */
+  private resolveFeeSlipWhatsappPdfBase(apiPublicBase: string): string {
+    const explicit = this.config
+      .get<string>('FEE_SLIP_WHATSAPP_PDF_BASE_URL')
+      ?.trim()
+      ?.replace(/\/+$/, '');
+    if (explicit) {
+      return explicit;
+    }
+    const front = this.config.get<string>('FRONTEND_PUBLIC_URL')?.trim();
+    if (front) {
+      return front.replace(/\/+$/, '');
+    }
+    return apiPublicBase;
+  }
+
+  /**
+   * Nome para o placeholder `{{1}}` do template: responsável financeiro (mesma regra
+   * que a listagem de taxas); senão proprietário / rótulos; último recurso «Morador».
+   */
+  private resolveFeeSlipWhatsappFinancialName(unit: Unit): string {
+    const designated = resolveUnitFinancialResponsibleDisplayName({
+      financialResponsiblePerson: unit.financialResponsiblePerson,
+      responsibleLinks: unit.responsibleLinks ?? [],
+      responsibleDisplayName: unit.responsibleDisplayName,
+    })?.trim();
+    if (designated) {
+      return designated;
+    }
+    const owner = unit.ownerPerson?.fullName?.trim();
+    if (owner) {
+      return owner;
+    }
+    const od = unit.ownerDisplayName?.trim();
+    if (od) {
+      return od;
+    }
+    return 'Morador';
   }
 
   private normalizePhoneForWa(raw: string | null | undefined): string | null {
