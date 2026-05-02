@@ -6,7 +6,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-export type PasswordResetChannel = 'email' | 'sms';
+export type PasswordResetChannel = 'email' | 'sms' | 'whatsapp';
 
 @Entity('password_reset_challenges')
 @Index('IDX_password_reset_challenges_dest', ['channel', 'destination'])

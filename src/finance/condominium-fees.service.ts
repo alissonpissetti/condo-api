@@ -4,7 +4,11 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import {
@@ -34,6 +38,10 @@ import {
   parseDateOnlyFromApi,
   todayLocalCalendarAsUtcNoon,
 } from './date-only.util';
+import { normalizeBrCellphone } from '../lib/phone-br';
+import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.service';
+import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
+import { SendFeeSlipsWhatsappDto } from './dto/send-fee-slips-whatsapp.dto';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
 import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import {
@@ -45,6 +53,7 @@ import {
 
 const UNIT_REL_FOR_FEE_VIEW = {
   grouping: true,
+  ownerPerson: true,
   financialResponsiblePerson: true,
   responsibleLinks: { person: true },
 } as const;
@@ -78,6 +87,24 @@ export interface CondominiumFeeChargeView {
   financialResponsibleName: string | null;
 }
 
+export interface FeeSlipWhatsappSkip {
+  unitId: string;
+  unitIdentifier: string;
+  reason: string;
+}
+
+export interface FeeSlipWhatsappFailure {
+  unitId: string;
+  unitIdentifier: string;
+  error: string;
+}
+
+export interface SendFeeSlipsWhatsappResult {
+  sent: number;
+  skipped: FeeSlipWhatsappSkip[];
+  failures: FeeSlipWhatsappFailure[];
+}
+
 @Injectable()
 export class CondominiumFeesService {
   constructor(
@@ -95,6 +122,10 @@ export class CondominiumFeesService {
     private readonly governance: GovernanceService,
     private readonly fundAccrual: FundAccrualService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
+    private readonly jwtService: JwtService,
+    private readonly config: ConfigService,
+    private readonly twilioWhatsapp: TwilioWhatsappService,
+    private readonly monthlyTransparencyPdf: MonthlyTransparencyPdfService,
   ) {}
 
   async listCharges(
@@ -141,6 +172,190 @@ export class CondominiumFeesService {
       }
     }
     return rows.map((c) => this.toView(c));
+  }
+
+  /**
+   * PDF slip/capa PIX para download público (token JWT). Usado pelo Twilio `mediaUrl`.
+   */
+  async getFeeSlipPdfBufferFromPublicToken(token: string): Promise<Buffer> {
+    type Payload = {
+      p: string;
+      cid: string;
+      uid: string;
+      ym: string;
+      aid: string;
+    };
+    let payload: Payload;
+    try {
+      payload = await this.jwtService.verifyAsync<Payload>(token);
+    } catch {
+      throw new UnauthorizedException('Token inválido ou expirado.');
+    }
+    if (payload.p !== 'fee_slip') {
+      throw new UnauthorizedException('Token inválido.');
+    }
+    return this.monthlyTransparencyPdf.buildClosingTransparencyPdf(
+      payload.cid,
+      payload.aid,
+      payload.ym,
+      payload.uid,
+    );
+  }
+
+  /**
+   * Envia por WhatsApp (Twilio) o PDF de transparência com capa slip PIX por unidade.
+   * Requer `PUBLIC_BASE_URL` (HTTPS) acessível pela Twilio e credenciais WhatsApp.
+   */
+  async sendFeeSlipsWhatsapp(
+    condominiumId: string,
+    userId: string,
+    dto: SendFeeSlipsWhatsappDto,
+  ): Promise<SendFeeSlipsWhatsappResult> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const ym = dto.competenceYm.trim();
+    this.assertYm(ym);
+
+    const publicBase = (
+      this.config.get<string>('PUBLIC_BASE_URL')?.trim() ||
+      this.config.get<string>('API_PUBLIC_BASE_URL')?.trim() ||
+      this.config.get<string>('BACKEND_PUBLIC_URL')?.trim()
+    )?.replace(/\/+$/, '');
+    if (!publicBase) {
+      throw new BadRequestException(
+        'Configure API_PUBLIC_BASE_URL ou BACKEND_PUBLIC_URL (URL HTTPS pública desta API, sem barra final) para o WhatsApp poder obter o PDF. Opcionalmente use PUBLIC_BASE_URL.',
+      );
+    }
+    if (!this.twilioWhatsapp.canSendArbitraryWhatsapp()) {
+      throw new ServiceUnavailableException(
+        'WhatsApp (Twilio) não configurado: defina TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN e TWILIO_WHATSAPP_FROM.',
+      );
+    }
+
+    const condo = await this.condominiumsService.findOneForManagement(
+      condominiumId,
+      userId,
+    );
+    const condoName = condo.name?.trim() || 'Condomínio';
+
+    const qb = this.chargeRepo
+      .createQueryBuilder('c')
+      .where('c.condominium_id = :cid', { cid: condominiumId })
+      .andWhere('c.competence_ym = :ym', { ym })
+      .andWhere('c.status = :st', { st: 'open' });
+    const filterIds = dto.unitIds?.map((x) => x.trim()).filter(Boolean) ?? [];
+    if (filterIds.length > 0) {
+      qb.andWhere('c.unit_id IN (:...uids)', { uids: filterIds });
+    }
+    const charges = await qb.getMany();
+    const unitIds = [...new Set(charges.map((c) => c.unitId))];
+
+    const skipped: FeeSlipWhatsappSkip[] = [];
+    const failures: FeeSlipWhatsappFailure[] = [];
+    let sent = 0;
+
+    const unitRel = {
+      grouping: true,
+      ownerPerson: true,
+      financialResponsiblePerson: true,
+      responsibleLinks: { person: true },
+    } as const;
+
+    for (const uid of unitIds) {
+      const unit = await this.unitRepo.findOne({
+        where: { id: uid },
+        relations: unitRel,
+      });
+      if (!unit) {
+        skipped.push({
+          unitId: uid,
+          unitIdentifier: '—',
+          reason: 'Unidade não encontrada.',
+        });
+        continue;
+      }
+      const unitLabel =
+        `${unit.identifier} · ${unit.grouping?.name ?? ''}`.trim();
+      const phone = this.resolveFeeSlipWhatsappPhone(unit);
+      if (!phone) {
+        skipped.push({
+          unitId: uid,
+          unitIdentifier: unit.identifier,
+          reason:
+            'Sem número de celular (responsável financeiro, proprietário, responsáveis ou WhatsApp de referência na unidade).',
+        });
+        continue;
+      }
+
+      const token = await this.jwtService.signAsync(
+        {
+          p: 'fee_slip',
+          cid: condominiumId,
+          uid,
+          ym,
+          aid: userId,
+        },
+        { expiresIn: '25m' },
+      );
+      const mediaUrl = `${publicBase}/public/fee-slip.pdf?token=${encodeURIComponent(token)}`;
+      const fallbackBody = `${condoName} — ${unitLabel} — Taxa ${ym}. Segue o PDF (slip PIX e relatório).`;
+
+      try {
+        await this.twilioWhatsapp.sendFeeSlipWhatsapp(phone, {
+          condominiumName: condoName,
+          unitLabel,
+          competenceYm: ym,
+          mediaUrl,
+          fallbackBody,
+        });
+        sent += 1;
+      } catch (e) {
+        const msg =
+          e instanceof Error
+            ? e.message
+            : 'Falha ao enviar pelo WhatsApp (Twilio).';
+        failures.push({
+          unitId: uid,
+          unitIdentifier: unit.identifier,
+          error: msg,
+        });
+      }
+    }
+
+    return { sent, skipped, failures };
+  }
+
+  private normalizePhoneForWa(raw: string | null | undefined): string | null {
+    if (!raw?.trim()) {
+      return null;
+    }
+    return normalizeBrCellphone(raw.trim());
+  }
+
+  /**
+   * Celular em formato 55… para WhatsApp: financeiro → proprietário → responsáveis → referência.
+   */
+  private resolveFeeSlipWhatsappPhone(unit: Unit): string | null {
+    const fin = this.normalizePhoneForWa(
+      unit.financialResponsiblePerson?.phone ?? undefined,
+    );
+    if (fin) {
+      return fin;
+    }
+    const own = this.normalizePhoneForWa(unit.ownerPerson?.phone ?? undefined);
+    if (own) {
+      return own;
+    }
+    for (const l of unit.responsibleLinks ?? []) {
+      const p = this.normalizePhoneForWa(l.person?.phone ?? undefined);
+      if (p) {
+        return p;
+      }
+    }
+    const pending = unit.pendingWhatsappPhone?.trim();
+    if (pending) {
+      return normalizeBrCellphone(pending);
+    }
+    return null;
   }
 
   async closeMonth(

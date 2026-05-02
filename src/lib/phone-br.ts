@@ -33,3 +33,26 @@ export function toComteleReceivers(normalizedWith55: string): string {
   }
   return d;
 }
+
+/**
+ * Formato que alguns fornecedores (ex.: Twilio/WhatsApp) esperam para BR móvel: `55` + DDD
+ * + 8 subscritores, **sem** o 9o dígito móvel após o DDD.
+ * Usar **apenas** no envio; não grava o número alterado na base.
+ *
+ * @param phoneDigits Só dígitos, p.ex. o valor já normalizado com 55
+ */
+export function toWhatsAppE164BrDigits(phoneDigits: string): string {
+  const d = phoneDigits.replace(/\D/g, '');
+  if (!d.startsWith('55')) {
+    return d;
+  }
+  const national = d.slice(2);
+  // DDD (2) + 9 móvel + 8, ou padrão legado/entrada 10 nacionais com 9
+  if (
+    (national.length === 10 || national.length === 11) &&
+    national[2] === '9'
+  ) {
+    return `55${national.slice(0, 2)}${national.slice(3)}`;
+  }
+  return d;
+}

@@ -7,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MailModule } from '../mail/mail.module';
 import { ComteleModule } from '../plugins/comtele/comtele.module';
 import { SaasPlansModule } from '../platform/saas-plans.module';
+import { TwilioWhatsappModule } from '../twilio-whatsapp/twilio-whatsapp.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -19,6 +20,7 @@ import { JwtStrategy } from './jwt.strategy';
     TypeOrmModule.forFeature([LoginSmsChallenge, PasswordResetChallenge]),
     MailModule,
     ComteleModule,
+    TwilioWhatsappModule,
     UsersModule,
     SaasPlansModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),

@@ -48,13 +48,13 @@ export class AuthController {
 
   @Post('sms/request')
   @ApiOperation({
-    summary: 'Pedir código de login por SMS (celular cadastrado)',
+    summary: 'Pedir código de login por celular (WhatsApp ou SMS)',
     description:
-      'Envia um código de 6 dígitos por SMS via Comtele. A resposta é sempre genérica (não indica se o número existe). Requer COMTELE_AUTH_KEY em produção.',
+      'Envia um código de 6 dígitos: por WhatsApp (Twilio) quando `TWILIO_WHATSAPP_CONTENT_SID_LOGIN` está definido; caso contrário por SMS (Comtele) se `COMTELE_AUTH_KEY` estiver definido. A resposta é genérica (não indica se o número existe).',
   })
   @ApiOkResponse({
     description:
-      'Pedido aceite (SMS enviado se o número existir e SMS estiver ativo)',
+      'Pedido aceite (código enviado se o número existir e o canal estiver configurado)',
     type: SmsLoginRequestAcceptedDto,
   })
   requestSms(@Body() dto: SmsLoginRequestDto) {
@@ -63,7 +63,7 @@ export class AuthController {
 
   @Post('sms/verify')
   @ApiOperation({
-    summary: 'Confirmar código SMS e obter JWT',
+    summary: 'Confirmar código de login (WhatsApp/SMS) e obter JWT',
     description: 'Igual ao login por email/senha: devolve access_token.',
   })
   @ApiOkResponse({
@@ -76,9 +76,9 @@ export class AuthController {
 
   @Post('password-reset/request')
   @ApiOperation({
-    summary: 'Pedir código para redefinir senha (email ou SMS)',
+    summary: 'Pedir código para redefinir senha (e-mail, WhatsApp ou SMS)',
     description:
-      'Envia código de 6 dígitos. A resposta é genérica (não indica se a conta existe).',
+      'Envia código de 6 dígitos. Canais: `email`, `whatsapp` (só Twilio + template TWILIO_WHATSAPP_CONTENT_SID_PASSWORD_RESET) ou `sms` (Twilio com template ou SMS Comtele). Resposta genérica.',
   })
   @ApiOkResponse({ type: PasswordResetRequestAcceptedDto })
   requestPasswordReset(@Body() dto: PasswordResetRequestDto) {

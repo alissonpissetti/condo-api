@@ -34,7 +34,7 @@ export class FinancialFundsService {
       }
     >
   > {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const funds = await this.fundRepo.find({
       where: { condominiumId },
       order: { createdAt: 'DESC' },
@@ -64,7 +64,7 @@ export class FinancialFundsService {
     userId: string,
     dto: CreateFundDto,
   ): Promise<FinancialFund> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const isPermanent = dto.isPermanent === true;
     const payload = await this.buildFundPayload(condominiumId, {
       isPermanent,
@@ -87,7 +87,7 @@ export class FinancialFundsService {
     fundId: string,
     userId: string,
   ): Promise<FinancialFund> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     return this.findOneInCondominium(condominiumId, fundId);
   }
 

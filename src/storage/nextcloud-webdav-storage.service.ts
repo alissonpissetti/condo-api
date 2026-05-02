@@ -2,6 +2,8 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
@@ -48,6 +50,7 @@ const EXT_MIME: Record<string, string> = {
  */
 @Injectable()
 export class NextcloudWebdavStorageService implements ReceiptStoragePort {
+  private readonly logger = new Logger(NextcloudWebdavStorageService.name);
   private webdavUserRoot = '';
   private basePathSegments: string[] = [];
   private authHeader = '';
@@ -168,9 +171,12 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const res = await fetch(url, {
       headers: this.webdavFetchHeaders(),
     });
-    if (!res.ok) {
-      throw new NotFoundException('Arquivo não encontrado.');
-    }
+    this.assertWebdavGetOk(
+      res,
+      condominiumId,
+      relativeKey,
+      'Comprovante não encontrado no Nextcloud. Se o registo veio de outro ambiente ou o upload foi com outro tipo de armazenamento, reenvie o ficheiro.',
+    );
     const buffer = Buffer.from(await res.arrayBuffer());
     const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
     const contentType =
@@ -246,9 +252,12 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const res = await fetch(url, {
       headers: this.webdavFetchHeaders(),
     });
-    if (!res.ok) {
-      throw new NotFoundException('Logo não encontrada.');
-    }
+    this.assertWebdavGetOk(
+      res,
+      condominiumId,
+      relativeKey,
+      'Logo não encontrada no armazenamento. Envie a imagem de novo em Dados do condomínio.',
+    );
     const buffer = Buffer.from(await res.arrayBuffer());
     const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'png';
     const contentType =
@@ -315,9 +324,12 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const res = await fetch(url, {
       headers: this.webdavFetchHeaders(),
     });
-    if (!res.ok) {
-      throw new NotFoundException('Arquivo não encontrado.');
-    }
+    this.assertWebdavGetOk(
+      res,
+      condominiumId,
+      relativeKey,
+      'PDF de ata/documento não encontrado no Nextcloud. Gere novamente a partir da pauta ou verifique o armazenamento.',
+    );
     const fileBuffer = Buffer.from(await res.arrayBuffer());
     const contentType =
       res.headers.get('content-type') ?? 'application/pdf';
@@ -374,9 +386,12 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const res = await fetch(url, {
       headers: this.webdavFetchHeaders(),
     });
-    if (!res.ok) {
-      throw new NotFoundException('Arquivo não encontrado.');
-    }
+    this.assertWebdavGetOk(
+      res,
+      condominiumId,
+      relativeKey,
+      'Arquivo não encontrado no Nextcloud. Causas comuns: registro vindo de outro ambiente sem os arquivos; upload com STORAGE_DRIVER=local (arquivo no disco) e a API de produção usando nextcloud; ou arquivo removido no Nextcloud. Reenvie o documento na biblioteca ou alinhe os arquivos com a mesma chave (storage) e pasta do condomínio no utilizador da API.',
+    );
     const fileBuffer = Buffer.from(await res.arrayBuffer());
     const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
     const contentType =
@@ -407,6 +422,34 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     if (!res.ok && res.status !== 404) {
       /* ignore */
     }
+  }
+
+  /**
+   * Trata resposta GET no WebDAV: 401/403 não são "ficheiro inexistente" (evita confundir com 404).
+   */
+  private assertWebdavGetOk(
+    res: Response,
+    condominiumId: string,
+    relativeKey: string,
+    notFoundMessage: string,
+  ): void {
+    if (res.ok) {
+      return;
+    }
+    this.logger.warn(
+      `WebDAV GET ${relativeKey} condo=${condominiumId} -> HTTP ${res.status}`,
+    );
+    if (res.status === 401 || res.status === 403) {
+      throw new ServiceUnavailableException(
+        'O armazenamento (Nextcloud) recusou o acesso da API. Verifique NEXTCLOUD_URL, NEXTCLOUD_USERNAME e NEXTCLOUD_APP_PASSWORD (senha de aplicação) no servidor da API.',
+      );
+    }
+    if (res.status === 404) {
+      throw new NotFoundException(notFoundMessage);
+    }
+    throw new BadRequestException(
+      `Falha ao ler ficheiro no armazenamento (HTTP ${res.status}).`,
+    );
   }
 
   /** URL do arquivo (sem criar pastas). */

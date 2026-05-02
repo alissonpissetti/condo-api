@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { normalizeBrCellphone } from '../lib/phone-br';
 import { GovernanceService } from '../planning/governance.service';
 import { Grouping } from '../groupings/grouping.entity';
 import { CreateUnitDto } from './dto/create-unit.dto';
@@ -193,6 +194,33 @@ export class UnitsService {
           : dto.financialResponsiblePersonId.trim();
       await this.assertFinancialResponsiblePerson(unit.id, pid);
       unit.financialResponsiblePersonId = pid;
+    }
+    if (dto.pendingWhatsappPhone !== undefined) {
+      const responsibleCount = await this.unitResponsibleRepo.count({
+        where: { unitId: unit.id },
+      });
+      const hasLinkedPerson =
+        !!unit.ownerPersonId || responsibleCount > 0;
+      const raw = dto.pendingWhatsappPhone;
+      if (raw === null || (typeof raw === 'string' && !raw.trim())) {
+        unit.pendingWhatsappPhone = null;
+      } else if (hasLinkedPerson) {
+        throw new BadRequestException(
+          'Não é possível guardar WhatsApp de referência: a unidade já tem proprietário ou responsável com ficha. Limpe primeiro ou use o telefone na ficha da pessoa.',
+        );
+      } else {
+        const norm = normalizeBrCellphone(raw);
+        if (!norm) {
+          throw new BadRequestException('Celular inválido.');
+        }
+        const national = norm.startsWith('55') ? norm.slice(2) : norm;
+        if (national.length !== 11 || national[2] !== '9') {
+          throw new BadRequestException(
+            'Indique um celular válido com DDD (11 dígitos, 9 após o DDD).',
+          );
+        }
+        unit.pendingWhatsappPhone = norm;
+      }
     }
     const saved = await this.unitRepo.save(unit);
     const withLinks = await this.unitRepo.findOne({

@@ -58,6 +58,18 @@ export class Unit {
   responsibleDisplayName: string | null;
 
   /**
+   * Celular BR normalizado (55 + DDD + número) só para referência / convites
+   * por WhatsApp quando ainda não existe proprietário nem responsável com ficha.
+   */
+  @Column({
+    name: 'pending_whatsapp_phone',
+    type: 'varchar',
+    length: 16,
+    nullable: true,
+  })
+  pendingWhatsappPhone: string | null;
+
+  /**
    * Quando há vários responsáveis na ficha, indica qual nome usar em taxas e
    * relatórios financeiros. Tem de existir em `unit_responsible_people`.
    */

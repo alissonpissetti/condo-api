@@ -10,9 +10,9 @@ import {
 } from 'class-validator';
 
 export class PasswordResetVerifyDto {
-  @ApiProperty({ enum: ['email', 'sms'], example: 'email' })
-  @IsIn(['email', 'sms'])
-  channel: 'email' | 'sms';
+  @ApiProperty({ enum: ['email', 'sms', 'whatsapp'], example: 'email' })
+  @IsIn(['email', 'sms', 'whatsapp'])
+  channel: 'email' | 'sms' | 'whatsapp';
 
   @ApiPropertyOptional({ example: 'owner@example.com' })
   @ValidateIf((o) => o.channel === 'email')
@@ -20,7 +20,7 @@ export class PasswordResetVerifyDto {
   email?: string;
 
   @ApiPropertyOptional({ example: '61999998888' })
-  @ValidateIf((o) => o.channel === 'sms')
+  @ValidateIf((o) => o.channel === 'sms' || o.channel === 'whatsapp')
   @IsString()
   @MinLength(10)
   @MaxLength(32)

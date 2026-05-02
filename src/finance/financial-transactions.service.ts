@@ -41,7 +41,7 @@ export class FinancialTransactionsService {
     occurredFromYmd?: string,
     occurredToYmd?: string,
   ): Promise<Array<FinancialTransaction & { runningBalanceCents?: string }>> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const fromTrim = occurredFromYmd?.trim();
     const toTrim = occurredToYmd?.trim();
     if (fromTrim && toTrim && fromTrim > toTrim) {
@@ -94,7 +94,7 @@ export class FinancialTransactionsService {
     transactionId: string,
     userId: string,
   ): Promise<FinancialTransaction> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const t = await this.txRepo.findOne({
       where: { id: transactionId, condominiumId },
       relations: { fund: true, unitShares: { unit: true } },
@@ -110,7 +110,7 @@ export class FinancialTransactionsService {
     userId: string,
     dto: CreateTransactionDto,
   ): Promise<FinancialTransaction> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     this.validateAllocationForKind(dto.kind, dto.allocationRule);
     if (!isAllocationRule(dto.allocationRule)) {
       throw new BadRequestException('Invalid allocation rule');
@@ -136,7 +136,7 @@ export class FinancialTransactionsService {
   }
 
   /**
-   * Cria transação sem `assertOwner` (fechamento automático / jobs).
+   * Cria transação sem verificação de utilizador (fechamento automático / jobs).
    * Valida fundo e regra de alocação como em `create`.
    */
   async createInternal(
@@ -285,7 +285,7 @@ export class FinancialTransactionsService {
     seriesId: string,
     userId: string,
   ): Promise<{ deleted: number }> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const rows = await this.txRepo.find({
       where: { condominiumId, recurringSeriesId: seriesId },
       select: {
@@ -320,7 +320,7 @@ export class FinancialTransactionsService {
     userId: string,
     dto: UpdateRecurringSeriesDto,
   ): Promise<FinancialTransaction[]> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const hasPatch = [
       dto.kind,
       dto.titleBase,

@@ -24,11 +24,13 @@ import {
   CondominiumFeesService,
   type CondominiumFeeChargePaymentLogView,
   type CondominiumFeeChargeView,
+  type SendFeeSlipsWhatsappResult,
 } from './condominium-fees.service';
 import { CompetenceYmDto } from './dto/competence-ym.dto';
 import { ReopenFeeChargePaymentDto } from './dto/reopen-fee-charge-payment.dto';
 import { ReplaceFeeChargeReceiptDto } from './dto/replace-fee-charge-receipt.dto';
 import { SettleFeeChargeDto } from './dto/settle-fee-charge.dto';
+import { SendFeeSlipsWhatsappDto } from './dto/send-fee-slips-whatsapp.dto';
 import { UpdateFeeChargesDueDateDto } from './dto/update-fee-charges-due-date.dto';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
 
@@ -149,6 +151,22 @@ export class CondominiumFeesController {
       'Content-Disposition': `attachment; filename="transparencia-condominial-${ym || 'mes'}${unitSuffix}.pdf"`,
     });
     return new StreamableFile(pdf);
+  }
+
+  @Post('send-slips-whatsapp')
+  @ApiOperation({
+    summary:
+      'Enviar PDF slip (capa PIX + relatório) por WhatsApp às unidades em aberto',
+    description:
+      'Gera um link temporário (JWT) servido em GET /public/fee-slip.pdf para a Twilio anexar o PDF. Requer PUBLIC_BASE_URL na API (HTTPS acessível pela Twilio) e credenciais WhatsApp. Sem `unitIds`, envia a todas as unidades com cobrança em aberto na competência.',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  sendSlipsWhatsapp(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() body: SendFeeSlipsWhatsappDto,
+  ): Promise<SendFeeSlipsWhatsappResult> {
+    return this.feesService.sendFeeSlipsWhatsapp(condominiumId, userId, body);
   }
 
   @Get(':chargeId/payment-receipt')

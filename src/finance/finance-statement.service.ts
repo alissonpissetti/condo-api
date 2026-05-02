@@ -47,7 +47,7 @@ export class FinanceStatementService {
     to: string,
     fundId?: string,
   ): Promise<StatementResult> {
-    await this.condominiumsService.assertOwner(condominiumId, userId);
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
     if (!from?.trim() || !to?.trim()) {
       throw new BadRequestException(
         'Query parameters from and to are required (YYYY-MM-DD)',

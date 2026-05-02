@@ -209,6 +209,7 @@ export class PeopleService {
     if (role === 'responsible' || role === 'both') {
       unit.responsibleDisplayName = null;
     }
+    unit.pendingWhatsappPhone = null;
   }
 
   private maskEmail(email: string): string {
@@ -736,6 +737,7 @@ export class PeopleService {
     if (inv.asResponsible) {
       unit.responsibleDisplayName = null;
     }
+    unit.pendingWhatsappPhone = null;
     await this.unitRepo.save(unit);
     if (inv.asResponsible) {
       await this.ensureResponsibleLink(unit.id, person.id);
@@ -795,6 +797,7 @@ export class PeopleService {
       );
       const unit = inv.unit;
       unit.responsibleDisplayName = null;
+      unit.pendingWhatsappPhone = null;
       await this.unitRepo.save(unit);
       await this.ensureResponsibleLink(unit.id, person.id);
       person.phone = phoneNorm;
@@ -856,6 +859,7 @@ export class PeopleService {
 
     const unit = inv.unit;
     unit.responsibleDisplayName = null;
+    unit.pendingWhatsappPhone = null;
     await this.unitRepo.save(unit);
     await this.ensureResponsibleLink(unit.id, person.id);
 
@@ -1097,9 +1101,17 @@ export class PeopleService {
       }
     }
 
+    if (!email && !phone && unit.pendingWhatsappPhone) {
+      try {
+        phone = normalizeInviteMobile(unit.pendingWhatsappPhone);
+      } catch {
+        // número guardado na unidade inválido ou desatualizado — ignora
+      }
+    }
+
     if (!email && !phone) {
       throw new BadRequestException(
-        'Informe o e-mail e/ou o celular (com DDD) para o convite.',
+        'Informe o e-mail e/ou o celular (com DDD) para o convite, ou defina na unidade um WhatsApp de referência (sem pessoa cadastrada) e tente de novo.',
       );
     }
 
@@ -1272,7 +1284,7 @@ export class PeopleService {
         to: phone,
         ...inviteParams,
       });
-      if (this.twilioWhatsapp.isConfigured()) {
+      if (this.twilioWhatsapp.canSendCondominiumInvite()) {
         try {
           await this.twilioWhatsapp.sendCondominiumInvite(phone, {
             inviterName,
@@ -1289,7 +1301,7 @@ export class PeopleService {
         }
       } else {
         this.logger.warn(
-          `[Twilio WhatsApp não configurado — defina TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM e o template] convite ${phone}\n${shortText}`,
+          `[Twilio WhatsApp convite indisponível — defina TWILIO_WHATSAPP_CONTENT_SID_INVITE (ou TWILIO_WHATSAPP_CONTENT_SID) ou TWILIO_WHATSAPP_ALLOW_BODY=true] convite ${phone}\n${shortText}`,
         );
       }
     }
@@ -1300,7 +1312,7 @@ export class PeopleService {
       email,
       phone,
       sentEmail: !!email,
-      sentSms: !!phone,
+      sentSms: phone ? this.twilioWhatsapp.canSendCondominiumInvite() : false,
       unitId: unit.id,
       inviteUrl: inviteLink,
     };

@@ -55,4 +55,15 @@ export class UpdateUnitDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsUUID()
   financialResponsiblePersonId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Celular (WhatsApp) de referência quando a unidade ainda não tem proprietário nem responsável com ficha. Formato livre (com DDD); a API normaliza com 55. `null` ou vazio limpa.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  @MaxLength(32)
+  pendingWhatsappPhone?: string | null;
 }

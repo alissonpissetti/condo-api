@@ -65,6 +65,7 @@ import { TransactionMultiDocuments1751340000000 } from '../migrations/1751340000
 import { EnsureTransactionCompetencyColumns1751240000000 } from '../migrations/1751240000000-ensure-transaction-competency-columns';
 import { CondominiumFeeChargePaymentLogs1751250000000 } from '../migrations/1751250000000-condominium-fee-charge-payment-logs';
 import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751260000000-units-financial-responsible-person';
+import { UnitsPendingWhatsappPhone1751410000000 } from '../migrations/1751410000000-units-pending-whatsapp-phone';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { CondominiumLibraryDocument } from '../condominium-library/entities/condominium-library-document.entity';
@@ -168,6 +169,7 @@ export const AppDataSource = new DataSource({
     EnsureTransactionCompetencyColumns1751240000000,
     CondominiumFeeChargePaymentLogs1751250000000,
     UnitsFinancialResponsiblePerson1751260000000,
+    UnitsPendingWhatsappPhone1751410000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

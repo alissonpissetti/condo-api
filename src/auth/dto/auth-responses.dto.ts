@@ -23,7 +23,8 @@ export class SmsLoginRequestAcceptedDto {
   ok: true;
 
   @ApiProperty({
-    example: 'Se existir conta para este número, enviamos um código por SMS.',
+    example:
+      'Se existir conta para este número, enviamos um código de acesso.',
   })
   message: string;
 }
@@ -34,7 +35,7 @@ export class PasswordResetRequestAcceptedDto {
 
   @ApiProperty({
     example:
-      'Se existir conta, enviamos um código por email ou SMS (conforme escolheu).',
+      'Se existir conta, enviamos um código por e-mail, WhatsApp ou SMS (conforme canal e configuração).',
   })
   message: string;
 }

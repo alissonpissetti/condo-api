@@ -16,6 +16,7 @@ import { normalizeBrCellphone } from '../lib/phone-br';
 import { MailService } from '../mail/mail.service';
 import { ComteleService } from '../plugins/comtele/comtele.service';
 import { SaasPlansService } from '../platform/saas-plans.service';
+import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.service';
 import { UsersService } from '../users/users.service';
 import { LoginSmsChallenge } from './login-sms-challenge.entity';
 import { PasswordResetChallenge } from './password-reset-challenge.entity';
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly comtele: ComteleService,
     private readonly mail: MailService,
+    private readonly twilioWhatsapp: TwilioWhatsappService,
     private readonly config: ConfigService,
     @InjectRepository(LoginSmsChallenge)
     private readonly challengesRepo: Repository<LoginSmsChallenge>,
@@ -90,7 +92,8 @@ export class AuthService {
   }
 
   /**
-   * Envia SMS com código de 6 dígitos (se o número estiver cadastrado e SMS configurado).
+   * Envia código de 6 dígitos para login (WhatsApp via Twilio quando
+   * `TWILIO_WHATSAPP_CONTENT_SID_LOGIN` está definido; senão SMS Comtele se configurado).
    * Resposta genérica para não revelar se o telefone existe.
    */
   async requestSmsLogin(dto: SmsLoginRequestDto): Promise<{
@@ -99,7 +102,8 @@ export class AuthService {
   }> {
     const generic = {
       ok: true as const,
-      message: 'Se existir conta para este número, enviamos um código por SMS.',
+      message:
+        'Se existir conta para este número, enviamos um código de acesso.',
     };
     const phone = normalizeBrCellphone(dto.phone);
     if (!phone) {
@@ -121,29 +125,41 @@ export class AuthService {
         expiresAt,
       }),
     );
-    const smsBody = `O seu código de acesso: ${code}. Não o partilhe. Válido por 10 minutos.`;
-    const configured = this.comtele.isConfigured();
     const isDev = this.config.get<string>('NODE_ENV') !== 'production';
-    if (!configured) {
-      if (isDev) {
-        this.logger.warn(
-          `[DEV] SMS não configurado (COMTELE_AUTH_KEY). Código para ${phone}: ${code}`,
-        );
-      } else {
+
+    if (this.twilioWhatsapp.canSendPhoneLoginWhatsapp()) {
+      try {
+        await this.twilioWhatsapp.sendPhoneLoginCode(phone, { code });
+      } catch (err) {
         await this.challengesRepo.delete({ phone });
-        throw new ServiceUnavailableException(
-          'Login por SMS indisponível neste ambiente.',
-        );
+        throw err;
       }
       return generic;
     }
-    try {
-      await this.comtele.send(phone, smsBody);
-    } catch (err) {
-      await this.challengesRepo.delete({ phone });
-      throw err;
+
+    const smsBody = `O seu código de acesso: ${code}. Não o partilhe. Válido por 10 minutos.`;
+    const comteleOk = this.comtele.isConfigured();
+    if (comteleOk) {
+      try {
+        await this.comtele.send(phone, smsBody);
+      } catch (err) {
+        await this.challengesRepo.delete({ phone });
+        throw err;
+      }
+      return generic;
     }
-    return generic;
+
+    if (isDev) {
+      this.logger.warn(
+        `[DEV] Login por celular: sem TWILIO_WHATSAPP_CONTENT_SID_LOGIN nem COMTELE_AUTH_KEY. Código para ${phone}: ${code}`,
+      );
+      return generic;
+    }
+
+    await this.challengesRepo.delete({ phone });
+    throw new ServiceUnavailableException(
+      'Login por celular indisponível: configure TWILIO_WHATSAPP_CONTENT_SID_LOGIN (WhatsApp) ou COMTELE_AUTH_KEY (SMS).',
+    );
   }
 
   async verifySmsLogin(
@@ -179,7 +195,7 @@ export class AuthService {
   private readonly pwdResetGeneric = {
     ok: true as const,
     message:
-      'Se existir conta para estes dados, enviamos um código por email ou SMS.',
+      'Se existir conta para estes dados, enviamos um código (e-mail, WhatsApp ou SMS, conforme o canal escolhido e a configuração do servidor).',
   };
 
   async requestPasswordReset(dto: PasswordResetRequestDto): Promise<{
@@ -241,17 +257,50 @@ export class AuthService {
       return this.pwdResetGeneric;
     }
 
+    if (dto.channel === 'whatsapp') {
+      if (!this.twilioWhatsapp.canSendPasswordResetWhatsapp()) {
+        await this.pwdResetRepo.delete({ channel: dto.channel, destination });
+        if (isDev) {
+          this.logger.warn(
+            `[DEV] WhatsApp (pwd reset) não configurado. Código ${destination}: ${code}`,
+          );
+          return this.pwdResetGeneric;
+        }
+        throw new ServiceUnavailableException(
+          'Recuperação por WhatsApp indisponível: configure TWILIO_WHATSAPP_CONTENT_SID_PASSWORD_RESET e credenciais Twilio.',
+        );
+      }
+      try {
+        await this.twilioWhatsapp.sendPasswordResetCode(destination, { code });
+      } catch (err) {
+        await this.pwdResetRepo.delete({ channel: dto.channel, destination });
+        throw err;
+      }
+      return this.pwdResetGeneric;
+    }
+
     const smsBody = `Código para redefinir senha: ${code}. Não o partilhe. Válido por 10 minutos.`;
+
+    if (this.twilioWhatsapp.canSendPasswordResetWhatsapp()) {
+      try {
+        await this.twilioWhatsapp.sendPasswordResetCode(destination, { code });
+      } catch (err) {
+        await this.pwdResetRepo.delete({ channel: dto.channel, destination });
+        throw err;
+      }
+      return this.pwdResetGeneric;
+    }
+
     const configured = this.comtele.isConfigured();
     if (!configured) {
       if (isDev) {
         this.logger.warn(
-          `[DEV] SMS não configurado (COMTELE_AUTH_KEY). Código pwd reset ${destination}: ${code}`,
+          `[DEV] Recuperação por telefone sem canal: configure TWILIO_WHATSAPP_CONTENT_SID_PASSWORD_RESET (WhatsApp) ou COMTELE_AUTH_KEY (SMS). Código ${destination}: ${code}`,
         );
       } else {
         await this.pwdResetRepo.delete({ channel: dto.channel, destination });
         throw new ServiceUnavailableException(
-          'Recuperação por SMS indisponível neste ambiente.',
+          'Recuperação por telefone indisponível: configure o template Twilio (TWILIO_WHATSAPP_CONTENT_SID_PASSWORD_RESET) ou SMS Comtele (COMTELE_AUTH_KEY).',
         );
       }
       return this.pwdResetGeneric;
