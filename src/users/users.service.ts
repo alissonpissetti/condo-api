@@ -9,15 +9,15 @@ import * as bcrypt from 'bcrypt';
 import { QueryFailedError, Repository } from 'typeorm';
 import { normalizeBrCellphone } from '../lib/phone-br';
 import { applyPersonAddressToEntity } from '../people/apply-person-address';
-import { Person } from '../people/person.entity';
 import {
   isValidCpf,
   normalizeCepDigits,
   normalizeCpf,
 } from '../people/people.utils';
+import { Person } from '../people/person.entity';
 import { MePersonDto } from './dto/me-response.dto';
-import { UpdateMeDto } from './dto/update-me.dto';
 import { UpdateMePersonDto } from './dto/update-me-person.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
 import { User } from './user.entity';
 
 @Injectable()
@@ -148,7 +148,10 @@ export class UsersService {
     };
   }
 
-  async putMySignature(userId: string, pngBase64: string): Promise<{
+  async putMySignature(
+    userId: string,
+    pngBase64: string,
+  ): Promise<{
     id: string;
     email: string;
     phone: string | null;
@@ -175,7 +178,9 @@ export class UsersService {
         'Imagem demasiado grande. Reduza a área de desenho ou a resolução.',
       );
     }
-    const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const pngMagic = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
     if (!buf.subarray(0, 8).equals(pngMagic)) {
       throw new BadRequestException('Formato inválido: é necessário PNG.');
     }
@@ -321,7 +326,9 @@ export class UsersService {
     }
     const row = await this.personRepo.findOne({ where: { cpf } });
     if (row && row.id !== excludePersonId) {
-      throw new ConflictException('CPF já cadastrado em outra ficha de pessoa.');
+      throw new ConflictException(
+        'CPF já cadastrado em outro cadastro de pessoa.',
+      );
     }
   }
 
@@ -403,7 +410,7 @@ export class UsersService {
     if (!person && !fullNameIn) {
       if (hasAddressIntent) {
         throw new BadRequestException(
-          'Indique o nome completo para cadastrar o endereço na ficha.',
+          'Indique o nome completo para cadastrar o endereço na pessoa.',
         );
       }
       return;
@@ -436,7 +443,7 @@ export class UsersService {
           /Duplicate|duplicate|UQ_people|unique/i.test(String(e.message))
         ) {
           throw new ConflictException(
-            'E-mail ou CPF já cadastrado em outra ficha de pessoa.',
+            'E-mail ou CPF já cadastrado em outro cadastro de pessoa.',
           );
         }
         throw e;
@@ -478,7 +485,7 @@ export class UsersService {
         /Duplicate|duplicate|UQ_people|unique/i.test(String(e.message))
       ) {
         throw new ConflictException(
-          'E-mail ou CPF já cadastrado em outra ficha de pessoa.',
+          'E-mail ou CPF já cadastrado em outro cadastro de pessoa.',
         );
       }
       throw e;

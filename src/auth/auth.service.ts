@@ -14,12 +14,10 @@ import { randomInt, randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import { normalizeBrCellphone } from '../lib/phone-br';
 import { MailService } from '../mail/mail.service';
-import { ComteleService } from '../plugins/comtele/comtele.service';
 import { SaasPlansService } from '../platform/saas-plans.service';
+import { ComteleService } from '../plugins/comtele/comtele.service';
 import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.service';
 import { UsersService } from '../users/users.service';
-import { LoginSmsChallenge } from './login-sms-challenge.entity';
-import { PasswordResetChallenge } from './password-reset-challenge.entity';
 import { LoginDto } from './dto/login.dto';
 import { PasswordResetCompleteDto } from './dto/password-reset-complete.dto';
 import { PasswordResetRequestDto } from './dto/password-reset-request.dto';
@@ -27,6 +25,8 @@ import { PasswordResetVerifyDto } from './dto/password-reset-verify.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SmsLoginRequestDto } from './dto/sms-login-request.dto';
 import { SmsLoginVerifyDto } from './dto/sms-login-verify.dto';
+import { LoginSmsChallenge } from './login-sms-challenge.entity';
+import { PasswordResetChallenge } from './password-reset-challenge.entity';
 
 const PASSWORD_RESET_JWT_PURPOSE = 1;
 
@@ -51,7 +51,7 @@ export class AuthService {
   async register(dto: RegisterDto) {
     const existing = await this.usersService.findByEmail(dto.email);
     if (existing) {
-      throw new ConflictException('Email already registered');
+      throw new ConflictException('Email já cadastrado');
     }
     const phoneNorm = normalizeBrCellphone(dto.phone);
     if (!phoneNorm) {
@@ -59,7 +59,7 @@ export class AuthService {
     }
     const phoneTaken = await this.usersService.findByPhone(phoneNorm);
     if (phoneTaken) {
-      throw new ConflictException('Phone already registered');
+      throw new ConflictException('Telefone já cadastrado');
     }
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const planId = await this.saasPlans.resolveDefaultPlanIdForNewUser();
@@ -79,11 +79,11 @@ export class AuthService {
   async login(dto: LoginDto) {
     const user = await this.usersService.findByEmail(dto.email);
     if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Credenciais inválidas');
     }
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Credenciais inválidas');
     }
     const access_token = await this.jwtService.signAsync({
       sub: user.id,
@@ -137,7 +137,7 @@ export class AuthService {
       return generic;
     }
 
-    const smsBody = `O seu código de acesso: ${code}. Não o partilhe. Válido por 10 minutos.`;
+    const smsBody = `O seu código de acesso: ${code}. Não o compartilhe. Válido por 10 minutos.`;
     const comteleOk = this.comtele.isConfigured();
     if (comteleOk) {
       try {
@@ -195,7 +195,7 @@ export class AuthService {
   private readonly pwdResetGeneric = {
     ok: true as const,
     message:
-      'Se existir conta para estes dados, enviamos um código (e-mail, WhatsApp ou SMS, conforme o canal escolhido e a configuração do servidor).',
+      'Se existir conta para estes dados, enviamos um código (e-mail, WhatsApp ou SMS, conforme o canal escolhido).',
   };
 
   async requestPasswordReset(dto: PasswordResetRequestDto): Promise<{
@@ -279,7 +279,7 @@ export class AuthService {
       return this.pwdResetGeneric;
     }
 
-    const smsBody = `Código para redefinir senha: ${code}. Não o partilhe. Válido por 10 minutos.`;
+    const smsBody = `Código para alterar sua senha: ${code}. Não o compartilhe. Válido por 10 minutos.`;
 
     if (this.twilioWhatsapp.canSendPasswordResetWhatsapp()) {
       try {
