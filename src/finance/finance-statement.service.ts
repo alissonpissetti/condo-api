@@ -21,6 +21,7 @@ export interface StatementTransactionRow {
   occurredOn: string;
   fundId: string | null;
   fundName: string | null;
+  paymentStatus: string;
 }
 
 export interface StatementResult {
@@ -90,6 +91,7 @@ export class FinanceStatementService {
       .innerJoin('s.unit', 'u')
       .innerJoin('u.grouping', 'g')
       .where('t.condominium_id = :cid', { cid: condominiumId })
+      .andWhere('t.payment_status != :canc', { canc: 'cancelled' })
       .andWhere('t.occurred_on >= :from', { from: fromStr })
       .andWhere('t.occurred_on <= :to', { to: toStr })
       .select('u.id', 'unitId')
@@ -123,6 +125,7 @@ export class FinanceStatementService {
         occurredOn: formatDateOnlyYmdUtc(t.occurredOn),
         fundId: t.fundId,
         fundName: t.fund?.name ?? null,
+        paymentStatus: t.paymentStatus,
       })),
     };
   }

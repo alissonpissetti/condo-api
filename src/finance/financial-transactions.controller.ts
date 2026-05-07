@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
+import { SettleTransactionDto } from './dto/settle-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { FinancialTransactionsService } from './financial-transactions.service';
 
@@ -96,6 +97,42 @@ export class FinancialTransactionsController {
     @Param('seriesId', ParseUUIDPipe) seriesId: string,
   ) {
     return this.txService.removeRecurringSeries(condominiumId, seriesId, userId);
+  }
+
+  @Post(':transactionId/settle')
+  @ApiOperation({
+    summary:
+      'Quitar transação (status pago). Comprovante opcional, como nas taxas condominiais.',
+  })
+  settle(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+    @Body() dto: SettleTransactionDto,
+  ) {
+    return this.txService.settlePayment(condominiumId, transactionId, userId, dto);
+  }
+
+  @Post(':transactionId/cancel')
+  @ApiOperation({ summary: 'Cancelar transação em aberto (não entra em taxas nem saldos)' })
+  cancel(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+  ) {
+    return this.txService.cancelPaymentStatus(condominiumId, transactionId, userId);
+  }
+
+  @Post(':transactionId/reopen-settlement')
+  @ApiOperation({
+    summary: 'Reabrir quitação (volta a aguardando), para corrigir o lançamento',
+  })
+  reopenSettlement(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+  ) {
+    return this.txService.reopenSettlement(condominiumId, transactionId, userId);
   }
 
   @Get(':transactionId')

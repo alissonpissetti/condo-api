@@ -552,6 +552,9 @@ export class CondominiumFeesService {
       if (!tx) {
         throw new NotFoundException('Transaction not found');
       }
+      if (tx.paymentStatus === 'cancelled') {
+        throw new BadRequestException('Income transaction is cancelled');
+      }
       if (tx.kind !== 'income') {
         throw new BadRequestException('Transaction must be income');
       }
@@ -1131,6 +1134,9 @@ export class CondominiumFeesService {
       .createQueryBuilder('s')
       .innerJoin('s.transaction', 't')
       .where('t.condominium_id = :cid', { cid: condominiumId })
+      /* Taxa condominial: somar rateios de transações da competência que entram no mês —
+       * «aguardando» e já «pagas». Canceladas ficam de fora (desactivadas). */
+      .andWhere('t.payment_status IN (:...ps)', { ps: ['pending', 'paid'] })
       .andWhere('t.occurred_on >= :from', { from })
       .andWhere('t.occurred_on <= :to', { to })
       .select('s.unit_id', 'unitId')

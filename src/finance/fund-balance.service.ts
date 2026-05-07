@@ -47,6 +47,7 @@ export class FundBalanceService {
         condominiumId,
         fundId: Not(IsNull()),
         occurredOn: LessThanOrEqual(end),
+        paymentStatus: Not('cancelled'),
       },
       select: {
         id: true,
@@ -54,6 +55,7 @@ export class FundBalanceService {
         kind: true,
         amountCents: true,
         occurredOn: true,
+        paymentStatus: true,
       },
       order: { occurredOn: 'ASC', id: 'ASC' },
     });
@@ -111,6 +113,9 @@ export class FundBalanceService {
     let run = 0n;
     const afterByTxId = new Map<string, string>();
     for (const t of asc) {
+      if (t.paymentStatus === 'cancelled') {
+        continue;
+      }
       if (t.fundId !== fundId) {
         continue;
       }

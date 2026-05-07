@@ -15,6 +15,12 @@ import { TransactionUnitShare } from './transaction-unit-share.entity';
 
 export type FinancialTransactionKind = 'expense' | 'income' | 'investment';
 
+/** Quitação do lançamento (impacta inclusão na geração da taxa condominial). */
+export type FinancialTransactionPaymentStatus =
+  | 'pending'
+  | 'paid'
+  | 'cancelled';
+
 @Entity('financial_transactions')
 export class FinancialTransaction {
   @PrimaryGeneratedColumn('uuid')
@@ -99,6 +105,19 @@ export class FinancialTransaction {
   /** Preenchido quando a linha é gerada por `FinancialTransactionRecurrence`. */
   @Column({ name: 'recurrence_id', type: 'varchar', length: 36, nullable: true })
   recurrenceId: string | null;
+
+  /**
+   * `pending`: aguardando quitação (entra no rateio da taxa condominial da competência).
+   * `paid`: quitado (não entra na taxa).
+   * `cancelled`: cancelado / anulado (não entra na taxa nem nos saldos de fundo).
+   */
+  @Column({
+    name: 'payment_status',
+    type: 'varchar',
+    length: 16,
+    default: 'pending',
+  })
+  paymentStatus: FinancialTransactionPaymentStatus;
 
   @OneToMany(() => TransactionUnitShare, (s) => s.transaction)
   unitShares: TransactionUnitShare[];

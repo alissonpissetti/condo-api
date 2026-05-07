@@ -144,7 +144,11 @@ export class MonthlyTransparencyPdfService {
       relations: { fund: true, unitShares: true },
       order: { occurredOn: 'ASC', id: 'ASC' },
     });
-    const txs = periodTransactions.filter((t) => t.kind !== 'income');
+    const txs = periodTransactions.filter(
+      (t) =>
+        t.kind !== 'income' &&
+        t.paymentStatus === 'pending',
+    );
 
     const charges = await this.chargeRepo.find({
       where: { condominiumId, competenceYm: ym },
@@ -1994,9 +1998,13 @@ export class MonthlyTransparencyPdfService {
     y += hdrH + 12;
     doc.fillColor('#000000');
 
-    const incomesAll = periodTransactions.filter((t) => t.kind === 'income');
+    const incomesAll = periodTransactions.filter(
+      (t) => t.kind === 'income' && t.paymentStatus !== 'cancelled',
+    );
     const outflows = periodTransactions.filter(
-      (t) => t.kind === 'expense' || t.kind === 'investment',
+      (t) =>
+        (t.kind === 'expense' || t.kind === 'investment') &&
+        t.paymentStatus !== 'cancelled',
     );
 
     const sumCents = (rows: FinancialTransaction[]): bigint => {

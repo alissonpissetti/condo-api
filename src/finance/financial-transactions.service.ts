@@ -11,9 +11,12 @@ import { isAllocationRule } from './allocation.types';
 import { AllocationResolverService } from './allocation-resolver.service';
 import { distributePositiveCents } from './distribute-cents';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
+import { SettleTransactionDto } from './dto/settle-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
-import { FinancialTransaction } from './entities/financial-transaction.entity';
+import {
+  FinancialTransaction,
+} from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { parseDateOnlyFromApi } from './date-only.util';
 import { FinancialFundsService } from './financial-funds.service';
@@ -182,6 +185,24 @@ export class FinancialTransactionsService {
     dto: UpdateTransactionDto,
   ): Promise<FinancialTransaction> {
     const existing = await this.findOne(condominiumId, transactionId, userId);
+    if (existing.paymentStatus === 'cancelled') {
+      throw new BadRequestException('Cancelled transactions cannot be edited');
+    }
+    if (existing.paymentStatus === 'paid') {
+      const restricted =
+        dto.kind !== undefined ||
+        dto.amountCents !== undefined ||
+        dto.occurredOn !== undefined ||
+        dto.title !== undefined ||
+        dto.description !== undefined ||
+        dto.fundId !== undefined ||
+        dto.allocationRule !== undefined;
+      if (restricted) {
+        throw new BadRequestException(
+          'Paid transactions can only change attachments; reopen settlement to edit',
+        );
+      }
+    }
     const kind = dto.kind ?? existing.kind;
     const amountCents = dto.amountCents ?? Number(existing.amountCents);
     const allocationRule = dto.allocationRule ?? existing.allocationRule;
@@ -273,6 +294,11 @@ export class FinancialTransactionsService {
     userId: string,
   ): Promise<void> {
     const t = await this.findOne(condominiumId, transactionId, userId);
+    if (t.paymentStatus === 'paid') {
+      throw new BadRequestException(
+        'Cannot delete paid transaction; reopen settlement first',
+      );
+    }
     for (const key of this.getExistingDocumentKeys(t)) {
       await this.storage.deleteReceipt(condominiumId, key);
     }
@@ -293,10 +319,18 @@ export class FinancialTransactionsService {
         receiptStorageKey: true,
         documentStorageKey: true,
         documentStorageKeys: true,
+        paymentStatus: true,
       },
     });
     if (rows.length === 0) {
       throw new NotFoundException('Recurring series not found');
+    }
+    for (const r of rows) {
+      if (r.paymentStatus === 'paid') {
+        throw new BadRequestException(
+          'Cannot delete series with paid transactions; reopen settlement first',
+        );
+      }
     }
     const keys = new Set<string>();
     for (const r of rows) {
@@ -353,6 +387,13 @@ export class FinancialTransactionsService {
       throw new NotFoundException('Recurring series not found');
     }
     const n = rows.length;
+    for (const t of rows) {
+      if (t.paymentStatus !== 'pending') {
+        throw new BadRequestException(
+          'Recurring series contains non-editable transactions',
+        );
+      }
+    }
 
     if (dto.receiptStorageKey !== undefined) {
       if (dto.receiptStorageKey === null) {
@@ -453,6 +494,61 @@ export class FinancialTransactionsService {
       relations: { fund: true, unitShares: { unit: true } },
       order: { occurredOn: 'ASC', id: 'ASC' },
     });
+  }
+
+  async settlePayment(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+    dto: SettleTransactionDto,
+  ): Promise<FinancialTransaction> {
+    const t = await this.findOne(condominiumId, transactionId, userId);
+    if (t.paymentStatus !== 'pending') {
+      throw new BadRequestException('Transaction is not pending settlement');
+    }
+    const key = dto.receiptStorageKey?.trim();
+    if (key) {
+      await this.storage.assertReceiptExists(condominiumId, key);
+      if (t.receiptStorageKey && t.receiptStorageKey !== key) {
+        await this.storage.deleteReceipt(condominiumId, t.receiptStorageKey);
+      }
+      t.receiptStorageKey = key;
+    }
+    t.paymentStatus = 'paid';
+    await this.txRepo.save(t);
+    return this.findOne(condominiumId, transactionId, userId);
+  }
+
+  async cancelPaymentStatus(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+  ): Promise<FinancialTransaction> {
+    const t = await this.findOne(condominiumId, transactionId, userId);
+    if (t.paymentStatus !== 'pending') {
+      throw new BadRequestException(
+        'Only pending transactions can be cancelled',
+      );
+    }
+    t.paymentStatus = 'cancelled';
+    await this.txRepo.save(t);
+    return this.findOne(condominiumId, transactionId, userId);
+  }
+
+  async reopenSettlement(
+    condominiumId: string,
+    transactionId: string,
+    userId: string,
+  ): Promise<FinancialTransaction> {
+    const t = await this.findOne(condominiumId, transactionId, userId);
+    if (t.paymentStatus !== 'paid') {
+      throw new BadRequestException(
+        'Only paid transactions can be reopened',
+      );
+    }
+    t.paymentStatus = 'pending';
+    await this.txRepo.save(t);
+    return this.findOne(condominiumId, transactionId, userId);
   }
 
   private resolveCreateDocumentKeys(dto: CreateTransactionDto): string[] {
@@ -575,6 +671,7 @@ export class FinancialTransactionsService {
         receiptStorageKey: dto.receiptStorageKey ?? null,
         recurringSeriesId: dto.recurringSeriesId ?? null,
         recurrenceId: opts?.recurrenceId ?? null,
+        paymentStatus: 'pending',
       });
       const saved = await manager.save(tx);
       for (const row of shares) {
