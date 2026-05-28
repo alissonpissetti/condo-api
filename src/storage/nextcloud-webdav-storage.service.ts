@@ -8,6 +8,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import type { ReceiptStoragePort } from './receipt-storage.port';
+import {
+  assertWorkAttachmentSize,
+  resolveWorkDocumentExtension,
+  workDocumentContentTypeFromKey,
+} from './work-document-storage.util';
 
 const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
@@ -20,6 +25,9 @@ const PLANNING_DOC_KEY_RE =
 
 const LIBRARY_DOC_KEY_RE =
   /^library-documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
+
+const WORK_DOC_KEY_RE =
+  /^works\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
 
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
@@ -411,6 +419,85 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     relativeKey: string | null | undefined,
   ): Promise<void> {
     if (!relativeKey || !this.isValidLibraryDocumentKey(relativeKey)) {
+      return;
+    }
+    this.ensureReady();
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: this.webdavFetchHeaders(),
+    });
+    if (!res.ok && res.status !== 404) {
+      /* ignore */
+    }
+  }
+
+  isValidWorkDocumentKey(key: string | null | undefined): boolean {
+    return typeof key === 'string' && WORK_DOC_KEY_RE.test(key);
+  }
+
+  async saveWorkDocument(
+    condominiumId: string,
+    workId: string,
+    buffer: Buffer,
+    mimeType: string,
+    originalFilename?: string,
+  ): Promise<string> {
+    this.ensureReady();
+    assertWorkAttachmentSize(buffer);
+    const ext = resolveWorkDocumentExtension(mimeType, originalFilename);
+    const id = randomUUID();
+    const relativeKey = `works/${workId}/${id}.${ext}`;
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Falha ao enviar documento ao Nextcloud (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  async readWorkDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    this.ensureReady();
+    if (!this.isValidWorkDocumentKey(relativeKey)) {
+      throw new BadRequestException('Chave de documento inválida.');
+    }
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      headers: this.webdavFetchHeaders(),
+    });
+    this.assertWebdavGetOk(
+      res,
+      condominiumId,
+      relativeKey,
+      'Arquivo não encontrado no Nextcloud.',
+    );
+    const fileBuffer = Buffer.from(await res.arrayBuffer());
+    const contentType =
+      res.headers.get('content-type') ??
+      workDocumentContentTypeFromKey(relativeKey);
+    return {
+      buffer: fileBuffer,
+      contentType,
+      filename: relativeKey.split('/').pop() ?? 'documento',
+    };
+  }
+
+  async deleteWorkDocument(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void> {
+    if (!relativeKey || !this.isValidWorkDocumentKey(relativeKey)) {
       return;
     }
     this.ensureReady();

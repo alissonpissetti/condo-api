@@ -63,6 +63,15 @@ export class CommunicationRecipient {
   @Column({ name: 'whatsapp_error', type: 'text', nullable: true })
   whatsappError: string | null;
 
+  /** Incluído na distribuição só por PDF/impressão (sem e-mail, SMS ou WhatsApp). */
+  @Column({
+    name: 'pdf_status',
+    type: 'varchar',
+    length: 16,
+    default: DeliveryChannelStatus.Skipped,
+  })
+  pdfStatus: DeliveryChannelStatus;
+
   @Column({ name: 'email_token_hash', type: 'varchar', length: 64, nullable: true })
   emailTokenHash: string | null;
 

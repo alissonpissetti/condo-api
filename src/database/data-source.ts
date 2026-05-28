@@ -54,6 +54,11 @@ import { CommunicationAudienceChannels1751000000000 } from '../migrations/175100
 import { CommunicationReadLinks1751100000000 } from '../migrations/1751100000000-communication-read-links';
 import { CommunicationReadAccessLogs1751200000000 } from '../migrations/1751200000000-communication-read-access-logs';
 import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
+import { CommunicationSoftDelete1751430000000 } from '../migrations/1751430000000-communication-soft-delete';
+import { CommunicationPdfChannel1751440000000 } from '../migrations/1751440000000-communication-pdf-channel';
+import { CondominiumWorks1751450000000 } from '../migrations/1751450000000-condominium-works';
+import { CondominiumWorkBudgetAttachments1751460000000 } from '../migrations/1751460000000-condominium-work-budget-attachments';
+import { CondominiumWorkTimelineAttachments1751470000000 } from '../migrations/1751470000000-condominium-work-timeline-attachments';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -158,6 +163,8 @@ export const AppDataSource = new DataSource({
     CommunicationReadLinks1751100000000,
     CommunicationReadAccessLogs1751200000000,
     CommunicationDisplayNames1751210000000,
+    CommunicationSoftDelete1751430000000,
+    CommunicationPdfChannel1751440000000,
     SupportTickets1751220000000,
     SupportTicketMessagesViewToken1751230000000,
     SupportTicketTarget1751300000000,
@@ -172,6 +179,9 @@ export const AppDataSource = new DataSource({
     UnitsFinancialResponsiblePerson1751260000000,
     UnitsPendingWhatsappPhone1751410000000,
     FinancialTransactionPaymentStatus1751420000000,
+    CondominiumWorks1751450000000,
+    CondominiumWorkBudgetAttachments1751460000000,
+    CondominiumWorkTimelineAttachments1751470000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

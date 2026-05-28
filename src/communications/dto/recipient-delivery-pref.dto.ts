@@ -20,4 +20,11 @@ export class RecipientDeliveryPrefDto {
   @IsOptional()
   @IsBoolean()
   whatsapp?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Só impressão/PDF — sem envio digital para esta pessoa.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  pdf?: boolean;
 }

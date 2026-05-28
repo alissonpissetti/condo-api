@@ -10,6 +10,11 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ReceiptStoragePort } from './receipt-storage.port';
+import {
+  assertWorkAttachmentSize,
+  resolveWorkDocumentExtension,
+  workDocumentContentTypeFromKey,
+} from './work-document-storage.util';
 
 const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
@@ -22,6 +27,9 @@ const PLANNING_DOC_KEY_RE =
 
 const LIBRARY_DOC_KEY_RE =
   /^library-documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
+
+const WORK_DOC_KEY_RE =
+  /^works\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,8}$/i;
 
 const MIME_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
@@ -334,6 +342,63 @@ export class LocalStorageService
     relativeKey: string | null | undefined,
   ): Promise<void> {
     if (!relativeKey || !this.isValidLibraryDocumentKey(relativeKey)) {
+      return;
+    }
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    try {
+      await fs.unlink(abs);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  isValidWorkDocumentKey(key: string | null | undefined): boolean {
+    return typeof key === 'string' && WORK_DOC_KEY_RE.test(key);
+  }
+
+  async saveWorkDocument(
+    condominiumId: string,
+    workId: string,
+    buffer: Buffer,
+    mimeType: string,
+    originalFilename?: string,
+  ): Promise<string> {
+    assertWorkAttachmentSize(buffer);
+    const ext = resolveWorkDocumentExtension(mimeType, originalFilename);
+    const id = randomUUID();
+    const relativeKey = `works/${workId}/${id}.${ext}`;
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, buffer);
+    return relativeKey;
+  }
+
+  async readWorkDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    if (!this.isValidWorkDocumentKey(relativeKey)) {
+      throw new BadRequestException('Chave de documento inválida.');
+    }
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = await fs.readFile(abs);
+    } catch {
+      throw new NotFoundException('Arquivo não encontrado.');
+    }
+    return {
+      buffer: fileBuffer,
+      contentType: workDocumentContentTypeFromKey(relativeKey),
+      filename: path.basename(relativeKey),
+    };
+  }
+
+  async deleteWorkDocument(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void> {
+    if (!relativeKey || !this.isValidWorkDocumentKey(relativeKey)) {
       return;
     }
     const abs = this.absolutePath(condominiumId, relativeKey);

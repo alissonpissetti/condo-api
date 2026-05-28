@@ -16,6 +16,7 @@ export const SAAS_PLAN_FEATURE_KEYS = [
   'condoFees',
   'planning',
   'documents',
+  'works',
 ] as const;
 
 export type SaasPlanFeatureKey = (typeof SAAS_PLAN_FEATURE_KEYS)[number];
@@ -38,6 +39,7 @@ export const SAAS_PLAN_FEATURE_LABELS: Record<SaasPlanFeatureKey, string> = {
   condoFees: 'Taxas condominiais',
   planning: 'Pautas / planejamento',
   documents: 'Comunicação',
+  works: 'Obras',
 };
 
 /** Plano sem restrição: todas as features ficam habilitadas. */

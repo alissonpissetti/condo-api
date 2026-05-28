@@ -60,6 +60,14 @@ export class UpdateCommunicationDto {
   channelWhatsappEnabled?: boolean;
 
   @ApiPropertyOptional({
+    description:
+      'Valor inicial para marcar destinatários só para impressão/PDF (sem envio digital).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  channelPdfEnabled?: boolean;
+
+  @ApiPropertyOptional({
     type: [RecipientDeliveryPrefDto],
     description:
       'Preferências por destinatário; omitir canal = usar o interruptor global do informativo.',

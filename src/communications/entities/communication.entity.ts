@@ -77,6 +77,10 @@ export class Communication {
   @Column({ name: 'channel_whatsapp_enabled', type: 'boolean', default: false })
   channelWhatsappEnabled: boolean;
 
+  /** Destinatários marcados só para impressão / PDF (sem envio digital). */
+  @Column({ name: 'channel_pdf_enabled', type: 'boolean', default: false })
+  channelPdfEnabled: boolean;
+
   /**
    * JSON: `[{ "userId": "…", "email": true, "sms": false, "whatsapp": true }]`.
    * Omite canal = usar valor global do informativo.
@@ -98,4 +102,11 @@ export class Communication {
 
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
+
+  /** Exclusão lógica — oculta da lista e do painel; registo mantido para auditoria. */
+  @Column({ name: 'deleted_at', type: 'datetime', precision: 6, nullable: true })
+  deletedAt: Date | null;
+
+  @Column({ name: 'deleted_by_user_id', type: 'varchar', length: 36, nullable: true })
+  deletedByUserId: string | null;
 }

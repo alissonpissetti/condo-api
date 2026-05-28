@@ -107,7 +107,7 @@ export class CommunicationsController {
   @Patch(':communicationId')
   @ApiOperation({
     summary:
-      'Actualizar rascunho (título, texto, audiência, canais) ou só audiência/canais de um informativo já enviado',
+      'Actualizar rascunho ou informativo já enviado (título, texto, audiência, canais)',
   })
   update(
     @CurrentUser() userId: string,
@@ -161,7 +161,7 @@ export class CommunicationsController {
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: ATTACHMENT_MAX_BYTES } }),
   )
-  @ApiOperation({ summary: 'Anexar ficheiro ao rascunho' })
+  @ApiOperation({ summary: 'Anexar ficheiro (rascunho ou informativo já enviado)' })
   async addAttachment(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -176,6 +176,22 @@ export class CommunicationsController {
       communicationId,
       userId,
       file,
+    );
+  }
+
+  @Delete(':communicationId')
+  @ApiOperation({
+    summary: 'Remover informativo (exclusão lógica — oculta da lista; dados mantidos)',
+  })
+  remove(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('communicationId', ParseUUIDPipe) communicationId: string,
+  ) {
+    return this.communications.softDelete(
+      condominiumId,
+      communicationId,
+      userId,
     );
   }
 

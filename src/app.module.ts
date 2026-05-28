@@ -11,6 +11,7 @@ import { PeopleModule } from './people/people.module';
 import { FinanceModule } from './finance/finance.module';
 import { CommunicationsModule } from './communications/communications.module';
 import { CondominiumLibraryModule } from './condominium-library/condominium-library.module';
+import { CondominiumWorksModule } from './condominium-works/condominium-works.module';
 import { PlanningModule } from './planning/planning.module';
 import { StorageModule } from './storage/storage.module';
 import { UnitsModule } from './units/units.module';
@@ -50,6 +51,7 @@ import { UsersModule } from './users/users.module';
     FinanceModule,
     PlanningModule,
     CondominiumLibraryModule,
+    CondominiumWorksModule,
     CommunicationsModule,
     PlatformModule,
     SupportModule,

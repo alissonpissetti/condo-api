@@ -60,4 +60,22 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+
+  /** Anexos de obras (`works/{workId}/{uuid}.{ext}`). */
+  isValidWorkDocumentKey(key: string | null | undefined): boolean;
+  saveWorkDocument(
+    condominiumId: string,
+    workId: string,
+    buffer: Buffer,
+    mimeType: string,
+    originalFilename?: string,
+  ): Promise<string>;
+  readWorkDocument(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
+  deleteWorkDocument(
+    condominiumId: string,
+    relativeKey: string | null | undefined,
+  ): Promise<void>;
 }

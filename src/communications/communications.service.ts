@@ -9,7 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import type { Express } from 'express';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { Unit } from '../units/unit.entity';
 import { Condominium } from '../condominiums/condominium.entity';
 import { normalizeBrCellphone } from '../lib/phone-br';
@@ -334,7 +334,13 @@ export class CommunicationsService {
 
   private parseRecipientPrefs(
     raw: string | null | undefined,
-  ): { userId: string; email?: boolean; sms?: boolean; whatsapp?: boolean }[] {
+  ): {
+    userId: string;
+    email?: boolean;
+    sms?: boolean;
+    whatsapp?: boolean;
+    pdf?: boolean;
+  }[] {
     if (raw == null || !String(raw).trim()) {
       return [];
     }
@@ -356,11 +362,12 @@ export class CommunicationsService {
   private effectiveChannelsForUser(
     c: Communication,
     userId: string,
-  ): { email: boolean; sms: boolean; whatsapp: boolean } {
+  ): { email: boolean; sms: boolean; whatsapp: boolean; pdf: boolean } {
     const global = {
       email: c.channelEmailEnabled !== false,
       sms: c.channelSmsEnabled !== false,
       whatsapp: c.channelWhatsappEnabled === true,
+      pdf: c.channelPdfEnabled === true,
     };
     const row = this.parseRecipientPrefs(c.recipientDeliveryPrefs).find(
       (p) => p.userId === userId,
@@ -368,10 +375,15 @@ export class CommunicationsService {
     if (!row) {
       return global;
     }
+    const pdf = row.pdf !== undefined ? row.pdf : global.pdf;
+    if (pdf) {
+      return { email: false, sms: false, whatsapp: false, pdf: true };
+    }
     return {
       email: row.email !== undefined ? row.email : global.email,
       sms: row.sms !== undefined ? row.sms : global.sms,
       whatsapp: row.whatsapp !== undefined ? row.whatsapp : global.whatsapp,
+      pdf: false,
     };
   }
 
@@ -475,7 +487,7 @@ export class CommunicationsService {
 
     if (isMgmt) {
       return this.commRepo.find({
-        where: { condominiumId },
+        where: { condominiumId, deletedAt: IsNull() },
         order: { createdAt: 'DESC' },
         relations: { attachments: true },
       });
@@ -490,10 +502,27 @@ export class CommunicationsService {
         { uid: userId },
       )
       .where('c.condominium_id = :cid', { cid: condominiumId })
+      .andWhere('c.deleted_at IS NULL')
       .andWhere('c.status = :st', { st: CommunicationStatus.Sent })
       .orderBy('c.sent_at', 'DESC')
       .leftJoinAndSelect('c.attachments', 'attachments')
       .getMany();
+  }
+
+  async softDelete(condominiumId: string, commId: string, userId: string) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const c = await this.commRepo.findOne({
+      where: { id: commId, condominiumId, deletedAt: IsNull() },
+    });
+    if (!c) {
+      throw new NotFoundException('Informativo não encontrado.');
+    }
+    const now = new Date();
+    await this.commRepo.update(
+      { id: c.id, condominiumId },
+      { deletedAt: now, deletedByUserId: userId, updatedAt: now },
+    );
+    return { ok: true as const };
   }
 
   async create(condominiumId: string, userId: string, dto: CreateCommunicationDto) {
@@ -512,6 +541,7 @@ export class CommunicationsService {
       channelEmailEnabled: true,
       channelSmsEnabled: true,
       channelWhatsappEnabled: false,
+      channelPdfEnabled: false,
       recipientDeliveryPrefs: null,
     });
     return this.commRepo.save(c);
@@ -525,27 +555,22 @@ export class CommunicationsService {
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const c = await this.commRepo.findOne({
-      where: { id, condominiumId },
+      where: { id, condominiumId, deletedAt: IsNull() },
       relations: { attachments: true },
     });
     if (!c) {
       throw new NotFoundException('Informativo não encontrado.');
     }
-    const isSent = c.status === CommunicationStatus.Sent;
-    if (!isSent && c.status !== CommunicationStatus.Draft) {
+    if (
+      c.status !== CommunicationStatus.Draft &&
+      c.status !== CommunicationStatus.Sent
+    ) {
       throw new BadRequestException('Estado do informativo inválido.');
     }
-    if (isSent) {
-      if (dto.title !== undefined || dto.body !== undefined) {
-        throw new BadRequestException(
-          'Não é possível alterar título ou texto de um informativo já enviado.',
-        );
-      }
-    }
-    if (!isSent && dto.title !== undefined) {
+    if (dto.title !== undefined) {
       c.title = dto.title.trim();
     }
-    if (!isSent && dto.body !== undefined) {
+    if (dto.body !== undefined) {
       c.body = sanitizePollBodyRich(dto.body) ?? null;
     }
     if (dto.audienceScope !== undefined) {
@@ -577,6 +602,9 @@ export class CommunicationsService {
     if (dto.channelWhatsappEnabled !== undefined) {
       c.channelWhatsappEnabled = dto.channelWhatsappEnabled;
     }
+    if (dto.channelPdfEnabled !== undefined) {
+      c.channelPdfEnabled = dto.channelPdfEnabled;
+    }
     if (dto.recipientDeliveryPrefs !== undefined) {
       c.recipientDeliveryPrefs =
         dto.recipientDeliveryPrefs.length > 0
@@ -586,19 +614,25 @@ export class CommunicationsService {
     return this.commRepo.save(c);
   }
 
-  private async requireDraft(
+  /** Rascunho ou já enviado (ajustes de conteúdo e anexos antes de reenviar). */
+  private async requireEditable(
     condominiumId: string,
     id: string,
   ): Promise<Communication> {
     const c = await this.commRepo.findOne({
-      where: { id, condominiumId },
+      where: { id, condominiumId, deletedAt: IsNull() },
       relations: { attachments: true },
     });
     if (!c) {
       throw new NotFoundException('Informativo não encontrado.');
     }
-    if (c.status !== CommunicationStatus.Draft) {
-      throw new BadRequestException('Só é possível editar informativos em rascunho.');
+    if (
+      c.status !== CommunicationStatus.Draft &&
+      c.status !== CommunicationStatus.Sent
+    ) {
+      throw new BadRequestException(
+        'Só é possível editar informativos em rascunho ou já enviados.',
+      );
     }
     return c;
   }
@@ -608,7 +642,7 @@ export class CommunicationsService {
     id: string,
   ): Promise<Communication> {
     const c = await this.commRepo.findOne({
-      where: { id, condominiumId },
+      where: { id, condominiumId, deletedAt: IsNull() },
       relations: { attachments: true, recipients: true },
     });
     if (!c) {
@@ -642,7 +676,7 @@ export class CommunicationsService {
   async markReadApp(condominiumId: string, commId: string, userId: string) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const c = await this.commRepo.findOne({
-      where: { id: commId, condominiumId },
+      where: { id: commId, condominiumId, deletedAt: IsNull() },
     });
     if (!c || c.status !== CommunicationStatus.Sent) {
       throw new NotFoundException('Informativo não encontrado.');
@@ -672,7 +706,7 @@ export class CommunicationsService {
     communicationId: string,
   ): Promise<Communication | null> {
     return this.commRepo.findOne({
-      where: { id: communicationId },
+      where: { id: communicationId, deletedAt: IsNull() },
       relations: { attachments: true },
     });
   }
@@ -783,7 +817,7 @@ export class CommunicationsService {
       throw new NotFoundException('Anexo não encontrado.');
     }
     const comm = await this.commRepo.findOne({
-      where: { id: communicationId },
+      where: { id: communicationId, deletedAt: IsNull() },
     });
     if (!comm || comm.status !== CommunicationStatus.Sent) {
       throw new NotFoundException('Comunicado não encontrado.');
@@ -837,7 +871,7 @@ export class CommunicationsService {
       throw new BadRequestException('Arquivo ausente.');
     }
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
-    const c = await this.requireDraft(condominiumId, commId);
+    const c = await this.requireEditable(condominiumId, commId);
     let mime = (file.mimetype ?? '').trim().toLowerCase() || 'application/octet-stream';
     if (!this.storage.isAllowedMime(mime)) {
       throw new BadRequestException('Tipo de arquivo não permitido.');
@@ -878,7 +912,7 @@ export class CommunicationsService {
     userId: string,
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
-    const c = await this.requireDraft(condominiumId, commId);
+    const c = await this.requireEditable(condominiumId, commId);
     const att = await this.attRepo.findOne({
       where: { id: attachmentId, communicationId: c.id },
     });
@@ -1030,6 +1064,9 @@ export class CommunicationsService {
             ? DeliveryChannelStatus.Pending
             : DeliveryChannelStatus.Skipped,
         whatsappError: null,
+        pdfStatus: ch.pdf
+          ? DeliveryChannelStatus.Sent
+          : DeliveryChannelStatus.Skipped,
         emailTokenHash: null,
         emailTokenExpiresAt: null,
         readAt: null,
@@ -1107,19 +1144,21 @@ export class CommunicationsService {
       });
     }
 
-    if (
-      !rows.some(
-        (r) =>
-          r.rec.emailStatus === DeliveryChannelStatus.Pending ||
-          r.rec.smsStatus === DeliveryChannelStatus.Pending,
-      )
-    ) {
+    const hasDigitalPending = rows.some(
+      (r) =>
+        r.rec.emailStatus === DeliveryChannelStatus.Pending ||
+        r.rec.smsStatus === DeliveryChannelStatus.Pending,
+    );
+    const hasPdfOnly = rows.some(
+      (r) => r.rec.pdfStatus === DeliveryChannelStatus.Sent,
+    );
+    if (!hasDigitalPending && !hasPdfOnly) {
       throw new BadRequestException(
-        'Nenhum envio efetivo: ative e-mail ou SMS para quem tenha contato na conta, ou atualize a pré-visualização e salve o rascunho.',
+        'Nenhum destinatário com envio digital (e-mail ou SMS) ou marcado só para PDF/impressão. Atualize a pré-visualização e salve o rascunho.',
       );
     }
 
-    if (readLinks.length === 0) {
+    if (hasDigitalPending && readLinks.length === 0) {
       throw new BadRequestException(
         'Não foi possível gerar links de leitura por unidade; verifique a audiência.',
       );
