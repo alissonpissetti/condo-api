@@ -86,6 +86,9 @@ export class NextcloudWebdavStorageService
   private basePathSegments: string[] = [];
   private authHeader = '';
   private ready = false;
+  /** Pastas já criadas neste processo (evita MKCOL repetido → 429 no Nextcloud). */
+  private readonly ensuredDirUrls = new Set<string>();
+  private readonly mkcolInFlight = new Map<string, Promise<void>>();
 
   constructor(private readonly config: ConfigService) {}
 
@@ -987,37 +990,101 @@ export class NextcloudWebdavStorageService
     };
   }
 
+  private static sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private static retryAfterMs(res: Response, attempt: number): number {
+    const raw = res.headers.get('retry-after')?.trim();
+    if (raw) {
+      const seconds = Number.parseInt(raw, 10);
+      if (Number.isFinite(seconds) && seconds > 0) {
+        return Math.min(seconds * 1000, 30_000);
+      }
+    }
+    return Math.min(500 * 2 ** attempt, 8_000);
+  }
+
+  /** MKCOL com cache, deduplicação e retry em 429/503 (rate limit do Nextcloud). */
   private async mkcol(url: string): Promise<void> {
-    const res = await fetch(url, {
-      method: 'MKCOL',
-      headers: this.webdavFetchHeaders(),
-    });
-    if (
-      res.ok ||
-      res.status === 405 ||
-      res.status === 301 ||
-      res.status === 302 ||
-      res.status === 409
-    ) {
+    if (this.ensuredDirUrls.has(url)) {
       return;
     }
-    const t = await res.text().catch(() => '');
-    const ct = (res.headers.get('content-type') ?? '').toLowerCase();
-    const looksLikeHtml =
-      ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(t);
-    if (res.status === 401 || res.status === 403) {
-      throw new ServiceUnavailableException(
-        'Nextcloud recusou o login (401). Verifique NEXTCLOUD_URL, NEXTCLOUD_USERNAME e NEXTCLOUD_APP_PASSWORD. ' +
-          'A senha deve ser uma senha de aplicação criada em Segurança → Senhas de aplicação (não use a senha normal de acesso). ' +
-          'O utilizador tem de existir no Nextcloud e ter permissão de escrita em Ficheiros. ' +
-          'Se o armazenamento for S3 (storage-api) e não Nextcloud WebDAV, remova NEXTCLOUD_* e configure STORAGE_API_* no .env.',
+    const inFlight = this.mkcolInFlight.get(url);
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    const task = this.mkcolOnce(url);
+    this.mkcolInFlight.set(url, task);
+    try {
+      await task;
+      this.ensuredDirUrls.add(url);
+    } finally {
+      if (this.mkcolInFlight.get(url) === task) {
+        this.mkcolInFlight.delete(url);
+      }
+    }
+  }
+
+  private async mkcolOnce(url: string): Promise<void> {
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const res = await fetch(url, {
+        method: 'MKCOL',
+        headers: this.webdavFetchHeaders(),
+      });
+      if (
+        res.ok ||
+        res.status === 405 ||
+        res.status === 301 ||
+        res.status === 302 ||
+        res.status === 409
+      ) {
+        return;
+      }
+      if (
+        (res.status === 429 || res.status === 503) &&
+        attempt < maxAttempts - 1
+      ) {
+        const waitMs = NextcloudWebdavStorageService.retryAfterMs(
+          res,
+          attempt,
+        );
+        this.logger.warn(
+          `Nextcloud MKCOL HTTP ${res.status}; nova tentativa em ${waitMs}ms (${attempt + 1}/${maxAttempts - 1})`,
+        );
+        await NextcloudWebdavStorageService.sleep(waitMs);
+        continue;
+      }
+      const t = await res.text().catch(() => '');
+      const ct = (res.headers.get('content-type') ?? '').toLowerCase();
+      const looksLikeHtml =
+        ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(t);
+      if (res.status === 401 || res.status === 403) {
+        throw new ServiceUnavailableException(
+          'Nextcloud recusou o login (401). Verifique NEXTCLOUD_URL, NEXTCLOUD_USERNAME e NEXTCLOUD_APP_PASSWORD. ' +
+            'A senha deve ser uma senha de aplicação criada em Segurança → Senhas de aplicação (não use a senha normal de acesso). ' +
+            'O utilizador tem de existir no Nextcloud e ter permissão de escrita em Ficheiros. ' +
+            'Se o armazenamento for S3 (storage-api) e não Nextcloud WebDAV, remova NEXTCLOUD_* e configure STORAGE_API_* no .env.',
+        );
+      }
+      if (res.status === 429) {
+        throw new ServiceUnavailableException(
+          'Nextcloud limitou requisições (429 — muitas operações em pouco tempo). Aguarde alguns segundos e tente novamente. ' +
+            'Se o erro persistir, aumente o rate limit no servidor/proxy ou use STORAGE_API_* (S3) em vez de WebDAV.',
+        );
+      }
+      const hint = looksLikeHtml
+        ? ' Resposta HTML (não é WebDAV): confira NEXTCLOUD_URL (raiz da instância, ex. https://domínio sem /login) e se o proxy permite MKCOL.'
+        : '';
+      const detail =
+        t && !t.trimStart().startsWith('<?xml')
+          ? ` ${t.slice(0, 120).replace(/\s+/g, ' ')}`
+          : '';
+      throw new BadRequestException(
+        `Nextcloud: não foi possível criar pasta (${res.status}).${hint}${detail}`,
       );
     }
-    const hint = looksLikeHtml
-      ? ' Resposta HTML (não é WebDAV): confira NEXTCLOUD_URL (raiz da instância, ex. https://domínio sem /login) e se o proxy permite MKCOL.'
-      : '';
-    throw new BadRequestException(
-      `Nextcloud: não foi possível criar pasta (${res.status}).${hint} ${t.slice(0, 120).replace(/\s+/g, ' ')}`,
-    );
   }
 }
