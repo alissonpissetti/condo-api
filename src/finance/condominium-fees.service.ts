@@ -30,7 +30,9 @@ import {
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { Unit } from '../units/unit.entity';
+import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { FundAccrualService } from './fund-accrual.service';
+import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import PDFDocument = require('pdfkit');
 import {
@@ -121,6 +123,7 @@ export class CondominiumFeesService {
     private readonly condominiumsService: CondominiumsService,
     private readonly governance: GovernanceService,
     private readonly fundAccrual: FundAccrualService,
+    private readonly bankAccounts: CondominiumBankAccountsService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
@@ -524,6 +527,7 @@ export class CondominiumFeesService {
     chargeId: string,
     incomeTransactionId?: string,
     paymentReceiptStorageKey?: string | null,
+    bankAccountId?: string,
   ): Promise<CondominiumFeeChargeView> {
     await this.governance.assertManagement(condominiumId, userId);
     const charge = await this.chargeRepo.findOne({
@@ -574,13 +578,24 @@ export class CondominiumFeesService {
 
       charge.status = 'paid';
       charge.incomeTransactionId = tx.id;
+      charge.bankAccountId = tx.bankAccountId;
       charge.paidAt =
         tx.occurredOn instanceof Date
           ? tx.occurredOn
           : parseDateOnlyFromApi(String(tx.occurredOn));
     } else {
+      if (!bankAccountId?.trim()) {
+        throw new BadRequestException(
+          'Informe a conta bancária que recebeu o pagamento.',
+        );
+      }
+      await this.bankAccounts.assertActiveInCondominium(
+        condominiumId,
+        bankAccountId.trim(),
+      );
       charge.status = 'paid';
       charge.incomeTransactionId = null;
+      charge.bankAccountId = bankAccountId.trim();
       charge.paidAt = todayLocalCalendarAsUtcNoon();
     }
 
@@ -643,6 +658,7 @@ export class CondominiumFeesService {
       charge.status = 'open';
       charge.paidAt = null;
       charge.incomeTransactionId = null;
+      charge.bankAccountId = null;
       charge.paymentReceiptStorageKey = null;
       await mgr.save(charge);
     });
@@ -1133,14 +1149,25 @@ export class CondominiumFeesService {
     const raw = await this.shareRepo
       .createQueryBuilder('s')
       .innerJoin('s.transaction', 't')
+      .leftJoin(
+        FundMonthlyAccrual,
+        'fma',
+        'fma.transaction_id = t.id',
+      )
       .where('t.condominium_id = :cid', { cid: condominiumId })
-      /* Taxa condominial: somar rateios de transações da competência que entram no mês —
-       * «aguardando» e já «pagas». Canceladas ficam de fora (desactivadas). */
+      /* Taxa condominial: rateios da competência (aguardando ou pagos).
+       * Movimentos manuais com fund_id só alteram saldo do fundo — não entram aqui.
+       * Exceção: mensalidade automática do fundo (fund_monthly_accruals), receita rateada no fechamento
+       * (ABS no rateio para sempre somar na taxa). Receita sem fundo abate a taxa; despesa sem fundo aumenta. */
       .andWhere('t.payment_status IN (:...ps)', { ps: ['pending', 'paid'] })
+      .andWhere('(t.fund_id IS NULL OR fma.id IS NOT NULL)')
       .andWhere('t.occurred_on >= :from', { from })
       .andWhere('t.occurred_on <= :to', { to })
       .select('s.unit_id', 'unitId')
-      .addSelect('SUM(s.share_cents)', 'sumCents')
+      .addSelect(
+        `SUM(CASE WHEN fma.id IS NOT NULL THEN ABS(s.share_cents) ELSE s.share_cents END)`,
+        'sumCents',
+      )
       .groupBy('s.unit_id')
       .getRawMany<{ unitId: string; sumCents: string | null }>();
 

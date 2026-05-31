@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { CondominiumWorksModule } from '../condominium-works/condominium-works.module';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
 import { PlanningModule } from '../planning/planning.module';
 import { UsersModule } from '../users/users.module';
@@ -21,6 +22,9 @@ import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { FinanceMonthCronService } from './finance-month-cron.service';
+import { CondominiumBankAccountsController } from './condominium-bank-accounts.controller';
+import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
+import { CondominiumBankAccount } from './entities/condominium-bank-account.entity';
 import { FinanceStatementController } from './finance-statement.controller';
 import { FinanceStatementService } from './finance-statement.service';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
@@ -41,12 +45,14 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       FundMonthlyAccrual,
       CondominiumFeeCharge,
       CondominiumFeeChargePaymentLog,
+      CondominiumBankAccount,
       Unit,
       UnitResponsiblePerson,
       Grouping,
       CondominiumParticipant,
     ]),
     CondominiumsModule,
+    CondominiumWorksModule,
     PlanningModule,
     UsersModule,
     TwilioWhatsappModule,
@@ -66,6 +72,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FinancialTransactionsController,
     TransactionReceiptsController,
     FinanceStatementController,
+    CondominiumBankAccountsController,
     CondominiumFeesController,
     PublicFeeSlipController,
   ],
@@ -74,6 +81,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FinancialFundsService,
     FinancialTransactionsService,
     FinanceStatementService,
+    CondominiumBankAccountsService,
     FundAccrualService,
     FundBalanceService,
     CondominiumFeesService,

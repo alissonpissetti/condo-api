@@ -9,7 +9,9 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
+import { CondominiumWork } from '../../condominium-works/entities/condominium-work.entity';
 import type { AllocationRule } from '../allocation.types';
+import { CondominiumBankAccount } from './condominium-bank-account.entity';
 import { FinancialFund } from './financial-fund.entity';
 import { TransactionUnitShare } from './transaction-unit-share.entity';
 
@@ -39,6 +41,21 @@ export class FinancialTransaction {
   @ManyToOne(() => FinancialFund, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'fund_id' })
   fund: FinancialFund | null;
+
+  @Column({ name: 'bank_account_id', nullable: true })
+  bankAccountId: string | null;
+
+  @ManyToOne(() => CondominiumBankAccount, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'bank_account_id' })
+  bankAccount: CondominiumBankAccount | null;
+
+  /** Obra associada; quando preenchido, gera entrada na timeline da obra. */
+  @Column({ name: 'work_id', type: 'varchar', length: 36, nullable: true })
+  workId: string | null;
+
+  @ManyToOne(() => CondominiumWork, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'work_id' })
+  work: CondominiumWork | null;
 
   /**
    * expense | income | investment (aplicação de capital; rateio como despesa).
@@ -92,6 +109,27 @@ export class FinancialTransaction {
   /** `json` é suportado por PostgreSQL e MySQL/MariaDB (`jsonb` só existe no PG). */
   @Column({ name: 'allocation_rule', type: 'json' })
   allocationRule: AllocationRule;
+
+  /**
+   * Par de transferência entre contas/fundos (duas linhas: saída + entrada).
+   * Mesmo UUID nas duas pernas.
+   */
+  @Column({
+    name: 'transfer_group_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  transferGroupId: string | null;
+
+  /** ID da outra perna da transferência (saída ↔ entrada). */
+  @Column({
+    name: 'transfer_counterpart_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  transferCounterpartId: string | null;
 
   /** Agrupa parcelas criadas em lote (mesmo UUID em todas as transações da série). */
   @Column({

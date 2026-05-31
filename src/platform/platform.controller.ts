@@ -108,7 +108,7 @@ export class PlatformController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary:
-      'Remover plano (apenas se não estiver atribuído a condomínios nem referenciado noutros registos)',
+      'Remover plano (apenas se não estiver atribuído a condomínios nem referenciado em outros registros)',
   })
   async deletePlan(
     @Param('planId', ParseIntPipe) planId: number,

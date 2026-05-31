@@ -20,7 +20,7 @@ export class PublicFeeSlipController {
 
   @Get('fee-slip.pdf')
   @ApiOperation({
-    summary: 'Descarregar PDF slip/capa PIX (token temporário)',
+    summary: 'Baixar PDF slip/capa PIX (token temporário)',
     description:
       'Token JWT emitido pela API ao disparar envio por WhatsApp. Uso interno / Twilio.',
   })
@@ -31,7 +31,7 @@ export class PublicFeeSlipController {
   ): Promise<void> {
     const t = token?.trim();
     if (!t) {
-      throw new UnauthorizedException('Token em falta.');
+      throw new UnauthorizedException('Token ausente.');
     }
     const pdf = await this.feesService.getFeeSlipPdfBufferFromPublicToken(t);
     res.set({

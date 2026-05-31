@@ -7,7 +7,7 @@ const RECEIPT_KEY_RE =
 export class ReplaceFeeChargeReceiptDto {
   @ApiProperty({
     description:
-      'Nova chave do ficheiro já enviado (POST /condominiums/:id/transaction-receipts). Usa o mesmo armazenamento que os comprovantes (local ou Nextcloud).',
+      'Nova chave do arquivo já enviado (POST /condominiums/:id/transaction-receipts). Usa o mesmo armazenamento que os comprovantes (local ou Nextcloud).',
     example: 'receipts/11111111-1111-4111-8111-111111111111.pdf',
   })
   @IsString()

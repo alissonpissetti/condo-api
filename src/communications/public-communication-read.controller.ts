@@ -19,7 +19,7 @@ export class PublicCommunicationReadController {
 
   @Get('communications/attachments/:attachmentId/file')
   @ApiOperation({
-    summary: 'Descarregar anexo do informativo com o mesmo token da página pública',
+    summary: 'Baixar anexo do informativo com o mesmo token da página pública',
   })
   async downloadAttachment(
     @Param('attachmentId', ParseUUIDPipe) attachmentId: string,

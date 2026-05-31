@@ -59,6 +59,11 @@ import { CommunicationPdfChannel1751440000000 } from '../migrations/175144000000
 import { CondominiumWorks1751450000000 } from '../migrations/1751450000000-condominium-works';
 import { CondominiumWorkBudgetAttachments1751460000000 } from '../migrations/1751460000000-condominium-work-budget-attachments';
 import { CondominiumWorkTimelineAttachments1751470000000 } from '../migrations/1751470000000-condominium-work-timeline-attachments';
+import { CondominiumBankAccounts1751480000000 } from '../migrations/1751480000000-condominium-bank-accounts';
+import { TransactionBankAccount1751490000000 } from '../migrations/1751490000000-transaction-bank-account';
+import { TransactionTransfer1751500000000 } from '../migrations/1751500000000-transaction-transfer';
+import { BankAccountInitialBalanceOn1751510000000 } from '../migrations/1751510000000-bank-account-initial-balance-on';
+import { TransactionWorkLink1751520000000 } from '../migrations/1751520000000-transaction-work-link';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -80,7 +85,12 @@ import { FinancialFund } from '../finance/entities/financial-fund.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { TransactionUnitShare } from '../finance/entities/transaction-unit-share.entity';
 import { FundMonthlyAccrual } from '../finance/entities/fund-monthly-accrual.entity';
+import { CondominiumBankAccount } from '../finance/entities/condominium-bank-account.entity';
 import { CondominiumFeeCharge } from '../finance/entities/condominium-fee-charge.entity';
+import { CondominiumWork } from '../condominium-works/entities/condominium-work.entity';
+import { CondominiumWorkBudget } from '../condominium-works/entities/condominium-work-budget.entity';
+import { CondominiumWorkTimelineEntry } from '../condominium-works/entities/condominium-work-timeline-entry.entity';
+import { CondominiumWorkTimelineAttachment } from '../condominium-works/entities/condominium-work-timeline-attachment.entity';
 import { SaasCharge } from '../platform/entities/saas-charge.entity';
 import { SaasCondominiumBilling } from '../platform/entities/saas-condominium-billing.entity';
 import { SaasPlan } from '../platform/entities/saas-plan.entity';
@@ -108,7 +118,12 @@ export const AppDataSource = new DataSource({
     FinancialTransaction,
     TransactionUnitShare,
     FundMonthlyAccrual,
+    CondominiumBankAccount,
     CondominiumFeeCharge,
+    CondominiumWork,
+    CondominiumWorkBudget,
+    CondominiumWorkTimelineEntry,
+    CondominiumWorkTimelineAttachment,
     SaasCondominiumBilling,
     SaasCharge,
     SaasPlan,
@@ -182,6 +197,11 @@ export const AppDataSource = new DataSource({
     CondominiumWorks1751450000000,
     CondominiumWorkBudgetAttachments1751460000000,
     CondominiumWorkTimelineAttachments1751470000000,
+    CondominiumBankAccounts1751480000000,
+    TransactionBankAccount1751490000000,
+    TransactionTransfer1751500000000,
+    BankAccountInitialBalanceOn1751510000000,
+    TransactionWorkLink1751520000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

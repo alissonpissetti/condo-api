@@ -3,11 +3,32 @@ import {
   BadRequestException,
   NotFoundException,
   Logger,
+  OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
-import type { ReceiptStoragePort } from './receipt-storage.port';
+import type { Express } from 'express';
+import type {
+  ReceiptStoragePort,
+  SupportAttachmentMeta,
+} from './receipt-storage.port';
+import {
+  COMMUNICATION_ATTACHMENT_KEY_RE,
+  COMMUNICATION_ATTACHMENT_MIME_EXT,
+  POLL_ATTACHMENT_KEY_RE,
+  POLL_ATTACHMENT_MIME_EXT,
+  POLL_ATTACHMENT_MAX_BYTES,
+  SUPPORT_ATTACHMENT_MAX_BYTES,
+  SUPPORT_ATTACHMENT_MAX_FILES,
+  SUPPORT_ATTACHMENT_ALLOWED_MIMES,
+  communicationAttachmentMaxBytes as communicationMaxBytesForMime,
+  contentTypeFromAttachmentKey,
+  isAllowedCommunicationAttachmentMime as isCommunicationMimeAllowed,
+  isAllowedPollAttachmentMime as isPollMimeAllowed,
+  safeSupportBasename,
+  supportAttachmentKeyForTicket,
+} from './condo-attachment-mime.util';
 import {
   assertWorkAttachmentSize,
   resolveWorkDocumentExtension,
@@ -57,7 +78,9 @@ const EXT_MIME: Record<string, string> = {
  * @see https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html
  */
 @Injectable()
-export class NextcloudWebdavStorageService implements ReceiptStoragePort {
+export class NextcloudWebdavStorageService
+  implements ReceiptStoragePort, OnModuleInit
+{
   private readonly logger = new Logger(NextcloudWebdavStorageService.name);
   private webdavUserRoot = '';
   private basePathSegments: string[] = [];
@@ -66,12 +89,53 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
 
   constructor(private readonly config: ConfigService) {}
 
+  onModuleInit(): void {
+    void this.verifyWebdavAuthAtStartup();
+  }
+
+  private static stripEnvSecret(value: string | undefined): string {
+    return (value ?? '').trim().replace(/^['"]|['"]$/g, '');
+  }
+
+  private async verifyWebdavAuthAtStartup(): Promise<void> {
+    const base = this.config.get<string>('NEXTCLOUD_URL')?.trim();
+    const user = this.config.get<string>('NEXTCLOUD_USERNAME')?.trim();
+    const pass = NextcloudWebdavStorageService.stripEnvSecret(
+      this.config.get<string>('NEXTCLOUD_APP_PASSWORD'),
+    );
+    if (!base || !user || !pass) {
+      return;
+    }
+    try {
+      this.ensureReady();
+      const res = await fetch(this.webdavUserRoot, {
+        method: 'PROPFIND',
+        headers: { ...this.webdavFetchHeaders(), Depth: '0' },
+      });
+      if (res.status === 401 || res.status === 403) {
+        this.logger.error(
+          'Nextcloud WebDAV: autenticação recusada (401/403). Confira NEXTCLOUD_USERNAME e NEXTCLOUD_APP_PASSWORD — use senha de aplicação (Segurança → Senhas de aplicação), não a senha de login do painel.',
+        );
+      } else if (!res.ok && res.status !== 404) {
+        this.logger.warn(
+          `Nextcloud WebDAV: PROPFIND respondeu HTTP ${res.status}. Verifique NEXTCLOUD_URL (raiz da instância, sem /login).`,
+        );
+      } else {
+        this.logger.log('Nextcloud WebDAV: autenticação verificada com sucesso.');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Nextcloud WebDAV: falha ao verificar conexão — ${msg}`);
+    }
+  }
+
   private ensureReady(): void {
     if (this.ready) return;
     const base = this.config.get<string>('NEXTCLOUD_URL')?.replace(/\/+$/, '');
     const user = this.config.get<string>('NEXTCLOUD_USERNAME')?.trim();
-    const pass =
-      this.config.get<string>('NEXTCLOUD_APP_PASSWORD')?.trim() ?? '';
+    const pass = NextcloudWebdavStorageService.stripEnvSecret(
+      this.config.get<string>('NEXTCLOUD_APP_PASSWORD'),
+    );
     if (!base || !user) {
       throw new BadRequestException(
         'Nextcloud: defina NEXTCLOUD_URL e NEXTCLOUD_USERNAME.',
@@ -183,7 +247,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
       res,
       condominiumId,
       relativeKey,
-      'Comprovante não encontrado no Nextcloud. Se o registo veio de outro ambiente ou o upload foi com outro tipo de armazenamento, reenvie o ficheiro.',
+      'Comprovante não encontrado no Nextcloud. Se o registro veio de outro ambiente ou o upload foi com outro tipo de armazenamento, reenvie o arquivo.',
     );
     const buffer = Buffer.from(await res.arrayBuffer());
     const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
@@ -398,7 +462,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
       res,
       condominiumId,
       relativeKey,
-      'Arquivo não encontrado no Nextcloud. Causas comuns: registro vindo de outro ambiente sem os arquivos; upload com STORAGE_DRIVER=local (arquivo no disco) e a API de produção usando nextcloud; ou arquivo removido no Nextcloud. Reenvie o documento na biblioteca ou alinhe os arquivos com a mesma chave (storage) e pasta do condomínio no utilizador da API.',
+      'Arquivo não encontrado no Nextcloud. Causas comuns: registro vindo de outro ambiente sem os arquivos; upload com STORAGE_DRIVER=local (arquivo no disco) e a API de produção usando nextcloud; ou arquivo removido no Nextcloud. Reenvie o documento na biblioteca ou alinhe os arquivos com a mesma chave (storage) e pasta do condomínio no usuário da API.',
     );
     const fileBuffer = Buffer.from(await res.arrayBuffer());
     const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
@@ -511,6 +575,347 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     }
   }
 
+  isValidCommunicationAttachmentKey(key: string | null | undefined): boolean {
+    return typeof key === 'string' && COMMUNICATION_ATTACHMENT_KEY_RE.test(key);
+  }
+
+  isAllowedCommunicationAttachmentMime(mime: string): boolean {
+    return isCommunicationMimeAllowed(mime);
+  }
+
+  communicationAttachmentMaxBytes(mime: string): number {
+    return communicationMaxBytesForMime(mime);
+  }
+
+  async saveCommunicationAttachment(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    return this.putCondominiumObject(
+      condominiumId,
+      buffer,
+      mimeType,
+      () => {
+        if (!isCommunicationMimeAllowed(mimeType)) {
+          throw new BadRequestException(
+            'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto, áudio ou vídeo (MP4, WebM, MOV).',
+          );
+        }
+        const max = communicationMaxBytesForMime(mimeType);
+        if (buffer.length > max) {
+          throw new BadRequestException(
+            `Arquivo muito grande (máx. ${Math.round(max / (1024 * 1024))} MB).`,
+          );
+        }
+        const ext = COMMUNICATION_ATTACHMENT_MIME_EXT[mimeType];
+        if (!ext) {
+          throw new BadRequestException('Tipo de arquivo inválido.');
+        }
+        return `communication-attachments/${randomUUID()}.${ext}`;
+      },
+      'Falha ao enviar anexo ao armazenamento',
+    );
+  }
+
+  async readCommunicationAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    return this.readCondominiumObject(
+      condominiumId,
+      relativeKey,
+      () => this.isValidCommunicationAttachmentKey(relativeKey),
+      'Chave de anexo inválida.',
+      'Anexo não encontrado no armazenamento. Reenvie o arquivo ou verifique STORAGE_DRIVER e credenciais do Nextcloud.',
+      COMMUNICATION_ATTACHMENT_MIME_EXT,
+      'anexo',
+    );
+  }
+
+  async deleteCommunicationAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<void> {
+    await this.deleteCondominiumObject(
+      condominiumId,
+      relativeKey,
+      () => this.isValidCommunicationAttachmentKey(relativeKey),
+    );
+  }
+
+  isValidPollAttachmentKey(key: string | null | undefined): boolean {
+    return typeof key === 'string' && POLL_ATTACHMENT_KEY_RE.test(key);
+  }
+
+  isAllowedPollAttachmentMime(mime: string): boolean {
+    return isPollMimeAllowed(mime);
+  }
+
+  async savePollAttachment(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    return this.putCondominiumObject(
+      condominiumId,
+      buffer,
+      mimeType,
+      () => {
+        if (!isPollMimeAllowed(mimeType)) {
+          throw new BadRequestException(
+            'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto ou áudio (ex.: .opus).',
+          );
+        }
+        if (buffer.length > POLL_ATTACHMENT_MAX_BYTES) {
+          throw new BadRequestException('Arquivo muito grande (máx. 20 MB).');
+        }
+        const ext = POLL_ATTACHMENT_MIME_EXT[mimeType];
+        if (!ext) {
+          throw new BadRequestException('Tipo de arquivo inválido.');
+        }
+        return `poll-attachments/${randomUUID()}.${ext}`;
+      },
+      'Falha ao enviar anexo da pauta ao armazenamento',
+    );
+  }
+
+  async readPollAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    const read = await this.readCondominiumObject(
+      condominiumId,
+      relativeKey,
+      () => this.isValidPollAttachmentKey(relativeKey),
+      'Chave de anexo inválida.',
+      'Anexo da pauta não encontrado no armazenamento. Reenvie o arquivo.',
+      POLL_ATTACHMENT_MIME_EXT,
+      'anexo',
+    );
+    return {
+      ...read,
+      filename: relativeKey.split('/').pop() ?? read.filename,
+    };
+  }
+
+  async deletePollAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<void> {
+    await this.deleteCondominiumObject(
+      condominiumId,
+      relativeKey,
+      () => this.isValidPollAttachmentKey(relativeKey),
+    );
+  }
+
+  isSupportAttachmentKeyForTicket(
+    ticketId: string,
+    storageKey: string,
+  ): boolean {
+    return supportAttachmentKeyForTicket(ticketId, storageKey);
+  }
+
+  async saveSupportAttachments(
+    ticketId: string,
+    files: Express.Multer.File[],
+  ): Promise<SupportAttachmentMeta[]> {
+    this.ensureReady();
+    if (!files?.length) {
+      return [];
+    }
+    if (files.length > SUPPORT_ATTACHMENT_MAX_FILES) {
+      throw new BadRequestException(
+        `No máximo ${SUPPORT_ATTACHMENT_MAX_FILES} arquivos por mensagem.`,
+      );
+    }
+    const out: SupportAttachmentMeta[] = [];
+    for (const file of files) {
+      if (!file.buffer?.length) {
+        throw new BadRequestException('Arquivo vazio não é permitido.');
+      }
+      const mime = (file.mimetype || '').toLowerCase();
+      if (!SUPPORT_ATTACHMENT_ALLOWED_MIMES.has(mime)) {
+        throw new BadRequestException(
+          `Tipo não permitido: ${mime}. Envie PDF, imagens, MP4/WebM, áudio ou ZIP (máx. 25 MB cada).`,
+        );
+      }
+      if (file.size > SUPPORT_ATTACHMENT_MAX_BYTES) {
+        throw new BadRequestException('Arquivo muito grande (máx. 25 MB).');
+      }
+      const safe = safeSupportBasename(file.originalname);
+      const relativeKey = `support-tickets/${ticketId}/${randomUUID()}_${safe}`;
+      await this.ensureGlobalHierarchy(relativeKey);
+      const url = this.globalObjectUrl(relativeKey);
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { ...this.webdavFetchHeaders(), 'Content-Type': mime },
+        body: new Uint8Array(file.buffer),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new BadRequestException(
+          `Falha ao enviar anexo de suporte (${res.status}). ${t.slice(0, 200)}`,
+        );
+      }
+      const originalFilename = file.originalname.slice(0, 255) || safe;
+      const metaKey = `${relativeKey}.meta.json`;
+      await this.ensureGlobalHierarchy(metaKey);
+      const metaUrl = this.globalObjectUrl(metaKey);
+      await fetch(metaUrl, {
+        method: 'PUT',
+        headers: {
+          ...this.webdavFetchHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ originalFilename, mimeType: mime }),
+      });
+      out.push({
+        storageKey: relativeKey,
+        originalFilename,
+        mimeType: mime,
+        sizeBytes: file.size,
+      });
+    }
+    return out;
+  }
+
+  async readSupportAttachment(
+    ticketId: string,
+    storageKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    this.ensureReady();
+    if (!this.isSupportAttachmentKeyForTicket(ticketId, storageKey)) {
+      throw new BadRequestException('Chave de anexo inválida.');
+    }
+    let filename = storageKey.split('/').pop() ?? 'arquivo';
+    let contentType = 'application/octet-stream';
+    const metaUrl = this.globalObjectUrl(`${storageKey}.meta.json`);
+    const metaRes = await fetch(metaUrl, {
+      headers: this.webdavFetchHeaders(),
+    });
+    if (metaRes.ok) {
+      try {
+        const meta = (await metaRes.json()) as {
+          originalFilename?: string;
+          mimeType?: string;
+        };
+        if (meta.originalFilename) {
+          filename = meta.originalFilename;
+        }
+        if (meta.mimeType) {
+          contentType = meta.mimeType;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const url = this.globalObjectUrl(storageKey);
+    const res = await fetch(url, { headers: this.webdavFetchHeaders() });
+    this.assertWebdavGetOk(
+      res,
+      '_global',
+      storageKey,
+      'Arquivo de suporte não encontrado no armazenamento.',
+    );
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (contentType === 'application/octet-stream') {
+      contentType =
+        res.headers.get('content-type') ?? contentType;
+    }
+    return { buffer, contentType, filename };
+  }
+
+  private async putCondominiumObject(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+    buildKey: () => string,
+    failLabel: string,
+  ): Promise<string> {
+    this.ensureReady();
+    const relativeKey = buildKey();
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `${failLabel} (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  private async readCondominiumObject(
+    condominiumId: string,
+    relativeKey: string,
+    isValid: () => boolean,
+    invalidKeyMessage: string,
+    notFoundMessage: string,
+    mimeExt: Record<string, string>,
+    defaultName: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+    this.ensureReady();
+    if (!isValid()) {
+      throw new BadRequestException(invalidKeyMessage);
+    }
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, { headers: this.webdavFetchHeaders() });
+    this.assertWebdavGetOk(res, condominiumId, relativeKey, notFoundMessage);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const meta = contentTypeFromAttachmentKey(
+      relativeKey,
+      mimeExt,
+      defaultName,
+    );
+    const contentType =
+      res.headers.get('content-type') ?? meta.contentType;
+    return { buffer, contentType, filename: meta.filename };
+  }
+
+  private async deleteCondominiumObject(
+    condominiumId: string,
+    relativeKey: string,
+    isValid: () => boolean,
+  ): Promise<void> {
+    if (!isValid()) {
+      return;
+    }
+    this.ensureReady();
+    const url = this.objectUrl(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: this.webdavFetchHeaders(),
+    });
+    if (!res.ok && res.status !== 404) {
+      /* ignore */
+    }
+  }
+
+  private globalObjectUrl(relativeKey: string): string {
+    const segments = [
+      ...this.basePathSegments,
+      ...relativeKey.split('/').filter(Boolean),
+    ];
+    const encoded = segments.map((s) => encodeURIComponent(s)).join('/');
+    return `${this.webdavUserRoot}/${encoded}`;
+  }
+
+  private async ensureGlobalHierarchy(relativeKey: string): Promise<void> {
+    const parts = relativeKey.split('/').filter(Boolean).slice(0, -1);
+    for (let i = 0; i < parts.length; i++) {
+      const segs = [...this.basePathSegments, ...parts.slice(0, i + 1)];
+      const url = `${this.webdavUserRoot}/${segs.map((s) => encodeURIComponent(s)).join('/')}`;
+      await this.mkcol(url);
+    }
+  }
+
   /**
    * Trata resposta GET no WebDAV: 401/403 não são "ficheiro inexistente" (evita confundir com 404).
    */
@@ -535,7 +940,7 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
       throw new NotFoundException(notFoundMessage);
     }
     throw new BadRequestException(
-      `Falha ao ler ficheiro no armazenamento (HTTP ${res.status}).`,
+      `Falha ao ler arquivo no armazenamento (HTTP ${res.status}).`,
     );
   }
 
@@ -600,8 +1005,16 @@ export class NextcloudWebdavStorageService implements ReceiptStoragePort {
     const ct = (res.headers.get('content-type') ?? '').toLowerCase();
     const looksLikeHtml =
       ct.includes('text/html') || /^\s*<!DOCTYPE/i.test(t);
+    if (res.status === 401 || res.status === 403) {
+      throw new ServiceUnavailableException(
+        'Nextcloud recusou o login (401). Verifique NEXTCLOUD_URL, NEXTCLOUD_USERNAME e NEXTCLOUD_APP_PASSWORD. ' +
+          'A senha deve ser uma senha de aplicação criada em Segurança → Senhas de aplicação (não use a senha normal de acesso). ' +
+          'O utilizador tem de existir no Nextcloud e ter permissão de escrita em Ficheiros. ' +
+          'Se o armazenamento for S3 (storage-api) e não Nextcloud WebDAV, remova NEXTCLOUD_* e configure STORAGE_API_* no .env.',
+      );
+    }
     const hint = looksLikeHtml
-      ? ' Resposta HTML (não é WebDAV): confira NEXTCLOUD_URL (raiz da instância, ex. https://domínio sem /login), credenciais Basic e se o proxy/CDN (ex. Cloudflare) permite o método MKCOL.'
+      ? ' Resposta HTML (não é WebDAV): confira NEXTCLOUD_URL (raiz da instância, ex. https://domínio sem /login) e se o proxy permite MKCOL.'
       : '';
     throw new BadRequestException(
       `Nextcloud: não foi possível criar pasta (${res.status}).${hint} ${t.slice(0, 120).replace(/\s+/g, ' ')}`,

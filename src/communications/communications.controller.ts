@@ -39,7 +39,7 @@ export class CommunicationsController {
   constructor(private readonly communications: CommunicationsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Listar informativos (gestão: todos; morador: enviados ao utilizador)' })
+  @ApiOperation({ summary: 'Listar informativos (gestão: todos; morador: enviados ao usuário)' })
   list(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -60,7 +60,7 @@ export class CommunicationsController {
   @Post('audience-preview')
   @ApiOperation({
     summary:
-      'Pré-visualizar destinatários (contas de utilizador ligadas a proprietário ou responsável nas unidades)',
+      'Pré-visualizar destinatários (contas de usuário ligadas a proprietário ou responsável nas unidades)',
   })
   previewAudience(
     @CurrentUser() userId: string,
@@ -71,7 +71,7 @@ export class CommunicationsController {
   }
 
   @Get(':communicationId/attachments/:attachmentId/file')
-  @ApiOperation({ summary: 'Descarregar anexo' })
+  @ApiOperation({ summary: 'Baixar anexo' })
   async downloadAttachment(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -126,7 +126,7 @@ export class CommunicationsController {
   @Post(':communicationId/send')
   @ApiOperation({
     summary:
-      'Enviar informativo em rascunho ou reenviar um já enviado (novos links; audiência e canais do registo; links antigos mantêm-se válidos)',
+      'Enviar informativo em rascunho ou reenviar um já enviado (novos links; audiência e canais do registro; links antigos permanecem válidos)',
   })
   send(
     @CurrentUser() userId: string,
@@ -161,7 +161,7 @@ export class CommunicationsController {
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: ATTACHMENT_MAX_BYTES } }),
   )
-  @ApiOperation({ summary: 'Anexar ficheiro (rascunho ou informativo já enviado)' })
+  @ApiOperation({ summary: 'Anexar arquivo (rascunho ou informativo já enviado)' })
   async addAttachment(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

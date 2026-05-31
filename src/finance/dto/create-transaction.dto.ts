@@ -51,10 +51,25 @@ export class CreateTransactionDto {
   @IsString()
   description?: string | null;
 
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Conta bancária onde o movimento incide no saldo.',
+  })
+  @IsUUID()
+  bankAccountId: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUUID()
   fundId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Obra associada; o lançamento aparecerá na timeline da obra.',
+  })
+  @IsOptional()
+  @IsUUID()
+  workId?: string | null;
 
   @ApiPropertyOptional({
     description:

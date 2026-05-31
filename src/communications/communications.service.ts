@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -24,7 +25,8 @@ import {
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import { Person } from '../people/person.entity';
 import { User } from '../users/user.entity';
-import { CommunicationAttachmentStorageHelper } from './communication-attachment-storage.helper';
+import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
+import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { AudiencePreviewDto } from './dto/audience-preview.dto';
 import { PublicCommunicationViewDto } from './dto/public-communication-view.dto';
 import { CreateCommunicationDto } from './dto/create-communication.dto';
@@ -52,8 +54,6 @@ export type AudiencePreviewUser = {
 @Injectable()
 export class CommunicationsService {
   private readonly logger = new Logger(CommunicationsService.name);
-  private readonly storage: CommunicationAttachmentStorageHelper;
-
   constructor(
     @InjectRepository(Communication)
     private readonly commRepo: Repository<Communication>,
@@ -77,9 +77,9 @@ export class CommunicationsService {
     private readonly mail: MailService,
     private readonly comtele: ComteleService,
     private readonly config: ConfigService,
-  ) {
-    this.storage = new CommunicationAttachmentStorageHelper(config);
-  }
+    @Inject(RECEIPT_STORAGE)
+    private readonly storage: ReceiptStoragePort,
+  ) {}
 
   private apiPublicBase(): string {
     const raw =
@@ -822,7 +822,8 @@ export class CommunicationsService {
     if (!comm || comm.status !== CommunicationStatus.Sent) {
       throw new NotFoundException('Comunicado não encontrado.');
     }
-    const { buffer, contentType, filename } = await this.storage.readFile(
+    const { buffer, contentType, filename } =
+      await this.storage.readCommunicationAttachment(
       comm.condominiumId,
       att.storageKey,
     );
@@ -873,13 +874,17 @@ export class CommunicationsService {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const c = await this.requireEditable(condominiumId, commId);
     let mime = (file.mimetype ?? '').trim().toLowerCase() || 'application/octet-stream';
-    if (!this.storage.isAllowedMime(mime)) {
+    if (!this.storage.isAllowedCommunicationAttachmentMime(mime)) {
       throw new BadRequestException('Tipo de arquivo não permitido.');
     }
-    if (file.size > this.storage.maxBytesFor(mime)) {
+    if (file.size > this.storage.communicationAttachmentMaxBytes(mime)) {
       throw new BadRequestException('Arquivo muito grande para este tipo.');
     }
-    const key = await this.storage.saveFile(condominiumId, file.buffer, mime);
+    const key = await this.storage.saveCommunicationAttachment(
+      condominiumId,
+      file.buffer,
+      mime,
+    );
     const maxRow = await this.attRepo
       .createQueryBuilder('a')
       .select('MAX(a.sortOrder)', 'm')
@@ -919,7 +924,10 @@ export class CommunicationsService {
     if (!att) {
       throw new NotFoundException('Anexo não encontrado.');
     }
-    await this.storage.deleteFile(condominiumId, att.storageKey);
+    await this.storage.deleteCommunicationAttachment(
+      condominiumId,
+      att.storageKey,
+    );
     await this.attRepo.remove(att);
     return this.requireCommunication(condominiumId, commId);
   }
@@ -937,7 +945,8 @@ export class CommunicationsService {
     if (!att) {
       throw new NotFoundException('Anexo não encontrado.');
     }
-    const { buffer, contentType, filename } = await this.storage.readFile(
+    const { buffer, contentType, filename } =
+      await this.storage.readCommunicationAttachment(
       condominiumId,
       att.storageKey,
     );

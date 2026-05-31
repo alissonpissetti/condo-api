@@ -26,7 +26,8 @@ export class FinanceStatementController {
 
   @Get()
   @ApiOperation({
-    summary: 'Extrato no período (saldos por unidade + lista de transações)',
+    summary:
+      'Extrato no período. Gestão: saldos por unidade e identificação em taxas. Condômino: visão agregada sem unidade em quitações e atrasos.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'from', example: '2026-04-01' })

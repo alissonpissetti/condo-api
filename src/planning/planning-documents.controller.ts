@@ -60,7 +60,7 @@ export class PlanningDocumentsController {
   }
 
   @Get('documents/:documentId/file')
-  @ApiOperation({ summary: 'Descarregar PDF' })
+  @ApiOperation({ summary: 'Baixar PDF' })
   async download(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,

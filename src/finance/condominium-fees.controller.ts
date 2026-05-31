@@ -117,7 +117,7 @@ export class CondominiumFeesController {
   @Get('transparency-pdf')
   @ApiOperation({
     summary:
-      'PDF de transparência / fechamento mensal da competência: despesas do período, fundos, movimentos e extrato por unidade. Com `unitId`, antecede-se uma capa com slip de pagamento via PIX (cobrança em aberto e chave PIX configurada), seguida do mesmo relatório com destaque da unidade.',
+      'PDF de transparência financeira da competência: extrato das contas bancárias cadastradas, conta geral e cada fundo (movimentos linha a linha no período). Com `unitId`, antecede-se a capa slip PIX (cobranças em aberto e chave configurada); em seguida o extrato do condomínio.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'competenceYm', example: '2026-03' })
@@ -126,7 +126,7 @@ export class CondominiumFeesController {
     required: false,
     format: 'uuid',
     description:
-      'Opcional: PDF da unidade — capa slip PIX (QR e «Copia e cola» conforme configuração) quando houver taxa em aberto: o valor e o PIX refletem a soma de todas as competências em aberto para a unidade, com detalhamento na capa se forem mais de uma; em seguida o PDF de transparência da competência pedida com destaque da unidade.',
+      'Opcional: PDF da unidade — capa slip PIX (QR e «Copia e cola» conforme configuração) quando houver taxa em aberto: o valor e o PIX refletem a soma de todas as competências em aberto para a unidade, com detalhamento na capa se forem mais de uma; em seguida o extrato financeiro do período (contas, conta geral e fundos).',
   })
   async transparencyPdf(
     @CurrentUser() userId: string,
@@ -215,7 +215,7 @@ export class CondominiumFeesController {
   @Post(':chargeId/reopen-payment')
   @ApiOperation({
     summary:
-      'Reabrir pagamento da cobrança quitada: volta a «em aberto», desvincula receita e anexo; regista histórico (ficheiros antigos permanecem no storage para auditoria).',
+      'Reabrir pagamento da cobrança quitada: volta a «em aberto», desvincula receita e anexo; registra histórico (arquivos antigos permanecem no storage para auditoria).',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiParam({ name: 'chargeId', format: 'uuid' })
@@ -236,7 +236,7 @@ export class CondominiumFeesController {
   @Post(':chargeId/replace-payment-receipt')
   @ApiOperation({
     summary:
-      'Substituir apenas o anexo de comprovante de quitação (cobrança quitada). O ficheiro deve ser enviado antes (transaction-receipts); usa o mesmo storage que comprovantes (ex.: Nextcloud).',
+      'Substituir apenas o anexo de comprovante de quitação (cobrança quitada). O arquivo deve ser enviado antes (transaction-receipts); usa o mesmo storage que comprovantes (ex.: Nextcloud).',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiParam({ name: 'chargeId', format: 'uuid' })
@@ -273,6 +273,7 @@ export class CondominiumFeesController {
       chargeId,
       body?.incomeTransactionId,
       body?.paymentReceiptStorageKey ?? null,
+      body?.bankAccountId,
     );
   }
 

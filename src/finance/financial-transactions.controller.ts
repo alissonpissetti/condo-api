@@ -19,6 +19,8 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { BulkAssignWorkDto } from './dto/bulk-assign-work.dto';
+import { CreateTransferDto } from './dto/create-transfer.dto';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
 import { SettleTransactionDto } from './dto/settle-transaction.dto';
@@ -46,14 +48,53 @@ export class FinancialTransactionsController {
     required: false,
     description: 'Data final (AAAA-MM-DD), inclusive, filtro por occurred_on',
   })
+  @ApiQuery({
+    name: 'workId',
+    required: false,
+    description: 'Filtrar transações vinculadas a uma obra',
+  })
   findAll(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @Query('fundId') fundId?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('workId') workId?: string,
   ) {
-    return this.txService.findAll(condominiumId, userId, fundId, from, to);
+    return this.txService.findAll(
+      condominiumId,
+      userId,
+      fundId,
+      from,
+      to,
+      workId,
+    );
+  }
+
+  @Patch('bulk/work')
+  @ApiOperation({
+    summary:
+      'Vincular ou desvincular transações a uma obra em massa (ignora transferências)',
+  })
+  bulkAssignWork(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: BulkAssignWorkDto,
+  ) {
+    return this.txService.bulkAssignWork(condominiumId, userId, dto);
+  }
+
+  @Post('transfers')
+  @ApiOperation({
+    summary:
+      'Transferência entre contas bancárias (e opcionalmente entre fundos): cria saída + entrada ligadas, sem rateio por unidade.',
+  })
+  createTransfer(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: CreateTransferDto,
+  ) {
+    return this.txService.createTransfer(condominiumId, userId, dto);
   }
 
   @Post()

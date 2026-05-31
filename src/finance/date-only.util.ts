@@ -30,6 +30,14 @@ export function formatDateOnlyYmdUtc(value: Date | string): string {
   return `${y}-${mo}-${d}`;
 }
 
+/** Dia civil anterior a YYYY-MM-DD (UTC). */
+export function ymdBefore(ymd: string): string {
+  const d = parseDateOnlyFromApi(ymd.slice(0, 10));
+  const prev = new Date(d.getTime());
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  return formatDateOnlyYmdUtc(prev);
+}
+
 /** Data civil de hoje no fuso do servidor, como meio-dia UTC (coluna `date`). */
 export function todayLocalCalendarAsUtcNoon(): Date {
   const d = new Date();

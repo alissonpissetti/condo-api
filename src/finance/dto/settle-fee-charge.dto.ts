@@ -15,6 +15,15 @@ export class SettleFeeChargeDto {
   incomeTransactionId?: string;
 
   @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Conta que recebeu o pagamento. Obrigatório se não houver incomeTransactionId.',
+  })
+  @IsOptional()
+  @IsUUID()
+  bankAccountId?: string;
+
+  @ApiPropertyOptional({
     description:
       'Chave (relativa) do comprovante de pagamento já enviado para o storage de receipts (POST /transaction-receipts). Formato: `receipts/{uuid}.{pdf|png|jpg|jpeg|webp}`.',
     example: 'receipts/11111111-1111-4111-8111-111111111111.png',

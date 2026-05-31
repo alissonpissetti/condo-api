@@ -1,10 +1,10 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import type { Express } from 'express';
@@ -24,7 +24,8 @@ import { AssemblyType } from './enums/assembly-type.enum';
 import { GovernanceRole } from './enums/governance-role.enum';
 import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import { GovernanceService } from './governance.service';
-import { PollAttachmentStorageHelper } from './poll-attachment-storage.helper';
+import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
+import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { sanitizePollBodyRich } from './poll-body-sanitize';
 import {
   normalizeMulterOriginalName,
@@ -33,8 +34,6 @@ import {
 
 @Injectable()
 export class PlanningPollsService {
-  private readonly attachmentStorage: PollAttachmentStorageHelper;
-
   constructor(
     @InjectRepository(PlanningPoll)
     private readonly pollRepo: Repository<PlanningPoll>,
@@ -51,10 +50,9 @@ export class PlanningPollsService {
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     private readonly governance: GovernanceService,
-    config: ConfigService,
-  ) {
-    this.attachmentStorage = new PollAttachmentStorageHelper(config);
-  }
+    @Inject(RECEIPT_STORAGE)
+    private readonly attachmentStorage: ReceiptStoragePort,
+  ) {}
 
   private normalizeCompetenceYmdOrThrow(raw: string): string {
     const s = raw.trim().slice(0, 10);
@@ -432,7 +430,7 @@ export class PlanningPollsService {
     if (!mime) {
       mime = 'application/octet-stream';
     }
-    if (this.attachmentStorage.isAllowedMime(mime)) {
+    if (this.attachmentStorage.isAllowedPollAttachmentMime(mime)) {
       return mime;
     }
     const name = (file.originalname ?? '').toLowerCase();
@@ -454,12 +452,12 @@ export class PlanningPollsService {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
     const mimeType = this.normalizePollAttachmentMimeType(file);
-    if (!this.attachmentStorage.isAllowedMime(mimeType)) {
+    if (!this.attachmentStorage.isAllowedPollAttachmentMime(mimeType)) {
       throw new BadRequestException(
         'Tipo de arquivo não permitido. Use PDF, imagem, Word, texto ou áudio (ex.: .opus).',
       );
     }
-    const storageKey = await this.attachmentStorage.saveFile(
+    const storageKey = await this.attachmentStorage.savePollAttachment(
       condominiumId,
       file.buffer,
       mimeType,
@@ -503,7 +501,10 @@ export class PlanningPollsService {
     if (!att) {
       throw new NotFoundException('Anexo não encontrado.');
     }
-    await this.attachmentStorage.deleteFile(condominiumId, att.storageKey);
+    await this.attachmentStorage.deletePollAttachment(
+      condominiumId,
+      att.storageKey,
+    );
     await this.attachmentRepo.remove(att);
     return this.loadPollForCondo(condominiumId, poll.id);
   }
@@ -522,7 +523,7 @@ export class PlanningPollsService {
     if (!att) {
       throw new NotFoundException('Anexo não encontrado.');
     }
-    const { buffer, contentType } = await this.attachmentStorage.readFile(
+    const { buffer, contentType } = await this.attachmentStorage.readPollAttachment(
       condominiumId,
       att.storageKey,
     );
@@ -565,7 +566,7 @@ export class PlanningPollsService {
     }
     if (poll.status !== PlanningPollStatus.Closed) {
       throw new BadRequestException(
-        'Encerre a pauta antes de concluir o registo da ata.',
+        'Encerre a pauta antes de concluir o registro da ata.',
       );
     }
     poll.status = PlanningPollStatus.Decided;
@@ -584,7 +585,7 @@ export class PlanningPollsService {
     const poll = await this.loadPollForCondo(condominiumId, pollId);
     if (poll.assemblyType === AssemblyType.Ata) {
       throw new BadRequestException(
-        'Pautas «Ata» não têm opção vencedora; use «Concluir registo da ata».',
+        'Pautas «Ata» não têm opção vencedora; use «Concluir registro da ata».',
       );
     }
     if (poll.status !== PlanningPollStatus.Closed) {

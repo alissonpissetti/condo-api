@@ -47,10 +47,26 @@ export class UpdateTransactionDto {
   @IsString()
   description?: string | null;
 
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  bankAccountId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUUID()
   fundId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Obra associada; use null para remover. O lançamento passa a constar na timeline da obra.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  workId?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()

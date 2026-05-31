@@ -1,3 +1,12 @@
+import type { Express } from 'express';
+
+export type SupportAttachmentMeta = {
+  storageKey: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+};
+
 export interface ReceiptStoragePort {
   isValidReceiptKey(key: string | null | undefined): boolean;
   saveTransactionReceipt(
@@ -78,4 +87,50 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+
+  /** Anexos de informativos (`communication-attachments/…`). */
+  isValidCommunicationAttachmentKey(key: string | null | undefined): boolean;
+  isAllowedCommunicationAttachmentMime(mime: string): boolean;
+  communicationAttachmentMaxBytes(mime: string): number;
+  saveCommunicationAttachment(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string>;
+  readCommunicationAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
+  deleteCommunicationAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<void>;
+
+  /** Anexos de pautas (`poll-attachments/…`). */
+  isValidPollAttachmentKey(key: string | null | undefined): boolean;
+  isAllowedPollAttachmentMime(mime: string): boolean;
+  savePollAttachment(
+    condominiumId: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<string>;
+  readPollAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
+  deletePollAttachment(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<void>;
+
+  /** Anexos de chamados de suporte (`support-tickets/{ticketId}/…`, fora do condomínio). */
+  isSupportAttachmentKeyForTicket(ticketId: string, storageKey: string): boolean;
+  saveSupportAttachments(
+    ticketId: string,
+    files: Express.Multer.File[],
+  ): Promise<SupportAttachmentMeta[]>;
+  readSupportAttachment(
+    ticketId: string,
+    storageKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
 }

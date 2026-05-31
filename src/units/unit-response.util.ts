@@ -19,6 +19,7 @@ export function flattenUnitResponsiblesForApi(unit: Unit): void {
     } | null;
     responsiblePersonId?: string | null;
     responsibleLinks?: unknown;
+    financialResponsiblePersonId?: string | null;
     financialResponsibleName?: string | null;
   };
   const links = u.responsibleLinks as
@@ -46,8 +47,13 @@ export function flattenUnitResponsiblesForApi(unit: Unit): void {
   u.responsiblePeople = people;
   u.responsiblePerson = people[0] ?? null;
   u.responsiblePersonId = people[0]?.id ?? null;
+  const unitEntity = unit as Unit;
+  u.financialResponsiblePersonId =
+    unitEntity.financialResponsiblePersonId ??
+    unitEntity.financialResponsiblePerson?.id ??
+    null;
   u.financialResponsibleName = resolveUnitFinancialResponsibleDisplayName({
-    financialResponsiblePerson: (unit as Unit).financialResponsiblePerson,
+    financialResponsiblePerson: unitEntity.financialResponsiblePerson,
     responsibleLinks: links,
     responsibleDisplayName: u.responsibleDisplayName,
   });

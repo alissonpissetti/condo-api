@@ -69,7 +69,7 @@ export class PlanningPollsController {
   }
 
   @Get(':pollId/attachments/:attachmentId/file')
-  @ApiOperation({ summary: 'Descarregar anexo da pauta' })
+  @ApiOperation({ summary: 'Baixar anexo da pauta' })
   @ApiParam({ name: 'attachmentId' })
   async downloadAttachment(
     @CurrentUser() userId: string,
@@ -99,7 +99,7 @@ export class PlanningPollsController {
   )
   @ApiOperation({
     summary:
-      'Anexar ficheiro à pauta (síndico/titular), em qualquer estado, incl. após encerrar ou decidir. ' +
+      'Anexar arquivo à pauta (síndico/titular), em qualquer estado, incl. após encerrar ou decidir. ' +
       'Formatos: PDF, imagem, Word, texto ou áudio Opus / Ogg (ex.: .opus do WhatsApp).',
   })
   @ApiParam({ name: 'pollId' })
@@ -153,9 +153,9 @@ export class PlanningPollsController {
 
   @Get(':pollId/my-votes')
   @ApiOperation({
-    summary: 'Votos das unidades do utilizador nesta pauta',
+    summary: 'Votos das unidades do usuário nesta pauta',
     description:
-      'Por unidade em que o utilizador pode intervir, as opções atualmente registadas (mesmo se outro representante tiver submetido).',
+      'Por unidade em que o usuário pode intervir, as opções atualmente registradas (mesmo se outro representante tiver submetido).',
   })
   myVotesInPoll(
     @CurrentUser() userId: string,

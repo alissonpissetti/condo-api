@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
 import { Unit } from '../../units/unit.entity';
+import { CondominiumBankAccount } from './condominium-bank-account.entity';
 import { FinancialTransaction } from './financial-transaction.entity';
 
 export type CondominiumFeeChargeStatus = 'open' | 'paid';
@@ -60,6 +61,17 @@ export class CondominiumFeeCharge {
 
   @Column({ name: 'income_transaction_id', nullable: true })
   incomeTransactionId: string | null;
+
+  /** Conta onde o pagamento foi recebido (quitação sem receita vinculada). */
+  @Column({ name: 'bank_account_id', nullable: true })
+  bankAccountId: string | null;
+
+  @ManyToOne(() => CondominiumBankAccount, {
+    onDelete: 'SET NULL',
+    nullable: true,
+  })
+  @JoinColumn({ name: 'bank_account_id' })
+  bankAccount: CondominiumBankAccount | null;
 
   @ManyToOne(() => FinancialTransaction, {
     onDelete: 'SET NULL',

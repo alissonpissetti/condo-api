@@ -129,7 +129,7 @@ export class FinancialFundsService {
       const allocationRule =
         dto.allocationRule ?? fund.allocationRule ?? undefined;
       if (!allocationRule) {
-        throw new BadRequestException('Regra de rateio em falta.');
+        throw new BadRequestException('Regra de rateio ausente.');
       }
       const permCents =
         dto.permanentMonthlyDebitCents ??

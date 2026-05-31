@@ -605,7 +605,7 @@ export class PlanningDocumentsService {
     doc.y = boxTop + innerPad;
     doc.font('Helvetica').fontSize(9).fillColor(muted);
     doc.text(
-      'Utilizador que gerou este rascunho. A imagem abaixo corresponde à assinatura digital gravada em «Meus dados».',
+      'Usuário que gerou este rascunho. A imagem abaixo corresponde à assinatura digital gravada em «Meus dados».',
       { width: contentWidth - innerPad * 2, align: 'left' },
     );
     doc.moveDown(0.35);
@@ -777,13 +777,13 @@ export class PlanningDocumentsService {
       }
       if (poll.assemblyType === AssemblyType.Ata) {
         doc.text(
-          'Pauta de registo de assuntos sem votação eletrónica por opções no sistema; consignem-se as deliberações na presente ata e em documentos de suporte, nos termos estatutários.',
+          'Pauta de registro de assuntos sem votação eletrônica por opções no sistema; consignem-se as deliberações na presente ata e em documentos de suporte, nos termos estatutários.',
           { width: contentWidth, align: 'left', lineGap: 1.35 },
         );
         doc.moveDown(0.4);
       } else {
         doc.text(
-          `O escrutínio no sistema: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Registo no sistema: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
+          `O escrutínio no sistema: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Registro no sistema: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
           { width: contentWidth, align: 'left', lineGap: 1.3 },
         );
         doc.moveDown(0.45);

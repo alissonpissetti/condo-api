@@ -66,7 +66,7 @@ export class ListPlanningPollsQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'Quando `true`, cada pauta com votação passa a incluir `myVote` (voto da(s) unidade(s) do utilizador, se existir).',
+      'Quando `true`, cada pauta com votação passa a incluir `myVote` (voto da(s) unidade(s) do usuário, se existir).',
   })
   @IsOptional()
   @Transform(({ value }) =>

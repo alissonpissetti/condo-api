@@ -44,6 +44,11 @@ export class UpdateRecurringSeriesDto {
   @IsUUID()
   fundId?: string | null;
 
+  @ApiPropertyOptional({ description: 'Conta bancária para todas as parcelas.' })
+  @IsOptional()
+  @IsUUID()
+  bankAccountId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsObject()

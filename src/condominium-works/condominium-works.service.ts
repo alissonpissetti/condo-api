@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
@@ -13,8 +14,9 @@ import {
   encodeUploadOriginalFilename,
   repairMojibakeUtf8Filename,
 } from '../planning/upload-filename-encoding.util';
-import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
-import { RECEIPT_STORAGE } from '../storage/storage.tokens';
+import { usesLocalDiskOnly } from '../storage/storage-driver.util';
+import type { WorkDocumentStoragePort } from '../storage/work-document-storage.port';
+import { WORK_DOCUMENT_STORAGE } from '../storage/storage.tokens';
 import { User } from '../users/user.entity';
 import { CreateTimelineNoteDto } from './dto/create-timeline-note.dto';
 import { resolveTimelineRecordedAt } from './dto/parse-timeline-recorded-on';
@@ -33,7 +35,13 @@ import { CondominiumWorkTimelineEntry } from './entities/condominium-work-timeli
 import { CondominiumWork } from './entities/condominium-work.entity';
 import { WorkBudgetStatus } from './enums/work-budget-status.enum';
 import { WorkStatus } from './enums/work-status.enum';
+import { formatDateOnlyYmdUtc } from '../finance/date-only.util';
 import { WorkTimelineKind } from './enums/work-timeline-kind.enum';
+import {
+  buildBudgetUpdateAuditBody,
+  buildWorkCreateAuditBody,
+  buildWorkUpdateAuditBody,
+} from './work-timeline-edit.util';
 
 export type WorkTimelineAttachmentDto = {
   id: string;
@@ -52,6 +60,15 @@ export type WorkBudgetDto = {
   createdAt: string;
 };
 
+export type WorkTimelineTransactionDto = {
+  id: string;
+  kind: string;
+  title: string;
+  amountCents: string;
+  occurredOn: string;
+  paymentStatus: string;
+};
+
 export type WorkTimelineEntryDto = {
   id: string;
   kind: WorkTimelineKind;
@@ -61,6 +78,8 @@ export type WorkTimelineEntryDto = {
   authorUserId: string;
   authorDisplayName: string;
   createdAt: string;
+  financialTransactionId: string | null;
+  transaction: WorkTimelineTransactionDto | null;
 };
 
 export type WorkListItemDto = {
@@ -94,8 +113,9 @@ export class CondominiumWorksService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly governance: GovernanceService,
-    @Inject(RECEIPT_STORAGE)
-    private readonly storage: ReceiptStoragePort,
+    private readonly config: ConfigService,
+    @Inject(WORK_DOCUMENT_STORAGE)
+    private readonly workStorage: WorkDocumentStoragePort,
   ) {}
 
   async list(condominiumId: string, userId: string): Promise<WorkListItemDto[]> {
@@ -130,6 +150,11 @@ export class CondominiumWorksService {
       createdByUserId: userId,
     });
     await this.workRepo.save(work);
+    await this.recordEditTimelineEntry(
+      work.id,
+      userId,
+      buildWorkCreateAuditBody(work.status),
+    );
     return this.getOne(condominiumId, work.id, userId);
   }
 
@@ -158,6 +183,17 @@ export class CondominiumWorksService {
   ): Promise<WorkDetailDto> {
     await this.governance.assertManagement(condominiumId, userId);
     const work = await this.findWorkOrThrow(condominiumId, workId);
+    const auditBody = buildWorkUpdateAuditBody({
+      previousTitle: work.title,
+      previousDescription: work.description,
+      previousStatus: work.status,
+      nextTitle: dto.title !== undefined ? dto.title.trim() : undefined,
+      nextDescription:
+        dto.description !== undefined
+          ? (dto.description ?? '').trim() || null
+          : undefined,
+      nextStatus: dto.status,
+    });
     if (dto.title !== undefined) {
       work.title = dto.title.trim();
     }
@@ -168,6 +204,9 @@ export class CondominiumWorksService {
       work.status = dto.status;
     }
     await this.workRepo.save(work);
+    if (auditBody) {
+      await this.recordEditTimelineEntry(workId, userId, auditBody);
+    }
     return this.getOne(condominiumId, workId, userId);
   }
 
@@ -184,10 +223,10 @@ export class CondominiumWorksService {
     });
     for (const e of entries) {
       for (const a of e.attachments ?? []) {
-        await this.storage.deleteWorkDocument(condominiumId, a.storageKey);
+        await this.workStorage.deleteWorkDocument(condominiumId, a.storageKey);
       }
       if (e.storageKey) {
-        await this.storage.deleteWorkDocument(condominiumId, e.storageKey);
+        await this.workStorage.deleteWorkDocument(condominiumId, e.storageKey);
       }
     }
     await this.workRepo.delete({ id: work.id });
@@ -338,6 +377,29 @@ export class CondominiumWorksService {
     if (!budget) {
       throw new NotFoundException('Orçamento não encontrado.');
     }
+    const previous = {
+      supplierName: budget.supplierName,
+      amountCents: budget.amountCents,
+      validUntil: budget.validUntil,
+      status: budget.status,
+      notes: budget.notes,
+    };
+    const auditBody = buildBudgetUpdateAuditBody({
+      supplierName: budget.supplierName,
+      previous,
+      next: {
+        supplierName:
+          dto.supplierName !== undefined ? dto.supplierName.trim() : undefined,
+        amountCents: dto.amountCents,
+        validUntil: dto.validUntil,
+        status: dto.status,
+        notes:
+          dto.notes !== undefined
+            ? (dto.notes ?? '').trim() || null
+            : undefined,
+      },
+      formatCents: (cents) => this.formatCents(cents),
+    });
     if (dto.supplierName !== undefined) {
       budget.supplierName = dto.supplierName.trim();
     }
@@ -354,7 +416,11 @@ export class CondominiumWorksService {
       budget.notes = (dto.notes ?? '').trim() || null;
     }
     await this.budgetRepo.save(budget);
-    await this.touchWork(workId);
+    if (auditBody) {
+      await this.recordEditTimelineEntry(workId, userId, auditBody);
+    } else {
+      await this.touchWork(workId);
+    }
     return this.mapBudget(budget);
   }
 
@@ -387,10 +453,10 @@ export class CondominiumWorksService {
     if (!att || att.entry.workId !== workId) {
       throw new NotFoundException('Anexo não encontrado.');
     }
-    if (!this.storage.isValidWorkDocumentKey(att.storageKey)) {
+    if (!this.workStorage.isValidWorkDocumentKey(att.storageKey)) {
       throw new BadRequestException('Chave de arquivo inválida.');
     }
-    const read = await this.storage.readWorkDocument(
+    const read = await this.workStorage.readWorkDocument(
       condominiumId,
       att.storageKey,
     );
@@ -415,10 +481,10 @@ export class CondominiumWorksService {
     if (!entry?.storageKey) {
       throw new NotFoundException('Documento não encontrado.');
     }
-    if (!this.storage.isValidWorkDocumentKey(entry.storageKey)) {
+    if (!this.workStorage.isValidWorkDocumentKey(entry.storageKey)) {
       throw new BadRequestException('Chave de arquivo inválida.');
     }
-    const read = await this.storage.readWorkDocument(
+    const read = await this.workStorage.readWorkDocument(
       condominiumId,
       entry.storageKey,
     );
@@ -441,6 +507,11 @@ export class CondominiumWorksService {
     });
     if (!entry) {
       throw new NotFoundException('Registro não encontrado.');
+    }
+    if (entry.kind === WorkTimelineKind.Transaction) {
+      throw new BadRequestException(
+        'Lançamentos financeiros são removidos da timeline ao desvincular a obra em Transações.',
+      );
     }
     if (
       entry.kind !== WorkTimelineKind.Note &&
@@ -474,10 +545,36 @@ export class CondominiumWorksService {
     await this.workRepo.update({ id: workId }, { updatedAt: new Date() });
   }
 
+  private async recordEditTimelineEntry(
+    workId: string,
+    userId: string,
+    body: string,
+  ): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed) {
+      return;
+    }
+    const authorDisplayName = await this.resolveDisplayName(userId);
+    const entry = this.entryRepo.create({
+      id: randomUUID(),
+      workId,
+      kind: WorkTimelineKind.Edit,
+      body: trimmed,
+      authorUserId: userId,
+      authorDisplayName,
+    });
+    await this.entryRepo.save(entry);
+    await this.touchWork(workId);
+  }
+
   private async loadTimeline(workId: string): Promise<WorkTimelineEntryDto[]> {
     const entries = await this.entryRepo.find({
       where: { workId },
-      relations: { attachments: true, budget: true },
+      relations: {
+        attachments: true,
+        budget: true,
+        financialTransaction: true,
+      },
       order: { createdAt: 'DESC' },
     });
     return entries.map((e) => this.mapEntry(e, e.budget ?? null));
@@ -505,13 +602,24 @@ export class CondominiumWorksService {
     entryId: string,
     files: Express.Multer.File[],
   ): Promise<CondominiumWorkTimelineAttachment[]> {
-    const saved: CondominiumWorkTimelineAttachment[] = [];
     const list = files.filter((f) => f?.buffer?.length);
+    if (list.length > 0 && usesLocalDiskOnly(this.config)) {
+      const db = this.config.get<string>('DATABASE_URL') ?? '';
+      const likelyRemoteDb =
+        /@[^/]+:\d+\//.test(db) &&
+        !/localhost|127\.0\.0\.1/i.test(db);
+      if (likelyRemoteDb) {
+        throw new BadRequestException(
+          'Anexos de obras não podem ser gravados só no disco desta máquina enquanto a API usa base de dados remota. No .env da API, configure STORAGE_DRIVER=nextcloud (NEXTCLOUD_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_APP_PASSWORD) ou STORAGE_API_* para o mesmo storage usado em produção.',
+        );
+      }
+    }
+    const saved: CondominiumWorkTimelineAttachment[] = [];
     for (const file of list) {
       const originalFilename = encodeUploadOriginalFilename(
         file.originalname || 'anexo',
       ).slice(0, 255);
-      const storageKey = await this.storage.saveWorkDocument(
+      const storageKey = await this.workStorage.saveWorkDocument(
         condominiumId,
         workId,
         file.buffer,
@@ -572,6 +680,23 @@ export class CondominiumWorksService {
     return list;
   }
 
+  private mapTransactionEntry(
+    e: CondominiumWorkTimelineEntry,
+  ): WorkTimelineTransactionDto | null {
+    const tx = e.financialTransaction;
+    if (!tx) {
+      return null;
+    }
+    return {
+      id: tx.id,
+      kind: tx.kind,
+      title: tx.title,
+      amountCents: String(tx.amountCents),
+      occurredOn: formatDateOnlyYmdUtc(tx.occurredOn),
+      paymentStatus: tx.paymentStatus,
+    };
+  }
+
   private mapEntry(
     e: CondominiumWorkTimelineEntry,
     budget: CondominiumWorkBudget | null,
@@ -585,6 +710,11 @@ export class CondominiumWorksService {
       authorUserId: e.authorUserId,
       authorDisplayName: e.authorDisplayName,
       createdAt: e.createdAt.toISOString(),
+      financialTransactionId: e.financialTransactionId ?? null,
+      transaction:
+        e.kind === WorkTimelineKind.Transaction
+          ? this.mapTransactionEntry(e)
+          : null,
     };
   }
 

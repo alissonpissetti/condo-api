@@ -7,6 +7,7 @@ import {
   OneToMany,
   PrimaryColumn,
 } from 'typeorm';
+import { FinancialTransaction } from '../../finance/entities/financial-transaction.entity';
 import { CondominiumWorkTimelineAttachment } from './condominium-work-timeline-attachment.entity';
 import { User } from '../../users/user.entity';
 import { WorkTimelineKind } from '../enums/work-timeline-kind.enum';
@@ -56,6 +57,18 @@ export class CondominiumWorkTimelineEntry {
   @ManyToOne(() => CondominiumWorkBudget, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'budget_id' })
   budget: CondominiumWorkBudget | null;
+
+  @Column({
+    name: 'financial_transaction_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  financialTransactionId: string | null;
+
+  @ManyToOne(() => FinancialTransaction, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'financial_transaction_id' })
+  financialTransaction: FinancialTransaction | null;
 
   @Column({ name: 'author_user_id', type: 'varchar', length: 36 })
   authorUserId: string;

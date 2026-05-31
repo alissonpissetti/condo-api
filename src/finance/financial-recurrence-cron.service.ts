@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { FinancialTransactionRecurrence } from './entities/financial-transaction-recurrence.entity';
+import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { FinancialTransactionsService } from './financial-transactions.service';
 import {
   addRecurrenceOccurrence,
@@ -28,6 +29,7 @@ export class FinancialRecurrenceCronService {
     @InjectRepository(FinancialTransactionRecurrence)
     private readonly recurrenceRepo: Repository<FinancialTransactionRecurrence>,
     private readonly txService: FinancialTransactionsService,
+    private readonly bankAccounts: CondominiumBankAccountsService,
     private readonly config: ConfigService,
   ) {}
 
@@ -66,6 +68,9 @@ export class FinancialRecurrenceCronService {
     const align = r.competencyAlign ?? 'same_as_occurrence';
     const competencyOn = competencyFromOccurred(parseUtcYmd(occurredOn), align);
 
+    const bankAccountId =
+      r.bankAccountId ??
+      (await this.bankAccounts.resolvePrimaryAccountId(r.condominiumId));
     const dto: CreateTransactionDto = {
       kind: r.kind,
       amountCents: Number(r.amountCents),
@@ -73,6 +78,7 @@ export class FinancialRecurrenceCronService {
       competencyOn,
       title: r.title,
       description: r.description ?? undefined,
+      bankAccountId,
       fundId: r.fundId ?? undefined,
       allocationRule: r.allocationRule,
     };
