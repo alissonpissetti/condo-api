@@ -16,4 +16,9 @@ export interface WorkDocumentStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+  /** URL para abrir/baixar no browser (storage público ou presign S3). */
+  resolveWorkDocumentPublicUrl?(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null>;
 }

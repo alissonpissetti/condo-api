@@ -1,9 +1,9 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
-  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   BadRequestException,
   Injectable,
@@ -13,6 +13,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
+import { buildStoragePublicObjectUrl } from './storage-public-url.util';
+import { storageApiPutObject } from './storage-api-s3.util';
 import type { WorkDocumentStoragePort } from './work-document-storage.port';
 import {
   assertWorkAttachmentSize,
@@ -98,13 +100,16 @@ export class StorageApiWorkDocumentService
     const relativeKey = `works/${workId}/${id}.${ext}`;
     const objectKey = this.objectKey(condominiumId, relativeKey);
     try {
-      await this.client!.send(
-        new PutObjectCommand({
+      await storageApiPutObject(
+        this.client!,
+        this.config,
+        {
           Bucket: this.bucket,
           Key: objectKey,
           Body: buffer,
           ContentType: mimeType || 'application/octet-stream',
-        }),
+        },
+        this.logger,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -152,6 +157,39 @@ export class StorageApiWorkDocumentService
       contentType,
       filename: relativeKey.split('/').pop() ?? 'documento',
     };
+  }
+
+  async resolveWorkDocumentPublicUrl(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null> {
+    if (!this.isValidWorkDocumentKey(relativeKey)) {
+      return null;
+    }
+    if (!this.isEnabled()) {
+      return null;
+    }
+    const objectKey = this.objectKey(condominiumId, relativeKey);
+    const staticUrl = buildStoragePublicObjectUrl(this.config, objectKey);
+    const preferStatic =
+      !!this.config.get<string>('STORAGE_PUBLIC_BASE_URL')?.trim() ||
+      this.config.get<string>('STORAGE_PUBLIC_USE_PRESIGNED') === 'false';
+    if (preferStatic) {
+      return staticUrl;
+    }
+    try {
+      return await getSignedUrl(
+        this.client!,
+        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey }),
+        { expiresIn: 3600 },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `storage-api: falha ao gerar URL assinada; usando URL estática se houver — ${msg.slice(0, 120)}`,
+      );
+      return staticUrl;
+    }
   }
 
   async deleteWorkDocument(

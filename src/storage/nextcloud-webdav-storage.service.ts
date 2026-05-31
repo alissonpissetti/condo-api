@@ -83,6 +83,7 @@ export class NextcloudWebdavStorageService
 {
   private readonly logger = new Logger(NextcloudWebdavStorageService.name);
   private webdavUserRoot = '';
+  private nextcloudBase = '';
   private basePathSegments: string[] = [];
   private authHeader = '';
   private ready = false;
@@ -149,6 +150,7 @@ export class NextcloudWebdavStorageService
         'Nextcloud: defina NEXTCLOUD_APP_PASSWORD (senha de aplicação).',
       );
     }
+    this.nextcloudBase = base;
     this.webdavUserRoot = `${base}/remote.php/dav/files/${encodeURIComponent(user)}`;
     const prefix =
       this.config
@@ -576,6 +578,173 @@ export class NextcloudWebdavStorageService
     if (!res.ok && res.status !== 404) {
       /* ignore */
     }
+  }
+
+  /**
+   * Link público Nextcloud (`/s/…`), não caminho WebDAV na raiz do site (isso dá «Página não encontrada»).
+   */
+  async resolveWorkDocumentPublicUrl(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null> {
+    if (!this.isValidWorkDocumentKey(relativeKey)) {
+      return null;
+    }
+    const disable =
+      this.config.get<string>('NEXTCLOUD_PUBLIC_SHARES')?.trim().toLowerCase();
+    if (disable === 'false' || disable === '0' || disable === 'off') {
+      return null;
+    }
+    this.ensureReady();
+    const path = this.filesPathForShare(condominiumId, relativeKey);
+    try {
+      const existing = await this.findPublicShareUrl(path);
+      if (existing) {
+        return this.shareLinkForDirectFileAccess(existing);
+      }
+      const created = await this.createPublicShareLink(path);
+      return created ? this.shareLinkForDirectFileAccess(created) : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Nextcloud: não foi possível obter link público para ${path} — ${msg.slice(0, 160)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Caminho no «Ficheiros» do utilizador da API (ex. /condo-receipts/{condoId}/works/…). */
+  private filesPathForShare(condominiumId: string, relativeKey: string): string {
+    const segments = [
+      ...this.basePathSegments,
+      condominiumId,
+      ...relativeKey.split('/').filter(Boolean),
+    ];
+    return `/${segments.join('/')}`;
+  }
+
+  private ocsApiHeaders(): Record<string, string> {
+    return {
+      Authorization: this.authHeader,
+      'OCS-APIRequest': 'true',
+      Accept: 'application/json',
+    };
+  }
+
+  /**
+   * URL que o browser do utilizador deve usar (domínio público HTTPS).
+   * WebDAV/OCS continuam em NEXTCLOUD_URL (ex. hostname interno do Coolify).
+   */
+  private clientFacingNextcloudOrigin(): string {
+    const pub = (
+      this.config.get<string>('NEXTCLOUD_PUBLIC_URL')?.trim() ||
+      this.config.get<string>('STORAGE_PUBLIC_BASE_URL')?.trim() ||
+      this.nextcloudBase
+    ).replace(/\/+$/, '');
+    return pub;
+  }
+
+  /** Troca host interno (sslip.io, http) pelo domínio público (ex. storage.meucondominio.cloud). */
+  private rewriteShareLinkForClients(shareUrl: string): string {
+    const trimmed = shareUrl.trim();
+    if (!trimmed) {
+      return trimmed;
+    }
+    const publicOrigin = this.clientFacingNextcloudOrigin();
+    const internalOrigin = this.nextcloudBase.replace(/\/+$/, '');
+    if (!publicOrigin || publicOrigin === internalOrigin) {
+      return trimmed;
+    }
+    try {
+      const link = new URL(trimmed);
+      const pub = new URL(publicOrigin);
+      link.protocol = pub.protocol;
+      link.host = pub.host;
+      return link.toString();
+    } catch {
+      return trimmed.replace(internalOrigin, publicOrigin);
+    }
+  }
+
+  /** Partilha `/s/TOKEN` → ficheiro direto (necessário para `<img>` / `<video>`). */
+  private shareLinkForDirectFileAccess(sharePageUrl: string): string {
+    const rewritten = this.rewriteShareLinkForClients(sharePageUrl);
+    try {
+      const u = new URL(rewritten);
+      if (!u.pathname.endsWith('/download')) {
+        u.pathname = `${u.pathname.replace(/\/$/, '')}/download`;
+      }
+      return u.toString();
+    } catch {
+      return rewritten.endsWith('/download')
+        ? rewritten
+        : `${rewritten.replace(/\/$/, '')}/download`;
+    }
+  }
+
+  private async findPublicShareUrl(filesPath: string): Promise<string | null> {
+    const q = new URLSearchParams({ path: filesPath, format: 'json' });
+    const res = await fetch(
+      `${this.nextcloudBase}/ocs/v2.php/apps/files_sharing/api/v1/shares?${q}`,
+      { headers: this.ocsApiHeaders() },
+    );
+    if (!res.ok) {
+      return null;
+    }
+    const body = (await res.json()) as {
+      ocs?: { data?: unknown };
+    };
+    const raw = body?.ocs?.data;
+    const list = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const share = item as Record<string, unknown>;
+      const type = share['share_type'];
+      if (type !== 3 && type !== '3') continue;
+      const link = share['url'] ?? share['link'];
+      if (typeof link === 'string' && link.trim()) {
+        return link.trim();
+      }
+    }
+    return null;
+  }
+
+  private async createPublicShareLink(filesPath: string): Promise<string | null> {
+    const res = await fetch(
+      `${this.nextcloudBase}/ocs/v2.php/apps/files_sharing/api/v1/shares`,
+      {
+        method: 'POST',
+        headers: {
+          ...this.ocsApiHeaders(),
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          path: filesPath,
+          shareType: '3',
+          permissions: '1',
+        }),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      this.logger.warn(
+        `Nextcloud OCS criar partilha pública HTTP ${res.status}: ${text.slice(0, 200).replace(/\s+/g, ' ')}`,
+      );
+      if (res.status === 403 || res.status === 401) {
+        throw new BadRequestException(
+          'Nextcloud: utilizador da API sem permissão para criar links públicos. Em Segurança → Senhas de aplicação, confira o utilizador e ative partilha pública de ficheiros.',
+        );
+      }
+      return null;
+    }
+    let body: { ocs?: { data?: { url?: string } } };
+    try {
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      return null;
+    }
+    const url = body?.ocs?.data?.url?.trim();
+    return url || null;
   }
 
   isValidCommunicationAttachmentKey(key: string | null | undefined): boolean {

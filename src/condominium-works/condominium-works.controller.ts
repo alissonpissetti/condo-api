@@ -139,6 +139,52 @@ export class CondominiumWorksController {
     );
   }
 
+  @Post(':workId/timeline/legal')
+  @ApiOperation({
+    summary: 'Registro jurídico na timeline (contrato assinado ou documento)',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        body: {
+          type: 'string',
+          description: 'Título ou descrição do contrato (opcional).',
+        },
+        recordedOn: {
+          type: 'string',
+          description: 'Data e hora (YYYY-MM-DDTHH:mm). Padrão: agora.',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+        },
+      },
+      required: ['files'],
+    },
+  })
+  @UseInterceptors(
+    FilesInterceptor('files', undefined, {
+      limits: { fileSize: 100 * 1024 * 1024 },
+    }),
+  )
+  addLegal(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('workId', ParseUUIDPipe) workId: string,
+    @Body() body: Record<string, unknown>,
+    @UploadedFiles() files?: Express.Multer.File[],
+  ) {
+    return this.works.addLegal(
+      condominiumId,
+      workId,
+      userId,
+      body,
+      files ?? [],
+    );
+  }
+
   @Post(':workId/timeline/budgets')
   @ApiOperation({ summary: 'Orçamento na timeline (com anexos opcionais)' })
   @ApiConsumes('multipart/form-data')

@@ -2,6 +2,8 @@
  * Infere data/hora de nomes comuns (WhatsApp, capturas de tela, câmera).
  */
 
+import { parseSaoPauloLocalDateTime } from '../../common/america-sao-paulo-time.util';
+
 type ParsedParts = {
   year: number;
   month: number;
@@ -11,18 +13,26 @@ type ParsedParts = {
   second: number;
 };
 
+function partsToIsoLocal(p: ParsedParts): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}`;
+}
+
 function isValidParts(p: ParsedParts): boolean {
   if (p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31) return false;
   if (p.hour < 0 || p.hour > 23 || p.minute < 0 || p.minute > 59) return false;
   if (p.second < 0 || p.second > 59) return false;
-  const at = new Date(p.year, p.month - 1, p.day, p.hour, p.minute, p.second, 0);
-  if (Number.isNaN(at.getTime())) return false;
-  if (at.getTime() > Date.now()) return false;
-  return true;
+  try {
+    const at = parseSaoPauloLocalDateTime(partsToIsoLocal(p));
+    if (at.getTime() > Date.now()) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function partsToDate(p: ParsedParts): Date {
-  return new Date(p.year, p.month - 1, p.day, p.hour, p.minute, p.second, 0);
+  return parseSaoPauloLocalDateTime(partsToIsoLocal(p));
 }
 
 function tryPatterns(name: string): Date | null {

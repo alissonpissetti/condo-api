@@ -29,6 +29,10 @@ import {
   assertNoteHasContent,
   parseCreateTimelineNoteBody,
 } from './dto/parse-create-timeline-note-body';
+import {
+  assertLegalHasContent,
+  parseCreateTimelineLegalBody,
+} from './dto/parse-create-timeline-legal-body';
 import { CondominiumWorkBudget } from './entities/condominium-work-budget.entity';
 import { CondominiumWorkTimelineAttachment } from './entities/condominium-work-timeline-attachment.entity';
 import { CondominiumWorkTimelineEntry } from './entities/condominium-work-timeline-entry.entity';
@@ -36,6 +40,7 @@ import { CondominiumWork } from './entities/condominium-work.entity';
 import { WorkBudgetStatus } from './enums/work-budget-status.enum';
 import { WorkStatus } from './enums/work-status.enum';
 import { formatDateOnlyYmdUtc } from '../finance/date-only.util';
+import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { WorkTimelineKind } from './enums/work-timeline-kind.enum';
 import {
   buildBudgetUpdateAuditBody,
@@ -48,6 +53,8 @@ export type WorkTimelineAttachmentDto = {
   originalFilename: string;
   mimeType: string | null;
   sizeBytes: number | null;
+  /** URL no storage (ex. storage.meucondominio.cloud); null = usar download via API. */
+  fileUrl: string | null;
 };
 
 export type WorkBudgetDto = {
@@ -93,8 +100,22 @@ export type WorkListItemDto = {
   lastActivityAt: string | null;
 };
 
+export type WorkCostsSummaryDto = {
+  /** Despesas vinculadas à obra (centavos), exceto canceladas. */
+  totalCents: string;
+  expenseCount: number;
+  /** Orçamento aprovado (valor de referência da obra). */
+  approvedBudgetCents: string | null;
+  approvedBudgetId: string | null;
+  approvedBudgetSupplier: string | null;
+  budgetCount: number;
+  /** Pago ÷ orçamento aprovado (0–100+); null sem orçamento aprovado. */
+  progressPercent: number | null;
+};
+
 export type WorkDetailDto = WorkListItemDto & {
   timeline: WorkTimelineEntryDto[];
+  costsSummary: WorkCostsSummaryDto;
 };
 
 @Injectable()
@@ -108,6 +129,8 @@ export class CondominiumWorksService {
     private readonly timelineAttachmentRepo: Repository<CondominiumWorkTimelineAttachment>,
     @InjectRepository(CondominiumWorkTimelineEntry)
     private readonly entryRepo: Repository<CondominiumWorkTimelineEntry>,
+    @InjectRepository(FinancialTransaction)
+    private readonly financialTxRepo: Repository<FinancialTransaction>,
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     @InjectRepository(User)
@@ -165,13 +188,17 @@ export class CondominiumWorksService {
   ): Promise<WorkDetailDto> {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const work = await this.findWorkOrThrow(condominiumId, workId);
-    const timeline = await this.loadTimeline(workId);
+    const [timeline, costsSummary] = await Promise.all([
+      this.loadTimeline(condominiumId, workId),
+      this.loadCostsSummary(condominiumId, workId),
+    ]);
     const lastAt = timeline[0]
       ? new Date(timeline[0].createdAt)
       : null;
     return {
       ...this.toListItem(work, lastAt),
       timeline,
+      costsSummary,
     };
   }
 
@@ -271,7 +298,55 @@ export class CondominiumWorksService {
       list,
     );
     await this.touchWork(workId);
-    return this.mapEntry(entry, null);
+    return await this.mapEntry(condominiumId, entry, null);
+  }
+
+  async addLegal(
+    condominiumId: string,
+    workId: string,
+    userId: string,
+    bodyRaw: Record<string, unknown>,
+    files: Express.Multer.File[] = [],
+  ): Promise<WorkTimelineEntryDto> {
+    await this.governance.assertManagement(condominiumId, userId);
+    await this.findWorkOrThrow(condominiumId, workId);
+    const dto = parseCreateTimelineLegalBody(bodyRaw);
+    const list = files.filter((f) => f?.buffer?.length);
+    assertLegalHasContent(dto, list.length);
+    const title = (dto.body ?? '').trim();
+    const body =
+      title.length > 0
+        ? title
+        : list.length === 1
+          ? `Documento jurídico: ${repairMojibakeUtf8Filename(list[0].originalname || 'contrato')}`
+          : `Documentos jurídicos (${list.length} arquivos)`;
+    const authorDisplayName = await this.resolveDisplayName(userId);
+    const recordedAt = resolveTimelineRecordedAt(
+      resolveRecordedOnWithFilenameFallback(
+        dto.recordedOn,
+        list.map((f) =>
+          encodeUploadOriginalFilename(f.originalname || 'anexo'),
+        ),
+      ),
+    );
+    const entry = this.entryRepo.create({
+      id: randomUUID(),
+      workId,
+      kind: WorkTimelineKind.Legal,
+      body,
+      authorUserId: userId,
+      authorDisplayName,
+      createdAt: recordedAt,
+    });
+    await this.entryRepo.save(entry);
+    entry.attachments = await this.saveEntryAttachments(
+      condominiumId,
+      workId,
+      entry.id,
+      list,
+    );
+    await this.touchWork(workId);
+    return await this.mapEntry(condominiumId, entry, null);
   }
 
   async addBudget(
@@ -305,6 +380,9 @@ export class CondominiumWorksService {
       createdAt: recordedAt,
     });
     await this.budgetRepo.save(budget);
+    if (budget.status === WorkBudgetStatus.Approved) {
+      await this.ensureSingleApprovedBudget(workId, budget.id);
+    }
     const summary = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
     const entry = this.entryRepo.create({
       id: randomUUID(),
@@ -324,7 +402,7 @@ export class CondominiumWorksService {
       list,
     );
     await this.touchWork(workId);
-    return this.mapEntry(entry, budget);
+    return await this.mapEntry(condominiumId, entry, budget);
   }
 
   async addTimelineEntryAttachments(
@@ -345,10 +423,11 @@ export class CondominiumWorksService {
     }
     if (
       entry.kind !== WorkTimelineKind.Note &&
-      entry.kind !== WorkTimelineKind.Budget
+      entry.kind !== WorkTimelineKind.Budget &&
+      entry.kind !== WorkTimelineKind.Legal
     ) {
       throw new BadRequestException(
-        'Só é possível anexar arquivos a comentários ou orçamentos.',
+        'Só é possível anexar arquivos a comentários, registros jurídicos ou orçamentos.',
       );
     }
     const added = await this.saveEntryAttachments(
@@ -359,7 +438,7 @@ export class CondominiumWorksService {
     );
     entry.attachments = [...(entry.attachments ?? []), ...added];
     await this.touchWork(workId);
-    return this.mapEntry(entry, entry.budget ?? null);
+    return await this.mapEntry(condominiumId, entry, entry.budget ?? null);
   }
 
   async updateBudget(
@@ -416,6 +495,9 @@ export class CondominiumWorksService {
       budget.notes = (dto.notes ?? '').trim() || null;
     }
     await this.budgetRepo.save(budget);
+    if (budget.status === WorkBudgetStatus.Approved) {
+      await this.ensureSingleApprovedBudget(workId, budget.id);
+    }
     if (auditBody) {
       await this.recordEditTimelineEntry(workId, userId, auditBody);
     } else {
@@ -515,10 +597,11 @@ export class CondominiumWorksService {
     }
     if (
       entry.kind !== WorkTimelineKind.Note &&
-      entry.kind !== WorkTimelineKind.Budget
+      entry.kind !== WorkTimelineKind.Budget &&
+      entry.kind !== WorkTimelineKind.Legal
     ) {
       throw new BadRequestException(
-        'Só é possível remover comentários ou orçamentos da timeline.',
+        'Só é possível remover comentários, jurídico ou orçamentos da timeline.',
       );
     }
     if (entry.kind === WorkTimelineKind.Budget && entry.budgetId) {
@@ -567,7 +650,10 @@ export class CondominiumWorksService {
     await this.touchWork(workId);
   }
 
-  private async loadTimeline(workId: string): Promise<WorkTimelineEntryDto[]> {
+  private async loadTimeline(
+    condominiumId: string,
+    workId: string,
+  ): Promise<WorkTimelineEntryDto[]> {
     const entries = await this.entryRepo.find({
       where: { workId },
       relations: {
@@ -577,7 +663,68 @@ export class CondominiumWorksService {
       },
       order: { createdAt: 'DESC' },
     });
-    return entries.map((e) => this.mapEntry(e, e.budget ?? null));
+    return Promise.all(
+      entries.map((e) =>
+        this.mapEntry(condominiumId, e, e.budget ?? null),
+      ),
+    );
+  }
+
+  private async loadCostsSummary(
+    condominiumId: string,
+    workId: string,
+  ): Promise<WorkCostsSummaryDto> {
+    const [paidRaw, approvedBudget, budgetCount] = await Promise.all([
+      this.financialTxRepo
+        .createQueryBuilder('t')
+        .select('COALESCE(SUM(t.amount_cents), 0)', 'total')
+        .addSelect('COUNT(*)', 'count')
+        .where('t.condominium_id = :condominiumId', { condominiumId })
+        .andWhere('t.work_id = :workId', { workId })
+        .andWhere('t.kind = :kind', { kind: 'expense' })
+        .andWhere('t.payment_status != :cancelled', {
+          cancelled: 'cancelled',
+        })
+        .getRawOne<{ total: string | number | null; count: string | number }>(),
+      this.budgetRepo.findOne({
+        where: { workId, status: WorkBudgetStatus.Approved },
+      }),
+      this.budgetRepo.count({ where: { workId } }),
+    ]);
+
+    const paidCents = Number(paidRaw?.total ?? 0);
+    const expenseCount = Number(paidRaw?.count ?? 0);
+    const approvedCents = approvedBudget?.amountCents ?? null;
+    let progressPercent: number | null = null;
+    if (approvedCents != null && approvedCents > 0) {
+      progressPercent = Math.round((paidCents / approvedCents) * 100);
+    }
+
+    return {
+      totalCents: String(paidCents),
+      expenseCount: Number.isFinite(expenseCount) ? expenseCount : 0,
+      approvedBudgetCents:
+        approvedCents != null ? String(approvedCents) : null,
+      approvedBudgetId: approvedBudget?.id ?? null,
+      approvedBudgetSupplier: approvedBudget?.supplierName ?? null,
+      budgetCount,
+      progressPercent,
+    };
+  }
+
+  /** Apenas um orçamento aprovado por obra; os demais voltam para «Em análise». */
+  private async ensureSingleApprovedBudget(
+    workId: string,
+    keepBudgetId: string,
+  ): Promise<void> {
+    await this.budgetRepo
+      .createQueryBuilder()
+      .update(CondominiumWorkBudget)
+      .set({ status: WorkBudgetStatus.UnderReview })
+      .where('work_id = :workId', { workId })
+      .andWhere('status = :approved', { approved: WorkBudgetStatus.Approved })
+      .andWhere('id != :keepBudgetId', { keepBudgetId })
+      .execute();
   }
 
   private toListItem(
@@ -652,16 +799,35 @@ export class CondominiumWorksService {
     };
   }
 
-  private mapEntryAttachments(
+  private async resolveAttachmentFileUrl(
+    condominiumId: string,
+    storageKey: string | null | undefined,
+  ): Promise<string | null> {
+    if (!storageKey || !this.workStorage.isValidWorkDocumentKey(storageKey)) {
+      return null;
+    }
+    const resolve = this.workStorage.resolveWorkDocumentPublicUrl;
+    if (typeof resolve !== 'function') {
+      return null;
+    }
+    return resolve.call(this.workStorage, condominiumId, storageKey);
+  }
+
+  private async mapEntryAttachments(
+    condominiumId: string,
     e: CondominiumWorkTimelineEntry,
-  ): WorkTimelineAttachmentDto[] {
-    const list: WorkTimelineAttachmentDto[] = (e.attachments ?? []).map(
-      (a) => ({
+  ): Promise<WorkTimelineAttachmentDto[]> {
+    const list: WorkTimelineAttachmentDto[] = await Promise.all(
+      (e.attachments ?? []).map(async (a) => ({
         id: a.id,
         originalFilename: repairMojibakeUtf8Filename(a.originalFilename),
         mimeType: a.mimeType,
         sizeBytes: a.sizeBytes,
-      }),
+        fileUrl: await this.resolveAttachmentFileUrl(
+          condominiumId,
+          a.storageKey,
+        ),
+      })),
     );
     if (
       e.kind === WorkTimelineKind.Document &&
@@ -675,6 +841,10 @@ export class CondominiumWorksService {
         ),
         mimeType: e.mimeType ?? null,
         sizeBytes: e.sizeBytes ?? null,
+        fileUrl: await this.resolveAttachmentFileUrl(
+          condominiumId,
+          e.storageKey,
+        ),
       });
     }
     return list;
@@ -697,16 +867,17 @@ export class CondominiumWorksService {
     };
   }
 
-  private mapEntry(
+  private async mapEntry(
+    condominiumId: string,
     e: CondominiumWorkTimelineEntry,
     budget: CondominiumWorkBudget | null,
-  ): WorkTimelineEntryDto {
+  ): Promise<WorkTimelineEntryDto> {
     return {
       id: e.id,
       kind: e.kind,
       body: e.body,
       budget: budget ? this.mapBudget(budget) : null,
-      attachments: this.mapEntryAttachments(e),
+      attachments: await this.mapEntryAttachments(condominiumId, e),
       authorUserId: e.authorUserId,
       authorDisplayName: e.authorDisplayName,
       createdAt: e.createdAt.toISOString(),
