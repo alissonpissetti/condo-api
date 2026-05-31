@@ -1,0 +1,27 @@
+# Produção na VPS (repo condo-api = raiz do DEPLOY_PATH).
+#   cp .env.example .env
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+
+name: condo-api
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: condo-api:${IMAGE_TAG:-latest}
+    container_name: condo-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    ports:
+      - "${API_PORT:-3000}:3000"
+    volumes:
+      - condo_api_storage:/app/storage
+
+volumes:
+  condo_api_storage:
