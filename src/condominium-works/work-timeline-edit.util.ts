@@ -1,5 +1,7 @@
+import { saoPauloPartsFromInstant } from '../common/america-sao-paulo-time.util';
 import { WorkBudgetStatus } from './enums/work-budget-status.enum';
 import { WorkStatus } from './enums/work-status.enum';
+import { WorkTimelineKind } from './enums/work-timeline-kind.enum';
 
 const WORK_STATUS_LABELS_PT: Record<WorkStatus, string> = {
   [WorkStatus.Planned]: 'Planejada',
@@ -138,4 +140,62 @@ export function buildBudgetUpdateAuditBody(input: {
   }
   const head = `Orçamento «${input.supplierName.trim()}»:`;
   return `${head}\n${lines.join('\n')}`;
+}
+
+function formatTimelineInstantPt(d: Date): string {
+  const p = saoPauloPartsFromInstant(d);
+  const dd = String(p.day).padStart(2, '0');
+  const mm = String(p.month).padStart(2, '0');
+  const hh = String(p.hour).padStart(2, '0');
+  const mi = String(p.minute).padStart(2, '0');
+  return `${dd}/${mm}/${p.year} ${hh}:${mi}`;
+}
+
+const TIMELINE_KIND_LABELS_PT: Record<
+  WorkTimelineKind.Note | WorkTimelineKind.Legal | WorkTimelineKind.Budget,
+  string
+> = {
+  [WorkTimelineKind.Note]: 'Comentário',
+  [WorkTimelineKind.Legal]: 'Registro jurídico',
+  [WorkTimelineKind.Budget]: 'Orçamento',
+};
+
+export function buildTimelineEntryUpdateAuditBody(input: {
+  kind: WorkTimelineKind.Note | WorkTimelineKind.Legal | WorkTimelineKind.Budget;
+  previousBody: string | null;
+  previousCreatedAt: Date;
+  nextBody?: string | null;
+  nextCreatedAt?: Date;
+}): string | null {
+  const lines: string[] = [];
+  const kindLabel = TIMELINE_KIND_LABELS_PT[input.kind];
+
+  if (input.nextCreatedAt !== undefined) {
+    const oldMs = input.previousCreatedAt.getTime();
+    const newMs = input.nextCreatedAt.getTime();
+    if (oldMs !== newMs) {
+      lines.push(
+        `Data/hora alterada de ${formatTimelineInstantPt(input.previousCreatedAt)} para ${formatTimelineInstantPt(input.nextCreatedAt)}.`,
+      );
+    }
+  }
+
+  if (input.nextBody !== undefined) {
+    const oldText = (input.previousBody ?? '').trim();
+    const newText = (input.nextBody ?? '').trim();
+    if (oldText !== newText) {
+      if (!oldText && newText) {
+        lines.push('Texto adicionado.');
+      } else if (oldText && !newText) {
+        lines.push('Texto removido.');
+      } else {
+        lines.push('Texto atualizado.');
+      }
+    }
+  }
+
+  if (!lines.length) {
+    return null;
+  }
+  return `${kindLabel} na timeline:\n${lines.join('\n')}`;
 }

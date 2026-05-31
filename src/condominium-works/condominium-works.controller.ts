@@ -27,9 +27,11 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { buildContentDispositionHeader } from '../common/http-content-disposition.util';
 import { CondominiumWorksService } from './condominium-works.service';
 import { parseCreateWorkBudgetBody } from './dto/parse-work-budget-body';
 import { CreateWorkDto } from './dto/create-work.dto';
+import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
 import { UpdateWorkBudgetDto } from './dto/update-work-budget.dto';
 import { UpdateWorkDto } from './dto/update-work.dto';
 
@@ -295,7 +297,10 @@ export class CondominiumWorksController {
         userId,
       );
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader(
+      'Content-Disposition',
+      buildContentDispositionHeader('attachment', filename),
+    );
     res.send(buffer);
   }
 
@@ -316,8 +321,31 @@ export class CondominiumWorksController {
         userId,
       );
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader(
+      'Content-Disposition',
+      buildContentDispositionHeader('attachment', filename),
+    );
     res.send(buffer);
+  }
+
+  @Patch(':workId/timeline/:entryId')
+  @ApiOperation({
+    summary: 'Editar comentário, registro jurídico ou data de orçamento na timeline',
+  })
+  updateTimelineEntry(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('workId', ParseUUIDPipe) workId: string,
+    @Param('entryId', ParseUUIDPipe) entryId: string,
+    @Body() dto: UpdateTimelineEntryDto,
+  ) {
+    return this.works.updateTimelineEntry(
+      condominiumId,
+      workId,
+      entryId,
+      userId,
+      dto,
+    );
   }
 
   @Delete(':workId/timeline/:entryId')

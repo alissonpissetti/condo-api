@@ -4,6 +4,17 @@
  * `new Date("YYYY-MM-DD")` no JS é meia-noite **UTC**; em fusos atrás de UTC o driver
  * pode gravar o **dia anterior**. Usamos meio-dia UTC no dia civil desejado.
  */
+/** Normaliza parâmetro de filtro `from`/`to` (YYYY-MM-DD) para SQL em colunas `date`. */
+export function normalizeYmdFilterParam(
+  value: string | undefined,
+): string | undefined {
+  const head = value?.trim().slice(0, 10);
+  if (!head || !/^\d{4}-\d{2}-\d{2}$/.test(head)) {
+    return undefined;
+  }
+  return head;
+}
+
 export function parseDateOnlyFromApi(ymd: string): Date {
   const head = ymd.trim().slice(0, 10);
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(head);

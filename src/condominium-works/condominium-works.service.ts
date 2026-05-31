@@ -24,6 +24,7 @@ import { resolveRecordedOnWithFilenameFallback } from './utils/filename-recorded
 import { CreateWorkBudgetDto } from './dto/create-work-budget.dto';
 import { CreateWorkDto } from './dto/create-work.dto';
 import { UpdateWorkBudgetDto } from './dto/update-work-budget.dto';
+import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
 import { UpdateWorkDto } from './dto/update-work.dto';
 import {
   assertNoteHasContent,
@@ -39,11 +40,16 @@ import { CondominiumWorkTimelineEntry } from './entities/condominium-work-timeli
 import { CondominiumWork } from './entities/condominium-work.entity';
 import { WorkBudgetStatus } from './enums/work-budget-status.enum';
 import { WorkStatus } from './enums/work-status.enum';
-import { formatDateOnlyYmdUtc } from '../finance/date-only.util';
+import { sanitizeDownloadFilename } from '../common/http-content-disposition.util';
+import {
+  formatDateOnlyYmdUtc,
+  todayLocalCalendarAsUtcNoon,
+} from '../finance/date-only.util';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { WorkTimelineKind } from './enums/work-timeline-kind.enum';
 import {
   buildBudgetUpdateAuditBody,
+  buildTimelineEntryUpdateAuditBody,
   buildWorkCreateAuditBody,
   buildWorkUpdateAuditBody,
 } from './work-timeline-edit.util';
@@ -101,15 +107,28 @@ export type WorkListItemDto = {
 };
 
 export type WorkCostsSummaryDto = {
-  /** Despesas vinculadas à obra (centavos), exceto canceladas. */
+  /**
+   * Total previsto (pago + atrasado + futuro), centavos.
+   * Mantido como `totalCents` por compatibilidade com o front.
+   */
   totalCents: string;
+  forecastCents: string;
   expenseCount: number;
-  /** Orçamento aprovado (valor de referência da obra). */
+  paidCents: string;
+  paidCount: number;
+  /** Pendentes com data da transação anterior a hoje. */
+  overdueCents: string;
+  overdueCount: number;
+  /** Pendentes com data da transação hoje ou futura. */
+  futureCents: string;
+  futureCount: number;
+  /** Soma dos orçamentos aprovados (centavos). */
   approvedBudgetCents: string | null;
-  approvedBudgetId: string | null;
-  approvedBudgetSupplier: string | null;
+  approvedBudgetCount: number;
+  /** Fornecedores dos orçamentos aprovados (texto para exibição). */
+  approvedBudgetSuppliers: string | null;
   budgetCount: number;
-  /** Pago ÷ orçamento aprovado (0–100+); null sem orçamento aprovado. */
+  /** Previsto ÷ soma dos aprovados (0–100+); null sem orçamento aprovado. */
   progressPercent: number | null;
 };
 
@@ -380,9 +399,6 @@ export class CondominiumWorksService {
       createdAt: recordedAt,
     });
     await this.budgetRepo.save(budget);
-    if (budget.status === WorkBudgetStatus.Approved) {
-      await this.ensureSingleApprovedBudget(workId, budget.id);
-    }
     const summary = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
     const entry = this.entryRepo.create({
       id: randomUUID(),
@@ -495,9 +511,7 @@ export class CondominiumWorksService {
       budget.notes = (dto.notes ?? '').trim() || null;
     }
     await this.budgetRepo.save(budget);
-    if (budget.status === WorkBudgetStatus.Approved) {
-      await this.ensureSingleApprovedBudget(workId, budget.id);
-    }
+    await this.syncBudgetTimelineEntryBody(workId, budget);
     if (auditBody) {
       await this.recordEditTimelineEntry(workId, userId, auditBody);
     } else {
@@ -542,9 +556,9 @@ export class CondominiumWorksService {
       condominiumId,
       att.storageKey,
     );
-    const safeName = repairMojibakeUtf8Filename(
-      att.originalFilename?.trim() || read.filename,
-    ).replace(/"/g, '');
+    const safeName = sanitizeDownloadFilename(
+      repairMojibakeUtf8Filename(att.originalFilename?.trim() || read.filename),
+    );
     return { ...read, filename: safeName };
   }
 
@@ -570,10 +584,150 @@ export class CondominiumWorksService {
       condominiumId,
       entry.storageKey,
     );
-    const safeName = repairMojibakeUtf8Filename(
-      entry.originalFilename?.trim() || read.filename,
-    ).replace(/"/g, '');
+    const safeName = sanitizeDownloadFilename(
+      repairMojibakeUtf8Filename(
+        entry.originalFilename?.trim() || read.filename,
+      ),
+    );
     return { ...read, filename: safeName };
+  }
+
+  async updateTimelineEntry(
+    condominiumId: string,
+    workId: string,
+    entryId: string,
+    userId: string,
+    dto: UpdateTimelineEntryDto,
+  ): Promise<WorkTimelineEntryDto> {
+    await this.governance.assertManagement(condominiumId, userId);
+    await this.findWorkOrThrow(condominiumId, workId);
+
+    const hasBody = dto.body !== undefined;
+    const hasRecordedOn =
+      dto.recordedOn !== undefined && dto.recordedOn.trim().length > 0;
+    const hasBudgetFields =
+      dto.amountCents !== undefined || dto.supplierName !== undefined;
+    if (!hasBody && !hasRecordedOn && !hasBudgetFields) {
+      throw new BadRequestException(
+        'Informe ao menos um campo para atualizar.',
+      );
+    }
+
+    const entry = await this.entryRepo.findOne({
+      where: { id: entryId, workId },
+      relations: { attachments: true, budget: true },
+    });
+    if (!entry) {
+      throw new NotFoundException('Registro não encontrado.');
+    }
+    if (
+      entry.kind !== WorkTimelineKind.Note &&
+      entry.kind !== WorkTimelineKind.Legal &&
+      entry.kind !== WorkTimelineKind.Budget
+    ) {
+      throw new BadRequestException(
+        'Só é possível editar comentários, registros jurídicos ou orçamentos.',
+      );
+    }
+
+    if (hasBody && entry.kind === WorkTimelineKind.Budget) {
+      throw new BadRequestException(
+        'O texto do card de orçamento é gerado automaticamente; altere fornecedor ou valor.',
+      );
+    }
+
+    if (hasBudgetFields) {
+      if (entry.kind !== WorkTimelineKind.Budget || !entry.budget) {
+        throw new BadRequestException(
+          'Só é possível alterar valor e fornecedor em orçamentos.',
+        );
+      }
+    }
+
+    const previousBody = entry.body;
+    const previousCreatedAt = new Date(entry.createdAt);
+
+    let nextBody: string | null | undefined;
+    if (hasBody) {
+      nextBody = (dto.body ?? '').trim() || null;
+      if (entry.kind === WorkTimelineKind.Note) {
+        const attachmentCount = entry.attachments?.length ?? 0;
+        if (!nextBody && attachmentCount < 1) {
+          throw new BadRequestException(
+            'O comentário precisa de texto ou ao menos um anexo.',
+          );
+        }
+      }
+      entry.body = nextBody;
+    }
+
+    let nextCreatedAt: Date | undefined;
+    if (hasRecordedOn) {
+      nextCreatedAt = resolveTimelineRecordedAt(dto.recordedOn!.trim());
+      entry.createdAt = nextCreatedAt;
+      if (entry.kind === WorkTimelineKind.Budget && entry.budget) {
+        entry.budget.createdAt = nextCreatedAt;
+        await this.budgetRepo.save(entry.budget);
+      }
+    }
+
+    let budgetAuditBody: string | null = null;
+    if (hasBudgetFields && entry.budget) {
+      const budget = entry.budget;
+      const previousBudget = {
+        supplierName: budget.supplierName,
+        amountCents: budget.amountCents,
+        validUntil: budget.validUntil,
+        status: budget.status,
+        notes: budget.notes,
+      };
+      budgetAuditBody = buildBudgetUpdateAuditBody({
+        supplierName: budget.supplierName,
+        previous: previousBudget,
+        next: {
+          supplierName:
+            dto.supplierName !== undefined
+              ? dto.supplierName.trim()
+              : undefined,
+          amountCents: dto.amountCents,
+        },
+        formatCents: (cents) => this.formatCents(cents),
+      });
+      if (dto.supplierName !== undefined) {
+        budget.supplierName = dto.supplierName.trim();
+      }
+      if (dto.amountCents !== undefined) {
+        budget.amountCents = dto.amountCents;
+      }
+      await this.budgetRepo.save(budget);
+      entry.body = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
+    }
+
+    const timelineAuditBody = buildTimelineEntryUpdateAuditBody({
+      kind: entry.kind,
+      previousBody,
+      previousCreatedAt,
+      nextBody: hasBody ? nextBody! : undefined,
+      nextCreatedAt,
+    });
+
+    await this.entryRepo.save(entry);
+
+    if (budgetAuditBody) {
+      await this.recordEditTimelineEntry(workId, userId, budgetAuditBody);
+    }
+    if (timelineAuditBody) {
+      await this.recordEditTimelineEntry(workId, userId, timelineAuditBody);
+    }
+    if (!budgetAuditBody && !timelineAuditBody) {
+      await this.touchWork(workId);
+    }
+
+    return await this.mapEntry(
+      condominiumId,
+      entry,
+      entry.budget ?? null,
+    );
   }
 
   async removeTimelineEntry(
@@ -628,6 +782,23 @@ export class CondominiumWorksService {
     await this.workRepo.update({ id: workId }, { updatedAt: new Date() });
   }
 
+  private async syncBudgetTimelineEntryBody(
+    workId: string,
+    budget: CondominiumWorkBudget,
+  ): Promise<void> {
+    const entry = await this.entryRepo.findOne({
+      where: { workId, budgetId: budget.id, kind: WorkTimelineKind.Budget },
+    });
+    if (!entry) {
+      return;
+    }
+    const summary = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
+    if (entry.body !== summary) {
+      entry.body = summary;
+      await this.entryRepo.save(entry);
+    }
+  }
+
   private async recordEditTimelineEntry(
     workId: string,
     userId: string,
@@ -674,57 +845,118 @@ export class CondominiumWorksService {
     condominiumId: string,
     workId: string,
   ): Promise<WorkCostsSummaryDto> {
-    const [paidRaw, approvedBudget, budgetCount] = await Promise.all([
+    const todayYmd = formatDateOnlyYmdUtc(todayLocalCalendarAsUtcNoon());
+    const [expenseRaw, approvedRaw, budgetCount, approvedList] = await Promise.all([
       this.financialTxRepo
         .createQueryBuilder('t')
-        .select('COALESCE(SUM(t.amount_cents), 0)', 'total')
-        .addSelect('COUNT(*)', 'count')
+        .select(
+          `COALESCE(SUM(CASE WHEN t.payment_status = 'paid' THEN t.amount_cents ELSE 0 END), 0)`,
+          'paidTotal',
+        )
+        .addSelect(
+          `COUNT(CASE WHEN t.payment_status = 'paid' THEN 1 END)`,
+          'paidCount',
+        )
+        .addSelect(
+          `COALESCE(SUM(CASE WHEN t.payment_status = 'pending' AND t.occurred_on < :todayYmd THEN t.amount_cents ELSE 0 END), 0)`,
+          'overdueTotal',
+        )
+        .addSelect(
+          `COUNT(CASE WHEN t.payment_status = 'pending' AND t.occurred_on < :todayYmd THEN 1 END)`,
+          'overdueCount',
+        )
+        .addSelect(
+          `COALESCE(SUM(CASE WHEN t.payment_status = 'pending' AND t.occurred_on >= :todayYmd THEN t.amount_cents ELSE 0 END), 0)`,
+          'futureTotal',
+        )
+        .addSelect(
+          `COUNT(CASE WHEN t.payment_status = 'pending' AND t.occurred_on >= :todayYmd THEN 1 END)`,
+          'futureCount',
+        )
         .where('t.condominium_id = :condominiumId', { condominiumId })
         .andWhere('t.work_id = :workId', { workId })
         .andWhere('t.kind = :kind', { kind: 'expense' })
         .andWhere('t.payment_status != :cancelled', {
           cancelled: 'cancelled',
         })
+        .setParameter('todayYmd', todayYmd)
+        .getRawOne<{
+          paidTotal: string | number | null;
+          paidCount: string | number | null;
+          overdueTotal: string | number | null;
+          overdueCount: string | number | null;
+          futureTotal: string | number | null;
+          futureCount: string | number | null;
+        }>(),
+      this.budgetRepo
+        .createQueryBuilder('b')
+        .select('COALESCE(SUM(b.amount_cents), 0)', 'total')
+        .addSelect('COUNT(*)', 'count')
+        .where('b.work_id = :workId', { workId })
+        .andWhere('b.status = :approved', {
+          approved: WorkBudgetStatus.Approved,
+        })
         .getRawOne<{ total: string | number | null; count: string | number }>(),
-      this.budgetRepo.findOne({
-        where: { workId, status: WorkBudgetStatus.Approved },
-      }),
       this.budgetRepo.count({ where: { workId } }),
+      this.budgetRepo.find({
+        where: { workId, status: WorkBudgetStatus.Approved },
+        select: ['supplierName'],
+        order: { supplierName: 'ASC' },
+      }),
     ]);
 
-    const paidCents = Number(paidRaw?.total ?? 0);
-    const expenseCount = Number(paidRaw?.count ?? 0);
-    const approvedCents = approvedBudget?.amountCents ?? null;
+    const paidCents = Number(expenseRaw?.paidTotal ?? 0);
+    const paidCount = Number(expenseRaw?.paidCount ?? 0);
+    const overdueCents = Number(expenseRaw?.overdueTotal ?? 0);
+    const overdueCount = Number(expenseRaw?.overdueCount ?? 0);
+    const futureCents = Number(expenseRaw?.futureTotal ?? 0);
+    const futureCount = Number(expenseRaw?.futureCount ?? 0);
+    const forecastCents = paidCents + overdueCents + futureCents;
+    const expenseCount = paidCount + overdueCount + futureCount;
+    const approvedCount = Number(approvedRaw?.count ?? 0);
+    const approvedCentsTotal = Number(approvedRaw?.total ?? 0);
     let progressPercent: number | null = null;
-    if (approvedCents != null && approvedCents > 0) {
-      progressPercent = Math.round((paidCents / approvedCents) * 100);
+    if (approvedCount > 0 && approvedCentsTotal > 0) {
+      progressPercent = Math.round((forecastCents / approvedCentsTotal) * 100);
     }
 
     return {
-      totalCents: String(paidCents),
+      totalCents: String(forecastCents),
+      forecastCents: String(forecastCents),
       expenseCount: Number.isFinite(expenseCount) ? expenseCount : 0,
+      paidCents: String(paidCents),
+      paidCount: Number.isFinite(paidCount) ? paidCount : 0,
+      overdueCents: String(overdueCents),
+      overdueCount: Number.isFinite(overdueCount) ? overdueCount : 0,
+      futureCents: String(futureCents),
+      futureCount: Number.isFinite(futureCount) ? futureCount : 0,
       approvedBudgetCents:
-        approvedCents != null ? String(approvedCents) : null,
-      approvedBudgetId: approvedBudget?.id ?? null,
-      approvedBudgetSupplier: approvedBudget?.supplierName ?? null,
+        approvedCount > 0 ? String(approvedCentsTotal) : null,
+      approvedBudgetCount: Number.isFinite(approvedCount) ? approvedCount : 0,
+      approvedBudgetSuppliers: this.formatApprovedBudgetSuppliers(approvedList),
       budgetCount,
       progressPercent,
     };
   }
 
-  /** Apenas um orçamento aprovado por obra; os demais voltam para «Em análise». */
-  private async ensureSingleApprovedBudget(
-    workId: string,
-    keepBudgetId: string,
-  ): Promise<void> {
-    await this.budgetRepo
-      .createQueryBuilder()
-      .update(CondominiumWorkBudget)
-      .set({ status: WorkBudgetStatus.UnderReview })
-      .where('work_id = :workId', { workId })
-      .andWhere('status = :approved', { approved: WorkBudgetStatus.Approved })
-      .andWhere('id != :keepBudgetId', { keepBudgetId })
-      .execute();
+  private formatApprovedBudgetSuppliers(
+    budgets: Pick<CondominiumWorkBudget, 'supplierName'>[],
+  ): string | null {
+    const names = [
+      ...new Set(
+        budgets.map((b) => b.supplierName.trim()).filter((n) => n.length > 0),
+      ),
+    ];
+    if (names.length === 0) {
+      return null;
+    }
+    if (names.length === 1) {
+      return names[0];
+    }
+    if (names.length === 2) {
+      return `${names[0]} e ${names[1]}`;
+    }
+    return `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`;
   }
 
   private toListItem(

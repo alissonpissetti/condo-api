@@ -23,7 +23,10 @@ import {
 } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
-import { parseDateOnlyFromApi } from './date-only.util';
+import {
+  normalizeYmdFilterParam,
+  parseDateOnlyFromApi,
+} from './date-only.util';
 import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { FinancialFundsService } from './financial-funds.service';
 import { FundBalanceService } from './fund-balance.service';
@@ -76,9 +79,9 @@ export class FinancialTransactionsService {
     workId?: string,
   ): Promise<Array<FinancialTransaction & { runningBalanceCents?: string }>> {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
-    const fromTrim = occurredFromYmd?.trim();
-    const toTrim = occurredToYmd?.trim();
-    if (fromTrim && toTrim && fromTrim > toTrim) {
+    const fromYmd = normalizeYmdFilterParam(occurredFromYmd);
+    const toYmd = normalizeYmdFilterParam(occurredToYmd);
+    if (fromYmd && toYmd && fromYmd > toYmd) {
       throw new BadRequestException(
         'Período inválido: a data inicial não pode ser posterior à data final.',
       );
@@ -101,15 +104,13 @@ export class FinancialTransactionsService {
       await this.workTxLink.assertWorkInCondominium(condominiumId, workFilter);
       qb.andWhere('t.work_id = :workId', { workId: workFilter });
     }
-    if (fromTrim) {
-      qb.andWhere('t.occurred_on >= :occurredFrom', {
-        occurredFrom: parseDateOnlyFromApi(fromTrim),
-      });
+    /* Strings YYYY-MM-DD: evita comparar coluna `date` com Date (meio-dia UTC), que
+       exclui o primeiro dia do mês no MySQL (`2026-06-01 00:00` < `2026-06-01 12:00`). */
+    if (fromYmd) {
+      qb.andWhere('t.occurred_on >= :occurredFrom', { occurredFrom: fromYmd });
     }
-    if (toTrim) {
-      qb.andWhere('t.occurred_on <= :occurredTo', {
-        occurredTo: parseDateOnlyFromApi(toTrim),
-      });
+    if (toYmd) {
+      qb.andWhere('t.occurred_on <= :occurredTo', { occurredTo: toYmd });
     }
     const list = await qb.getMany();
     if (!fundId?.trim()) {
