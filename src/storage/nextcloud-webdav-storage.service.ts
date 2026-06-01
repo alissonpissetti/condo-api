@@ -30,6 +30,10 @@ import {
   supportAttachmentKeyForTicket,
 } from './condo-attachment-mime.util';
 import {
+  feeSlipRelativeKey,
+  isValidFeeSlipKey as isValidFeeSlipStorageKey,
+} from './fee-slip-storage.util';
+import {
   assertWorkAttachmentSize,
   resolveWorkDocumentExtension,
   workDocumentContentTypeFromKey,
@@ -180,6 +184,52 @@ export class NextcloudWebdavStorageService
   isValidLibraryDocumentKey(key: string | null | undefined): boolean {
     if (!key || typeof key !== 'string') return false;
     return LIBRARY_DOC_KEY_RE.test(key);
+  }
+
+  isValidFeeSlipKey(key: string | null | undefined): boolean {
+    return isValidFeeSlipStorageKey(key);
+  }
+
+  async saveFeeSlipPdf(
+    condominiumId: string,
+    competenceYm: string,
+    unitId: string,
+    buffer: Buffer,
+  ): Promise<string> {
+    this.ensureReady();
+    const maxBytes = 15 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('PDF slip muito grande (máx. 15 MB).');
+    }
+    const relativeKey = feeSlipRelativeKey(competenceYm, unitId);
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        ...this.webdavFetchHeaders(),
+        'Content-Type': 'application/pdf',
+      },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Falha ao enviar PDF slip ao Nextcloud (${res.status}). ${t.slice(0, 200)}`,
+      );
+    }
+    return relativeKey;
+  }
+
+  async resolveFeeSlipPublicUrl(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null> {
+    return this.resolveCondominiumFilePublicShareUrl(
+      condominiumId,
+      relativeKey,
+      (k) => this.isValidFeeSlipKey(k),
+    );
   }
 
   async saveTransactionReceipt(
@@ -587,7 +637,19 @@ export class NextcloudWebdavStorageService
     condominiumId: string,
     relativeKey: string,
   ): Promise<string | null> {
-    if (!this.isValidWorkDocumentKey(relativeKey)) {
+    return this.resolveCondominiumFilePublicShareUrl(
+      condominiumId,
+      relativeKey,
+      (k) => this.isValidWorkDocumentKey(k),
+    );
+  }
+
+  private async resolveCondominiumFilePublicShareUrl(
+    condominiumId: string,
+    relativeKey: string,
+    isValidKey: (key: string) => boolean,
+  ): Promise<string | null> {
+    if (!isValidKey(relativeKey)) {
       return null;
     }
     const disable =

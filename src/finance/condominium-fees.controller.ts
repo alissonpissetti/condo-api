@@ -188,7 +188,7 @@ export class CondominiumFeesController {
     summary:
       'Enviar PDF slip (capa PIX + relatório) por WhatsApp às unidades em aberto',
     description:
-      'Gera um link temporário (JWT) servido em GET /public/fee-slip.pdf para a Twilio anexar o PDF. Requer PUBLIC_BASE_URL na API (HTTPS acessível pela Twilio) e credenciais WhatsApp. Sem `unitIds`, envia a todas as unidades com cobrança em aberto na competência.',
+      'Gera o PDF slip por unidade, grava no armazenamento (Nextcloud/eolink) e envia por WhatsApp com link público do ficheiro. Em dev com disco local pode usar link JWT temporário. Sem `unitIds`, envia a todas as unidades com cobrança em aberto na competência.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   sendSlipsWhatsapp(

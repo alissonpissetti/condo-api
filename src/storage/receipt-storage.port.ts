@@ -54,6 +54,26 @@ export interface ReceiptStoragePort {
     relativeKey: string,
   ): Promise<{ buffer: Buffer; contentType: string; filename: string }>;
 
+  /**
+   * PDF slip de taxa condominial para WhatsApp (`fee-slips/{competenceYm}/{unitId}.pdf`).
+   * Sobrescreve o ficheiro ao reenviar a mesma unidade/competência.
+   */
+  isValidFeeSlipKey(key: string | null | undefined): boolean;
+  saveFeeSlipPdf(
+    condominiumId: string,
+    competenceYm: string,
+    unitId: string,
+    buffer: Buffer,
+  ): Promise<string>;
+  /**
+   * URL HTTPS pública para a Twilio anexar o PDF (partilha Nextcloud `/download`, etc.).
+   * `null` quando o driver não suporta link público (ex.: disco local em dev).
+   */
+  resolveFeeSlipPublicUrl(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null>;
+
   /** Biblioteca de documentos do condomínio (`library-documents/{uuid}.{ext}`). */
   isValidLibraryDocumentKey(key: string | null | undefined): boolean;
   saveLibraryDocument(

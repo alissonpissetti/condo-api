@@ -31,6 +31,10 @@ import {
   supportAttachmentKeyForTicket,
 } from './condo-attachment-mime.util';
 import {
+  feeSlipRelativeKey,
+  isValidFeeSlipKey as isValidFeeSlipStorageKey,
+} from './fee-slip-storage.util';
+import {
   assertWorkAttachmentSize,
   resolveWorkDocumentExtension,
   workDocumentContentTypeFromKey,
@@ -306,6 +310,34 @@ export class LocalStorageService
       contentType: 'application/pdf',
       filename: path.basename(relativeKey),
     };
+  }
+
+  isValidFeeSlipKey(key: string | null | undefined): boolean {
+    return isValidFeeSlipStorageKey(key);
+  }
+
+  async saveFeeSlipPdf(
+    condominiumId: string,
+    competenceYm: string,
+    unitId: string,
+    buffer: Buffer,
+  ): Promise<string> {
+    const maxBytes = 15 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('PDF slip muito grande (máx. 15 MB).');
+    }
+    const relativeKey = feeSlipRelativeKey(competenceYm, unitId);
+    const abs = this.absolutePath(condominiumId, relativeKey);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, buffer);
+    return relativeKey;
+  }
+
+  async resolveFeeSlipPublicUrl(
+    _condominiumId: string,
+    _relativeKey: string,
+  ): Promise<string | null> {
+    return null;
   }
 
   async saveLibraryDocument(

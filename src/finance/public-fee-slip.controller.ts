@@ -10,8 +10,8 @@ import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CondominiumFeesService } from './condominium-fees.service';
 
 /**
- * URL pública (token JWT curto) para o Twilio obter o PDF ao enviar `mediaUrl`
- * no WhatsApp. Não usa cabeçalho Authorization.
+ * URL com token JWT curto (fallback em dev com disco local). Em produção o WhatsApp
+ * usa o link público do PDF gravado no Nextcloud (`fee-slips/…`).
  */
 @ApiTags('Público — taxas')
 @Controller('public')

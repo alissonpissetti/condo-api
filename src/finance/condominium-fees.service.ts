@@ -22,6 +22,7 @@ import { GovernanceService } from '../planning/governance.service';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
+import { usesLocalDiskOnly } from '../storage/storage-driver.util';
 import { Person } from '../people/person.entity';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
 import {
@@ -228,8 +229,9 @@ export class CondominiumFeesService {
   }
 
   /**
-   * Envia por WhatsApp (Twilio) o PDF de transparência com capa slip PIX por unidade.
-   * Requer `PUBLIC_BASE_URL` (HTTPS) acessível pela Twilio e credenciais WhatsApp.
+   * Envia por WhatsApp (Twilio) o PDF slip por unidade: grava no armazenamento
+   * (Nextcloud/eolink) e usa link público `/download` na mensagem.
+   * Em dev com disco local, pode recair no link JWT temporário se houver URL pública da API.
    */
   async sendFeeSlipsWhatsapp(
     condominiumId: string,
@@ -240,17 +242,6 @@ export class CondominiumFeesService {
     const ym = dto.competenceYm.trim();
     this.assertYm(ym);
 
-    const publicBase = (
-      this.config.get<string>('PUBLIC_BASE_URL')?.trim() ||
-      this.config.get<string>('API_PUBLIC_BASE_URL')?.trim() ||
-      this.config.get<string>('BACKEND_PUBLIC_URL')?.trim()
-    )?.replace(/\/+$/, '');
-    if (!publicBase) {
-      throw new BadRequestException(
-        'Configure API_PUBLIC_BASE_URL ou BACKEND_PUBLIC_URL (URL HTTPS pública desta API, sem barra final) para o WhatsApp poder obter o PDF. Opcionalmente use PUBLIC_BASE_URL.',
-      );
-    }
-    const slipPdfBase = this.resolveFeeSlipWhatsappPdfBase(publicBase);
     if (!this.twilioWhatsapp.canSendArbitraryWhatsapp()) {
       throw new ServiceUnavailableException(
         'WhatsApp (Twilio) não configurado: defina TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN e TWILIO_WHATSAPP_FROM.',
@@ -337,20 +328,16 @@ export class CondominiumFeesService {
         continue;
       }
 
-      const token = await this.jwtService.signAsync(
-        {
-          p: 'fee_slip',
-          cid: condominiumId,
-          uid,
-          ym,
-          aid: userId,
-        },
-        { expiresIn: '25m' },
-      );
-      const mediaUrl = `${slipPdfBase}/public/fee-slip.pdf?token=${encodeURIComponent(token)}`;
       const fallbackBody = `${condoName} — ${unitLabel} — Taxa ${ym}. Segue o PDF (slip PIX e relatório).`;
 
       try {
+        const { mediaUrl, storageKey, mediaSource } =
+          await this.publishFeeSlipPdfForWhatsapp(
+            condominiumId,
+            userId,
+            ym,
+            uid,
+          );
         await this.twilioWhatsapp.sendFeeSlipWhatsapp(phone, {
           financialResponsibleDisplayName:
             this.resolveFeeSlipWhatsappFinancialName(unit),
@@ -370,7 +357,7 @@ export class CondominiumFeesService {
           unitIdentifier: unit.identifier,
           actorUserId: userId,
           action: 'whatsapp_sent',
-          detail: { phoneLast4: phone.slice(-4) },
+          detail: { phoneLast4: phone.slice(-4), storageKey, mediaSource },
         });
       } catch (e) {
         const msg =
@@ -510,9 +497,85 @@ export class CondominiumFeesService {
   }
 
   /**
-   * Base HTTPS do link do PDF nas mensagens de slip (template {{2}} / anexo).
-   * Prioridade: `FEE_SLIP_WHATSAPP_PDF_BASE_URL` → `FRONTEND_PUBLIC_URL` → URL pública da API.
-   * O host tem de servir `GET /public/fee-slip.pdf` (p.ex. proxy para esta API).
+   * Gera o PDF, grava em `fee-slips/{competenceYm}/{unitId}.pdf` no armazenamento e
+   * devolve URL pública (Nextcloud). Em dev local, pode usar JWT na API como fallback.
+   */
+  private async publishFeeSlipPdfForWhatsapp(
+    condominiumId: string,
+    actorUserId: string,
+    competenceYm: string,
+    unitId: string,
+  ): Promise<{
+    mediaUrl: string;
+    storageKey: string;
+    mediaSource: 'storage' | 'jwt';
+  }> {
+    const pdf = await this.monthlyTransparencyPdf.buildClosingTransparencyPdf(
+      condominiumId,
+      actorUserId,
+      competenceYm,
+      unitId,
+    );
+    const storageKey = await this.storage.saveFeeSlipPdf(
+      condominiumId,
+      competenceYm,
+      unitId,
+      pdf,
+    );
+    const publicUrl = await this.storage.resolveFeeSlipPublicUrl(
+      condominiumId,
+      storageKey,
+    );
+    if (publicUrl) {
+      return { mediaUrl: publicUrl, storageKey, mediaSource: 'storage' };
+    }
+    if (usesLocalDiskOnly(this.config)) {
+      const jwtUrl = await this.buildFeeSlipJwtMediaUrl(
+        condominiumId,
+        actorUserId,
+        competenceYm,
+        unitId,
+      );
+      if (jwtUrl) {
+        return { mediaUrl: jwtUrl, storageKey, mediaSource: 'jwt' };
+      }
+    }
+    throw new BadRequestException(
+      'Não foi possível obter link público do PDF no armazenamento. Configure Nextcloud (NEXTCLOUD_URL, NEXTCLOUD_PUBLIC_URL) e partilhas públicas ativas (NEXTCLOUD_PUBLIC_SHARES).',
+    );
+  }
+
+  private async buildFeeSlipJwtMediaUrl(
+    condominiumId: string,
+    actorUserId: string,
+    competenceYm: string,
+    unitId: string,
+  ): Promise<string | null> {
+    const publicBase = (
+      this.config.get<string>('PUBLIC_BASE_URL')?.trim() ||
+      this.config.get<string>('API_PUBLIC_BASE_URL')?.trim() ||
+      this.config.get<string>('BACKEND_PUBLIC_URL')?.trim()
+    )?.replace(/\/+$/, '');
+    if (!publicBase) {
+      return null;
+    }
+    const slipPdfBase = this.resolveFeeSlipWhatsappPdfBase(publicBase);
+    const token = await this.jwtService.signAsync(
+      {
+        p: 'fee_slip',
+        cid: condominiumId,
+        uid: unitId,
+        ym: competenceYm,
+        aid: actorUserId,
+      },
+      { expiresIn: '25m' },
+    );
+    return `${slipPdfBase}/public/fee-slip.pdf?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
+   * Base HTTPS do link JWT do PDF (só dev local). Prioridade:
+   * `FEE_SLIP_WHATSAPP_PDF_BASE_URL` → `FRONTEND_PUBLIC_URL` → URL pública da API.
    */
   private resolveFeeSlipWhatsappPdfBase(apiPublicBase: string): string {
     const explicit = this.config
