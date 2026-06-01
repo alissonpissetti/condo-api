@@ -24,6 +24,7 @@ import {
   CondominiumFeesService,
   type CondominiumFeeChargePaymentLogView,
   type CondominiumFeeChargeView,
+  type CondominiumFeeSlipDeliveryLogView,
   type SendFeeSlipsWhatsappResult,
 } from './condominium-fees.service';
 import { CompetenceYmDto } from './dto/competence-ym.dto';
@@ -114,10 +115,33 @@ export class CondominiumFeesController {
     );
   }
 
+  @Get('slip-delivery-log')
+  @ApiOperation({
+    summary:
+      'Histórico de downloads de PDF e envios WhatsApp de boletos da competência (gestão)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiQuery({ name: 'competenceYm', example: '2026-03' })
+  @ApiQuery({ name: 'limit', required: false, example: '200' })
+  listSlipDeliveryLog(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Query('competenceYm') competenceYm: string,
+    @Query('limit') limit?: string,
+  ): Promise<CondominiumFeeSlipDeliveryLogView[]> {
+    const n = limit == null ? 200 : Number.parseInt(limit, 10);
+    return this.feesService.listSlipDeliveryLogs(
+      condominiumId,
+      userId,
+      competenceYm ?? '',
+      Number.isFinite(n) ? n : 200,
+    );
+  }
+
   @Get('transparency-pdf')
   @ApiOperation({
     summary:
-      'PDF de transparência financeira da competência: extrato das contas bancárias cadastradas, conta geral e cada fundo (movimentos linha a linha no período). Com `unitId`, antecede-se a capa slip PIX (cobranças em aberto e chave configurada); em seguida o extrato do condomínio.',
+      'PDF de transparência da competência: folha de administração e agrupamentos; extrato financeiro (conta geral e fundos); extrato de despesas e taxa por agrupamento (unidades com valor diferente em bloco próprio). Com `unitId`, capa slip PIX quando houver taxa em aberto.',
   })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
   @ApiQuery({ name: 'competenceYm', example: '2026-03' })
@@ -126,7 +150,7 @@ export class CondominiumFeesController {
     required: false,
     format: 'uuid',
     description:
-      'Opcional: PDF da unidade — capa slip PIX (QR e «Copia e cola» conforme configuração) quando houver taxa em aberto: o valor e o PIX refletem a soma de todas as competências em aberto para a unidade, com detalhamento na capa se forem mais de uma; em seguida o extrato financeiro do período (contas, conta geral e fundos).',
+      'Opcional: PDF da unidade — capa slip PIX (soma das taxas em aberto) quando aplicável; tabela de taxas da competência com destaque da unidade; folha de administração/agrupamentos; extrato financeiro; extrato por agrupamento com exceção para unidades fora do padrão.',
   })
   async transparencyPdf(
     @CurrentUser() userId: string,
@@ -137,6 +161,12 @@ export class CondominiumFeesController {
   ): Promise<StreamableFile> {
     const normalizedUnitId = unitId?.trim() || null;
     const pdf = await this.monthlyTransparencyPdf.buildClosingTransparencyPdf(
+      condominiumId,
+      userId,
+      competenceYm ?? '',
+      normalizedUnitId,
+    );
+    await this.feesService.logTransparencyPdfDownload(
       condominiumId,
       userId,
       competenceYm ?? '',

@@ -542,6 +542,7 @@ export class PeopleService {
       { id: unit.id },
       {
         responsibleDisplayName: null,
+        pendingWhatsappPhone: null,
         financialResponsiblePersonId: null,
       },
     );

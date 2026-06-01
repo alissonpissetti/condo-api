@@ -64,6 +64,7 @@ import { TransactionBankAccount1751490000000 } from '../migrations/1751490000000
 import { TransactionTransfer1751500000000 } from '../migrations/1751500000000-transaction-transfer';
 import { BankAccountInitialBalanceOn1751510000000 } from '../migrations/1751510000000-bank-account-initial-balance-on';
 import { TransactionWorkLink1751520000000 } from '../migrations/1751520000000-transaction-work-link';
+import { CondominiumFeeSlipDeliveryLogs1751530000000 } from '../migrations/1751530000000-condominium-fee-slip-delivery-logs';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -202,6 +203,7 @@ export const AppDataSource = new DataSource({
     TransactionTransfer1751500000000,
     BankAccountInitialBalanceOn1751510000000,
     TransactionWorkLink1751520000000,
+    CondominiumFeeSlipDeliveryLogs1751530000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

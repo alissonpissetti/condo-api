@@ -22,11 +22,16 @@ import { GovernanceService } from '../planning/governance.service';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
+import { Person } from '../people/person.entity';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
 import {
   CondominiumFeeChargePaymentLog,
   type CondominiumFeeChargePaymentLogAction,
 } from './entities/condominium-fee-charge-payment-log.entity';
+import {
+  CondominiumFeeSlipDeliveryLog,
+  type CondominiumFeeSlipDeliveryAction,
+} from './entities/condominium-fee-slip-delivery-log.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
 import { Unit } from '../units/unit.entity';
@@ -107,6 +112,19 @@ export interface SendFeeSlipsWhatsappResult {
   failures: FeeSlipWhatsappFailure[];
 }
 
+export interface CondominiumFeeSlipDeliveryLogView {
+  id: string;
+  competenceYm: string;
+  chargeId: string | null;
+  unitId: string | null;
+  unitIdentifier: string | null;
+  action: CondominiumFeeSlipDeliveryAction;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+  actorUserId: string;
+  actorLabel: string;
+}
+
 @Injectable()
 export class CondominiumFeesService {
   constructor(
@@ -114,6 +132,10 @@ export class CondominiumFeesService {
     private readonly chargeRepo: Repository<CondominiumFeeCharge>,
     @InjectRepository(CondominiumFeeChargePaymentLog)
     private readonly feePaymentLogRepo: Repository<CondominiumFeeChargePaymentLog>,
+    @InjectRepository(CondominiumFeeSlipDeliveryLog)
+    private readonly slipDeliveryLogRepo: Repository<CondominiumFeeSlipDeliveryLog>,
+    @InjectRepository(Person)
+    private readonly personRepo: Repository<Person>,
     @InjectRepository(TransactionUnitShare)
     private readonly shareRepo: Repository<TransactionUnitShare>,
     @InjectRepository(FinancialTransaction)
@@ -251,6 +273,7 @@ export class CondominiumFeesService {
       qb.andWhere('c.unit_id IN (:...uids)', { uids: filterIds });
     }
     const charges = await qb.getMany();
+    const chargeByUnitId = new Map(charges.map((c) => [c.unitId, c]));
     const unitIds = [...new Set(charges.map((c) => c.unitId))];
 
     const skipped: FeeSlipWhatsappSkip[] = [];
@@ -270,10 +293,22 @@ export class CondominiumFeesService {
         relations: unitRel,
       });
       if (!unit) {
+        const skipReason = 'Unidade não encontrada.';
         skipped.push({
           unitId: uid,
           unitIdentifier: '—',
-          reason: 'Unidade não encontrada.',
+          reason: skipReason,
+        });
+        const ch = chargeByUnitId.get(uid);
+        await this.appendSlipDeliveryLog({
+          condominiumId,
+          competenceYm: ym,
+          chargeId: ch?.id ?? null,
+          unitId: uid,
+          unitIdentifier: null,
+          actorUserId: userId,
+          action: 'whatsapp_skipped',
+          detail: { reason: skipReason },
         });
         continue;
       }
@@ -281,11 +316,23 @@ export class CondominiumFeesService {
         `${unit.identifier} · ${unit.grouping?.name ?? ''}`.trim();
       const phone = this.resolveFeeSlipWhatsappPhone(unit);
       if (!phone) {
+        const skipReason =
+          'Sem número de celular (responsável financeiro, proprietário, responsáveis ou WhatsApp de referência na unidade).';
         skipped.push({
           unitId: uid,
           unitIdentifier: unit.identifier,
-          reason:
-            'Sem número de celular (responsável financeiro, proprietário, responsáveis ou WhatsApp de referência na unidade).',
+          reason: skipReason,
+        });
+        const ch = chargeByUnitId.get(uid);
+        await this.appendSlipDeliveryLog({
+          condominiumId,
+          competenceYm: ym,
+          chargeId: ch?.id ?? null,
+          unitId: uid,
+          unitIdentifier: unit.identifier,
+          actorUserId: userId,
+          action: 'whatsapp_skipped',
+          detail: { reason: skipReason },
         });
         continue;
       }
@@ -314,6 +361,17 @@ export class CondominiumFeesService {
           fallbackBody,
         });
         sent += 1;
+        const ch = chargeByUnitId.get(uid);
+        await this.appendSlipDeliveryLog({
+          condominiumId,
+          competenceYm: ym,
+          chargeId: ch?.id ?? null,
+          unitId: uid,
+          unitIdentifier: unit.identifier,
+          actorUserId: userId,
+          action: 'whatsapp_sent',
+          detail: { phoneLast4: phone.slice(-4) },
+        });
       } catch (e) {
         const msg =
           e instanceof Error
@@ -324,10 +382,131 @@ export class CondominiumFeesService {
           unitIdentifier: unit.identifier,
           error: msg,
         });
+        const ch = chargeByUnitId.get(uid);
+        await this.appendSlipDeliveryLog({
+          condominiumId,
+          competenceYm: ym,
+          chargeId: ch?.id ?? null,
+          unitId: uid,
+          unitIdentifier: unit.identifier,
+          actorUserId: userId,
+          action: 'whatsapp_failed',
+          detail: { reason: msg },
+        });
       }
     }
 
     return { sent, skipped, failures };
+  }
+
+  async logTransparencyPdfDownload(
+    condominiumId: string,
+    userId: string,
+    competenceYm: string,
+    unitId?: string | null,
+  ): Promise<void> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const ym = competenceYm.trim();
+    this.assertYm(ym);
+    const normalizedUnitId = unitId?.trim() || null;
+    let chargeId: string | null = null;
+    let unitIdentifier: string | null = null;
+    if (normalizedUnitId) {
+      const charge = await this.chargeRepo.findOne({
+        where: { condominiumId, competenceYm: ym, unitId: normalizedUnitId },
+        relations: { unit: true },
+      });
+      chargeId = charge?.id ?? null;
+      unitIdentifier = charge?.unit?.identifier ?? null;
+    }
+    await this.appendSlipDeliveryLog({
+      condominiumId,
+      competenceYm: ym,
+      chargeId,
+      unitId: normalizedUnitId,
+      unitIdentifier,
+      actorUserId: userId,
+      action: normalizedUnitId ? 'pdf_unit_slip' : 'pdf_transparency',
+      detail: null,
+    });
+  }
+
+  async listSlipDeliveryLogs(
+    condominiumId: string,
+    userId: string,
+    competenceYm: string,
+    limit = 200,
+  ): Promise<CondominiumFeeSlipDeliveryLogView[]> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const ym = competenceYm.trim();
+    this.assertYm(ym);
+    const cap = Math.min(Math.max(limit, 1), 500);
+    const rows = await this.slipDeliveryLogRepo.find({
+      where: { condominiumId, competenceYm: ym },
+      order: { createdAt: 'DESC' },
+      take: cap,
+    });
+    const actorIds = [...new Set(rows.map((r) => r.actorUserId))];
+    const nameByUser = await this.loadPreferredPersonNameByUserId(actorIds);
+    return rows.map((r) => ({
+      id: r.id,
+      competenceYm: r.competenceYm,
+      chargeId: r.chargeId,
+      unitId: r.unitId,
+      unitIdentifier: r.unitIdentifier,
+      action: r.action,
+      detail: r.detail,
+      createdAt: r.createdAt.toISOString(),
+      actorUserId: r.actorUserId,
+      actorLabel: (nameByUser.get(r.actorUserId) || 'Usuário').slice(0, 255),
+    }));
+  }
+
+  private async loadPreferredPersonNameByUserId(
+    userIds: string[],
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (userIds.length === 0) {
+      return out;
+    }
+    const people = await this.personRepo.find({
+      where: { userId: In(userIds) },
+      order: { createdAt: 'ASC' },
+    });
+    for (const p of people) {
+      const n = p.fullName?.trim();
+      const uid = p.userId;
+      if (n && uid && !out.has(uid)) {
+        out.set(uid, n);
+      }
+    }
+    return out;
+  }
+
+  private async appendSlipDeliveryLog(input: {
+    condominiumId: string;
+    competenceYm: string;
+    chargeId?: string | null;
+    unitId?: string | null;
+    unitIdentifier?: string | null;
+    actorUserId: string;
+    action: CondominiumFeeSlipDeliveryAction;
+    detail?: Record<string, unknown> | null;
+  }): Promise<void> {
+    try {
+      await this.slipDeliveryLogRepo.save({
+        condominiumId: input.condominiumId,
+        competenceYm: input.competenceYm,
+        chargeId: input.chargeId ?? null,
+        unitId: input.unitId ?? null,
+        unitIdentifier: input.unitIdentifier ?? null,
+        actorUserId: input.actorUserId,
+        action: input.action,
+        detail: input.detail ?? null,
+      });
+    } catch {
+      /* não bloqueia download/envio */
+    }
   }
 
   /**

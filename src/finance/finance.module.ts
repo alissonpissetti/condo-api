@@ -9,6 +9,7 @@ import { UsersModule } from '../users/users.module';
 import { TwilioWhatsappModule } from '../twilio-whatsapp/twilio-whatsapp.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
+import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
 import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { AllocationResolverService } from './allocation-resolver.service';
@@ -17,6 +18,7 @@ import { CondominiumFeesService } from './condominium-fees.service';
 import { PublicFeeSlipController } from './public-fee-slip.controller';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
 import { CondominiumFeeChargePaymentLog } from './entities/condominium-fee-charge-payment-log.entity';
+import { CondominiumFeeSlipDeliveryLog } from './entities/condominium-fee-slip-delivery-log.entity';
 import { FinancialFund } from './entities/financial-fund.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
@@ -45,7 +47,9 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       FundMonthlyAccrual,
       CondominiumFeeCharge,
       CondominiumFeeChargePaymentLog,
+      CondominiumFeeSlipDeliveryLog,
       CondominiumBankAccount,
+      Person,
       Unit,
       UnitResponsiblePerson,
       Grouping,
