@@ -101,10 +101,37 @@ export type WorkListItemDto = {
   title: string;
   description: string | null;
   status: WorkStatus;
+  queueOrder: number;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;
 };
+
+function isActiveWorkStatus(status: WorkStatus): boolean {
+  return status === WorkStatus.Planned || status === WorkStatus.InProgress;
+}
+
+function workStatusSectionRank(status: WorkStatus): number {
+  if (isActiveWorkStatus(status)) {
+    return 0;
+  }
+  if (status === WorkStatus.Completed) {
+    return 1;
+  }
+  return 2;
+}
+
+function compareWorksForList(a: WorkListItemDto, b: WorkListItemDto): number {
+  const ra = workStatusSectionRank(a.status);
+  const rb = workStatusSectionRank(b.status);
+  if (ra !== rb) {
+    return ra - rb;
+  }
+  if (ra === 0 && a.queueOrder !== b.queueOrder) {
+    return a.queueOrder - b.queueOrder;
+  }
+  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+}
 
 export type WorkCostsSummaryDto = {
   /**
@@ -164,17 +191,66 @@ export class CondominiumWorksService {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const works = await this.workRepo.find({
       where: { condominiumId },
-      order: { updatedAt: 'DESC' },
     });
-    const out: WorkListItemDto[] = [];
-    for (const w of works) {
-      const last = await this.entryRepo.findOne({
-        where: { workId: w.id },
-        order: { createdAt: 'DESC' },
-      });
-      out.push(this.toListItem(w, last?.createdAt ?? null));
+    if (works.length === 0) {
+      return [];
     }
-    return out;
+    const workIds = works.map((w) => w.id);
+    const lastRows = await this.entryRepo
+      .createQueryBuilder('e')
+      .select('e.workId', 'workId')
+      .addSelect('MAX(e.createdAt)', 'lastAt')
+      .where('e.workId IN (:...workIds)', { workIds })
+      .groupBy('e.workId')
+      .getRawMany<{ workId: string; lastAt: Date | string | null }>();
+    const lastByWork = new Map(
+      lastRows.map((r) => [
+        r.workId,
+        r.lastAt ? new Date(r.lastAt) : null,
+      ]),
+    );
+    return works
+      .map((w) => this.toListItem(w, lastByWork.get(w.id) ?? null))
+      .sort(compareWorksForList);
+  }
+
+  async reorderQueue(
+    condominiumId: string,
+    userId: string,
+    workIds: string[],
+  ): Promise<WorkListItemDto[]> {
+    await this.governance.assertManagement(condominiumId, userId);
+    const unique = [...new Set(workIds)];
+    if (unique.length !== workIds.length) {
+      throw new BadRequestException('Lista de obras com IDs duplicados.');
+    }
+    const works = await this.workRepo.find({ where: { condominiumId } });
+    const byId = new Map(works.map((w) => [w.id, w]));
+    for (const id of workIds) {
+      const w = byId.get(id);
+      if (!w) {
+        throw new NotFoundException('Obra não encontrada neste condomínio.');
+      }
+      if (!isActiveWorkStatus(w.status)) {
+        throw new BadRequestException(
+          'Só é possível reordenar obras planejadas ou em andamento.',
+        );
+      }
+    }
+    const activeIds = works
+      .filter((w) => isActiveWorkStatus(w.status))
+      .map((w) => w.id);
+    if (workIds.length !== activeIds.length) {
+      throw new BadRequestException(
+        'Informe todas as obras planejadas e em andamento na nova ordem.',
+      );
+    }
+    await this.workRepo.manager.transaction(async (em) => {
+      for (let i = 0; i < workIds.length; i++) {
+        await em.update(CondominiumWork, { id: workIds[i] }, { queueOrder: i });
+      }
+    });
+    return this.list(condominiumId, userId);
   }
 
   async create(
@@ -183,12 +259,17 @@ export class CondominiumWorksService {
     dto: CreateWorkDto,
   ): Promise<WorkDetailDto> {
     await this.governance.assertManagement(condominiumId, userId);
+    const status = dto.status ?? WorkStatus.Planned;
+    const queueOrder = isActiveWorkStatus(status)
+      ? await this.nextQueueOrder(condominiumId)
+      : 0;
     const work = this.workRepo.create({
       id: randomUUID(),
       condominiumId,
       title: dto.title.trim(),
       description: (dto.description ?? '').trim() || null,
-      status: dto.status ?? WorkStatus.Planned,
+      status,
+      queueOrder,
       createdByUserId: userId,
     });
     await this.workRepo.save(work);
@@ -204,11 +285,12 @@ export class CondominiumWorksService {
     condominiumId: string,
     workId: string,
     userId: string,
+    includeFileUrls = false,
   ): Promise<WorkDetailDto> {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const work = await this.findWorkOrThrow(condominiumId, workId);
     const [timeline, costsSummary] = await Promise.all([
-      this.loadTimeline(condominiumId, workId),
+      this.loadTimeline(condominiumId, workId, includeFileUrls),
       this.loadCostsSummary(condominiumId, workId),
     ]);
     const lastAt = timeline[0]
@@ -247,7 +329,12 @@ export class CondominiumWorksService {
       work.description = (dto.description ?? '').trim() || null;
     }
     if (dto.status !== undefined) {
+      const wasActive = isActiveWorkStatus(work.status);
+      const willBeActive = isActiveWorkStatus(dto.status);
       work.status = dto.status;
+      if (!wasActive && willBeActive) {
+        work.queueOrder = await this.nextQueueOrder(condominiumId);
+      }
     }
     await this.workRepo.save(work);
     if (auditBody) {
@@ -824,6 +911,7 @@ export class CondominiumWorksService {
   private async loadTimeline(
     condominiumId: string,
     workId: string,
+    includeFileUrls = false,
   ): Promise<WorkTimelineEntryDto[]> {
     const entries = await this.entryRepo.find({
       where: { workId },
@@ -836,7 +924,7 @@ export class CondominiumWorksService {
     });
     return Promise.all(
       entries.map((e) =>
-        this.mapEntry(condominiumId, e, e.budget ?? null),
+        this.mapEntry(condominiumId, e, e.budget ?? null, includeFileUrls),
       ),
     );
   }
@@ -959,6 +1047,19 @@ export class CondominiumWorksService {
     return `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`;
   }
 
+  private async nextQueueOrder(condominiumId: string): Promise<number> {
+    const row = await this.workRepo
+      .createQueryBuilder('w')
+      .select('MAX(w.queueOrder)', 'm')
+      .where('w.condominiumId = :condominiumId', { condominiumId })
+      .andWhere('w.status IN (:...statuses)', {
+        statuses: [WorkStatus.Planned, WorkStatus.InProgress],
+      })
+      .getRawOne<{ m: string | number | null }>();
+    const max = Number(row?.m);
+    return (Number.isFinite(max) ? max : -1) + 1;
+  }
+
   private toListItem(
     w: CondominiumWork,
     lastActivityAt: Date | null,
@@ -969,6 +1070,7 @@ export class CondominiumWorksService {
       title: w.title,
       description: w.description,
       status: w.status,
+      queueOrder: w.queueOrder ?? 0,
       createdAt: w.createdAt.toISOString(),
       updatedAt: w.updatedAt.toISOString(),
       lastActivityAt: lastActivityAt?.toISOString() ?? null,
@@ -1048,19 +1150,15 @@ export class CondominiumWorksService {
   private async mapEntryAttachments(
     condominiumId: string,
     e: CondominiumWorkTimelineEntry,
+    includeFileUrls: boolean,
   ): Promise<WorkTimelineAttachmentDto[]> {
-    const list: WorkTimelineAttachmentDto[] = await Promise.all(
-      (e.attachments ?? []).map(async (a) => ({
-        id: a.id,
-        originalFilename: repairMojibakeUtf8Filename(a.originalFilename),
-        mimeType: a.mimeType,
-        sizeBytes: a.sizeBytes,
-        fileUrl: await this.resolveAttachmentFileUrl(
-          condominiumId,
-          a.storageKey,
-        ),
-      })),
-    );
+    const list: WorkTimelineAttachmentDto[] = (e.attachments ?? []).map((a) => ({
+      id: a.id,
+      originalFilename: repairMojibakeUtf8Filename(a.originalFilename),
+      mimeType: a.mimeType,
+      sizeBytes: a.sizeBytes,
+      fileUrl: null as string | null,
+    }));
     if (
       e.kind === WorkTimelineKind.Document &&
       e.storageKey &&
@@ -1073,12 +1171,24 @@ export class CondominiumWorksService {
         ),
         mimeType: e.mimeType ?? null,
         sizeBytes: e.sizeBytes ?? null,
-        fileUrl: await this.resolveAttachmentFileUrl(
-          condominiumId,
-          e.storageKey,
-        ),
+        fileUrl: null,
       });
     }
+    if (!includeFileUrls) {
+      return list;
+    }
+    await Promise.all(
+      list.map(async (row) => {
+        const key =
+          row.id === e.id && e.kind === WorkTimelineKind.Document
+            ? e.storageKey
+            : (e.attachments ?? []).find((a) => a.id === row.id)?.storageKey;
+        row.fileUrl = await this.resolveAttachmentFileUrl(
+          condominiumId,
+          key,
+        );
+      }),
+    );
     return list;
   }
 
@@ -1103,13 +1213,18 @@ export class CondominiumWorksService {
     condominiumId: string,
     e: CondominiumWorkTimelineEntry,
     budget: CondominiumWorkBudget | null,
+    includeFileUrls = false,
   ): Promise<WorkTimelineEntryDto> {
     return {
       id: e.id,
       kind: e.kind,
       body: e.body,
       budget: budget ? this.mapBudget(budget) : null,
-      attachments: await this.mapEntryAttachments(condominiumId, e),
+      attachments: await this.mapEntryAttachments(
+        condominiumId,
+        e,
+        includeFileUrls,
+      ),
       authorUserId: e.authorUserId,
       authorDisplayName: e.authorDisplayName,
       createdAt: e.createdAt.toISOString(),

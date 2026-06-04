@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   UploadedFiles,
   UseGuards,
@@ -33,6 +34,7 @@ import { parseCreateWorkBudgetBody } from './dto/parse-work-budget-body';
 import { CreateWorkDto } from './dto/create-work.dto';
 import { UpdateTimelineEntryDto } from './dto/update-timeline-entry.dto';
 import { UpdateWorkBudgetDto } from './dto/update-work-budget.dto';
+import { ReorderWorksQueueDto } from './dto/reorder-works-queue.dto';
 import { UpdateWorkDto } from './dto/update-work.dto';
 
 @ApiTags('Obras do condomínio')
@@ -63,6 +65,20 @@ export class CondominiumWorksController {
     return this.works.create(condominiumId, userId, dto);
   }
 
+  @Patch('queue-order')
+  @ApiOperation({
+    summary:
+      'Reordenar fila de obras planejadas e em andamento (ordem de execução)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  reorderQueue(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: ReorderWorksQueueDto,
+  ) {
+    return this.works.reorderQueue(condominiumId, userId, dto.workIds);
+  }
+
   @Get(':workId')
   @ApiOperation({ summary: 'Detalhe da obra com timeline' })
   @ApiParam({ name: 'condominiumId', format: 'uuid' })
@@ -71,8 +87,12 @@ export class CondominiumWorksController {
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
     @Param('workId', ParseUUIDPipe) workId: string,
+    @Query('includeFileUrls') includeFileUrls?: string,
   ) {
-    return this.works.getOne(condominiumId, workId, userId);
+    const withUrls =
+      includeFileUrls === '1' ||
+      includeFileUrls?.trim().toLowerCase() === 'true';
+    return this.works.getOne(condominiumId, workId, userId, withUrls);
   }
 
   @Patch(':workId')

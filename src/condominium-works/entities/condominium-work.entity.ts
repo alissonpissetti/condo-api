@@ -34,6 +34,10 @@ export class CondominiumWork {
   @Column({ type: 'varchar', length: 32 })
   status: WorkStatus;
 
+  /** Ordem de execução entre obras planejadas / em andamento (menor = mais prioritária). */
+  @Column({ name: 'queue_order', type: 'int', default: 0 })
+  queueOrder: number;
+
   @Column({ name: 'created_by_user_id', type: 'varchar', length: 36 })
   createdByUserId: string;
 

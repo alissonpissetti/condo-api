@@ -89,6 +89,14 @@ export interface ReceiptStoragePort {
     condominiumId: string,
     relativeKey: string | null | undefined,
   ): Promise<void>;
+  /**
+   * Link público para abrir/baixar na biblioteca (partilha Nextcloud `/s/…`).
+   * `null` em disco local ou quando partilhas estão desativadas.
+   */
+  resolveLibraryDocumentPublicUrl?(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null>;
 
   /** Anexos de obras (`works/{workId}/{uuid}.{ext}`). */
   isValidWorkDocumentKey(key: string | null | undefined): boolean;

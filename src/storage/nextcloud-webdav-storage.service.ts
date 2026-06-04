@@ -38,6 +38,7 @@ import {
   resolveWorkDocumentExtension,
   workDocumentContentTypeFromKey,
 } from './work-document-storage.util';
+import { LocalStorageService } from './local-storage.service';
 
 const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
@@ -95,7 +96,10 @@ export class NextcloudWebdavStorageService
   private readonly ensuredDirUrls = new Set<string>();
   private readonly mkcolInFlight = new Map<string, Promise<void>>();
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly localStorage: LocalStorageService,
+  ) {}
 
   onModuleInit(): void {
     void this.verifyWebdavAuthAtStartup();
@@ -513,24 +517,94 @@ export class NextcloudWebdavStorageService
     const res = await fetch(url, {
       headers: this.webdavFetchHeaders(),
     });
+    if (res.ok) {
+      const fileBuffer = Buffer.from(await res.arrayBuffer());
+      const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
+      const contentType =
+        res.headers.get('content-type') ??
+        EXT_MIME[ext] ??
+        Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0] ??
+        'application/octet-stream';
+      return {
+        buffer: fileBuffer,
+        contentType,
+        filename: relativeKey.split('/').pop() ?? 'documento',
+      };
+    }
+    if (res.status === 404) {
+      const local = await this.tryReadLibraryFromLocalDisk(
+        condominiumId,
+        relativeKey,
+      );
+      if (local) {
+        await this.putLibraryBytesToNextcloud(
+          condominiumId,
+          relativeKey,
+          local.buffer,
+          local.contentType,
+        );
+        this.logger.log(
+          `Biblioteca: arquivo ${relativeKey} reenviado do disco local para o Nextcloud.`,
+        );
+        return local;
+      }
+    }
     this.assertWebdavGetOk(
       res,
       condominiumId,
       relativeKey,
-      'Arquivo não encontrado no Nextcloud. Causas comuns: registro vindo de outro ambiente sem os arquivos; upload com STORAGE_DRIVER=local (arquivo no disco) e a API de produção usando nextcloud; ou arquivo removido no Nextcloud. Reenvie o documento na biblioteca ou alinhe os arquivos com a mesma chave (storage) e pasta do condomínio no usuário da API.',
+      'Arquivo não encontrado no armazenamento. Causas comuns: registro vindo de outro ambiente sem os arquivos; upload com STORAGE_DRIVER=local e a API usando nextcloud; ou arquivo removido. Reenvie o documento na biblioteca.',
     );
-    const fileBuffer = Buffer.from(await res.arrayBuffer());
-    const ext = relativeKey.split('.').pop()?.toLowerCase() ?? 'bin';
-    const contentType =
-      res.headers.get('content-type') ??
-      EXT_MIME[ext] ??
-      Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0] ??
-      'application/octet-stream';
-    return {
-      buffer: fileBuffer,
-      contentType,
-      filename: relativeKey.split('/').pop() ?? 'documento',
-    };
+    throw new NotFoundException('Arquivo não encontrado.');
+  }
+
+  async resolveLibraryDocumentPublicUrl(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<string | null> {
+    return this.resolveCondominiumFilePublicShareUrl(
+      condominiumId,
+      relativeKey,
+      (k) => this.isValidLibraryDocumentKey(k),
+    );
+  }
+
+  private async tryReadLibraryFromLocalDisk(
+    condominiumId: string,
+    relativeKey: string,
+  ): Promise<{ buffer: Buffer; contentType: string; filename: string } | null> {
+    try {
+      return await this.localStorage.readLibraryDocument(
+        condominiumId,
+        relativeKey,
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  private async putLibraryBytesToNextcloud(
+    condominiumId: string,
+    relativeKey: string,
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<void> {
+    const url = this.objectUrl(condominiumId, relativeKey);
+    await this.ensureHierarchy(condominiumId, relativeKey);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...this.webdavFetchHeaders(), 'Content-Type': mimeType },
+      body: new Uint8Array(buffer),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      this.logger.warn(
+        `Biblioteca: falha ao sincronizar ${relativeKey} para o Nextcloud (${res.status}). ${t.slice(0, 120)}`,
+      );
+    }
   }
 
   async deleteLibraryDocument(

@@ -14,6 +14,8 @@ import { GovernanceRole } from '../planning/enums/governance-role.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { User } from '../users/user.entity';
+import { repairMojibakeUtf8Filename } from '../planning/upload-filename-encoding.util';
+import type { LibraryDocumentListItem } from './dto/library-document-list-item.dto';
 import { CondominiumLibraryDocument } from './entities/condominium-library-document.entity';
 import { CondominiumLibraryDocumentDownload } from './entities/condominium-library-document-download.entity';
 
@@ -33,12 +35,16 @@ export class CondominiumLibraryService {
     private readonly storage: ReceiptStoragePort,
   ) {}
 
-  async list(condominiumId: string, userId: string) {
+  async list(
+    condominiumId: string,
+    userId: string,
+  ): Promise<LibraryDocumentListItem[]> {
     await this.governance.assertAnyAccess(condominiumId, userId);
-    return this.docRepo.find({
+    const rows = await this.docRepo.find({
       where: { condominiumId },
       order: { createdAt: 'DESC' },
     });
+    return Promise.all(rows.map((row) => this.toListItem(condominiumId, row)));
   }
 
   /**
@@ -91,10 +97,8 @@ export class CondominiumLibraryService {
     );
     const uploadedByDisplayName = await this.resolveUploaderDisplayName(userId);
     const displayName = (displayNameRaw ?? '').trim();
-    const nameForList = (displayName || file.originalname || 'documento').slice(
-      0,
-      255,
-    );
+    const fromFile = repairMojibakeUtf8Filename(file.originalname || '');
+    const nameForList = (displayName || fromFile || 'documento').slice(0, 255);
     const doc = this.docRepo.create({
       id: randomUUID(),
       condominiumId,
@@ -104,7 +108,8 @@ export class CondominiumLibraryService {
       uploadedByUserId: userId,
       uploadedByDisplayName,
     });
-    return this.docRepo.save(doc);
+    const saved = await this.docRepo.save(doc);
+    return this.toListItem(condominiumId, saved);
   }
 
   async readFile(condominiumId: string, documentId: string, userId: string) {
@@ -130,6 +135,60 @@ export class CondominiumLibraryService {
     return { ...read, filename: safeName };
   }
 
+  /** Renomear documento (apenas titular ou síndico). */
+  async rename(
+    condominiumId: string,
+    documentId: string,
+    userId: string,
+    displayNameRaw: string,
+  ): Promise<LibraryDocumentListItem> {
+    const access = await this.governance.assertManagement(condominiumId, userId);
+    const canRename =
+      access.kind === 'owner' ||
+      (access.kind === 'participant' && access.role === GovernanceRole.Syndic);
+    if (!canRename) {
+      throw new ForbiddenException(
+        'Apenas o titular ou síndico podem renomear documentos da biblioteca.',
+      );
+    }
+    const name = displayNameRaw.trim();
+    if (!name) {
+      throw new BadRequestException('Informe o nome do documento.');
+    }
+    const row = await this.docRepo.findOne({
+      where: { id: documentId, condominiumId },
+    });
+    if (!row) {
+      throw new NotFoundException('Documento não encontrado.');
+    }
+    row.originalFilename = name.slice(0, 255);
+    const saved = await this.docRepo.save(row);
+    return this.toListItem(condominiumId, saved);
+  }
+
+  /** Link público do arquivo no storage (Nextcloud); `null` se indisponível. */
+  async resolveShareUrl(
+    condominiumId: string,
+    documentId: string,
+    userId: string,
+  ): Promise<string | null> {
+    await this.governance.assertAnyAccess(condominiumId, userId);
+    const row = await this.docRepo.findOne({
+      where: { id: documentId, condominiumId },
+    });
+    if (!row) {
+      throw new NotFoundException('Documento não encontrado.');
+    }
+    if (!this.storage.isValidLibraryDocumentKey(row.storageKey)) {
+      throw new BadRequestException('Chave de arquivo inválida.');
+    }
+    const resolve = this.storage.resolveLibraryDocumentPublicUrl;
+    if (typeof resolve !== 'function') {
+      return null;
+    }
+    return resolve.call(this.storage, condominiumId, row.storageKey);
+  }
+
   async remove(condominiumId: string, documentId: string, userId: string) {
     const access = await this.governance.assertManagement(condominiumId, userId);
     const canDelete =
@@ -148,6 +207,28 @@ export class CondominiumLibraryService {
     }
     await this.storage.deleteLibraryDocument(condominiumId, row.storageKey);
     await this.docRepo.delete({ id: row.id });
+  }
+
+  private async toListItem(
+    condominiumId: string,
+    row: CondominiumLibraryDocument,
+  ): Promise<LibraryDocumentListItem> {
+    const resolve = this.storage.resolveLibraryDocumentPublicUrl;
+    const fileUrl =
+      typeof resolve === 'function'
+        ? await resolve.call(this.storage, condominiumId, row.storageKey)
+        : null;
+    return {
+      id: row.id,
+      condominiumId: row.condominiumId,
+      storageKey: row.storageKey,
+      mimeType: row.mimeType,
+      originalFilename: row.originalFilename,
+      uploadedByUserId: row.uploadedByUserId,
+      uploadedByDisplayName: row.uploadedByDisplayName,
+      createdAt: row.createdAt.toISOString(),
+      fileUrl,
+    };
   }
 
   private async resolveUploaderDisplayName(userId: string): Promise<string> {

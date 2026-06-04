@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Res,
   UploadedFile,
@@ -26,6 +27,7 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { UpdateLibraryDocumentDto } from './dto/update-library-document.dto';
 import { CondominiumLibraryService } from './condominium-library.service';
 
 @ApiTags('Biblioteca do condomínio')
@@ -75,7 +77,9 @@ export class CondominiumLibraryController {
       required: ['file'],
     },
   })
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }),
+  )
   upload(
     @CurrentUser() userId: string,
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
@@ -86,6 +90,43 @@ export class CondominiumLibraryController {
       throw new BadRequestException('Envie um arquivo.');
     }
     return this.library.upload(condominiumId, userId, file, displayName);
+  }
+
+  @Get(':documentId/share-url')
+  @ApiOperation({
+    summary: 'Link público do arquivo no storage (para compartilhar)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'documentId', format: 'uuid' })
+  async shareUrl(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+  ) {
+    const fileUrl = await this.library.resolveShareUrl(
+      condominiumId,
+      documentId,
+      userId,
+    );
+    return { fileUrl };
+  }
+
+  @Patch(':documentId')
+  @ApiOperation({ summary: 'Renomear documento da biblioteca (titular/síndico)' })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'documentId', format: 'uuid' })
+  rename(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() body: UpdateLibraryDocumentDto,
+  ) {
+    return this.library.rename(
+      condominiumId,
+      documentId,
+      userId,
+      body.displayName,
+    );
   }
 
   @Get(':documentId/file')
