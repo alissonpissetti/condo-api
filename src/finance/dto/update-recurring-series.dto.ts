@@ -19,10 +19,10 @@ const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class UpdateRecurringSeriesDto {
-  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment'] })
+  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment', 'yield'] })
   @IsOptional()
-  @IsEnum(['expense', 'income', 'investment'])
-  kind?: 'expense' | 'income' | 'investment';
+  @IsEnum(['expense', 'income', 'investment', 'yield'])
+  kind?: 'expense' | 'income' | 'investment' | 'yield';
 
   @ApiPropertyOptional({
     description:

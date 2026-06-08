@@ -15,7 +15,11 @@ import { CondominiumBankAccount } from './condominium-bank-account.entity';
 import { FinancialFund } from './financial-fund.entity';
 import { TransactionUnitShare } from './transaction-unit-share.entity';
 
-export type FinancialTransactionKind = 'expense' | 'income' | 'investment';
+export type FinancialTransactionKind =
+  | 'expense'
+  | 'income'
+  | 'investment'
+  | 'yield';
 
 /** Quitação do lançamento (impacta inclusão na geração da taxa condominial). */
 export type FinancialTransactionPaymentStatus =
@@ -58,8 +62,9 @@ export class FinancialTransaction {
   work: CondominiumWork | null;
 
   /**
-   * expense | income | investment (aplicação de capital; rateio como despesa).
-   * No saldo do fundo: receita soma; despesa e aplicação subtraem.
+   * expense | income | investment (aplicação de capital; rateio como despesa) |
+   * yield (rendimento de aplicação; só altera saldo da conta bancária).
+   * No saldo do fundo: receita soma; despesa e aplicação subtraem; rendimento não incide.
    */
   @Column({ type: 'varchar', length: 16 })
   kind: FinancialTransactionKind;

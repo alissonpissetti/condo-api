@@ -38,7 +38,7 @@ export class FundBalanceService {
 
   signedDeltaCents(t: Pick<FinancialTransaction, 'kind' | 'amountCents'>): bigint {
     const amount = BigInt(String(t.amountCents));
-    if (t.kind === 'income') {
+    if (t.kind === 'income' || t.kind === 'yield') {
       return amount;
     }
     if (t.kind === 'expense' || t.kind === 'investment') {

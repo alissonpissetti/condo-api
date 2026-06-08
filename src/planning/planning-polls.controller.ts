@@ -27,18 +27,24 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { CastVoteDto } from './dto/cast-vote.dto';
+import { AiDraftPollDto } from './dto/ai-draft-poll.dto';
+import { AiMergeMeetingMinutesDto } from './dto/ai-merge-meeting-minutes.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
 import { DecidePollDto } from './dto/decide-poll.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollsService } from './planning-polls.service';
+import { PollAiDraftService } from './poll-ai-draft.service';
 
 @ApiTags('Planejamento — pautas')
 @ApiBearerAuth('JWT')
 @Controller('condominiums/:condominiumId/planning/polls')
 @UseGuards(JwtAuthGuard)
 export class PlanningPollsController {
-  constructor(private readonly polls: PlanningPollsService) {}
+  constructor(
+    private readonly polls: PlanningPollsService,
+    private readonly pollAiDraft: PollAiDraftService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -66,6 +72,43 @@ export class PlanningPollsController {
     @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
   ) {
     return this.polls.myVotableUnits(condominiumId, userId);
+  }
+
+  @Post('ai-draft')
+  @ApiOperation({
+    summary: 'Gerar rascunho de pauta com IA (DeepSeek)',
+    description:
+      'Síndico ou titular. O texto é enviado ao provedor de IA configurado no servidor. Revise o resultado antes de publicar.',
+  })
+  aiDraft(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: AiDraftPollDto,
+  ) {
+    return this.pollAiDraft.generateDraft(condominiumId, userId, dto);
+  }
+
+  @Post(':pollId/meeting-minutes/merge-note')
+  @ApiOperation({
+    summary: 'Mesclar anotação da reunião no rascunho da ata (IA)',
+    description:
+      'Modo reunião: formata anotações soltas e incorpora ao HTML do rascunho da ata. ' +
+      'Se a anotação indicar votos de unidades (ex.: «apt 101 aprovou deliberação 1»), ' +
+      'o síndico/titular pode tê-los registados automaticamente.',
+  })
+  @ApiParam({ name: 'pollId' })
+  mergeMeetingMinutesNote(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Body() dto: AiMergeMeetingMinutesDto,
+  ) {
+    return this.pollAiDraft.mergeMeetingMinutesNote(
+      condominiumId,
+      pollId,
+      userId,
+      dto,
+    );
   }
 
   @Get(':pollId/attachments/:attachmentId/file')
@@ -231,7 +274,13 @@ export class PlanningPollsController {
     @Param('pollId', ParseUUIDPipe) pollId: string,
     @Body() body: DecidePollDto,
   ) {
-    return this.polls.decide(condominiumId, pollId, userId, body.optionId);
+    return this.polls.decide(
+      condominiumId,
+      pollId,
+      userId,
+      body.questionId,
+      body.optionId,
+    );
   }
 
   @Post(':pollId/votes')

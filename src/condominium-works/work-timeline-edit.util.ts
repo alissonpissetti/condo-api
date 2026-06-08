@@ -11,6 +11,7 @@ const WORK_STATUS_LABELS_PT: Record<WorkStatus, string> = {
 };
 
 const BUDGET_STATUS_LABELS_PT: Record<WorkBudgetStatus, string> = {
+  [WorkBudgetStatus.AwaitingBudget]: 'Aguardando orçamento',
   [WorkBudgetStatus.Received]: 'Recebido',
   [WorkBudgetStatus.UnderReview]: 'Em análise',
   [WorkBudgetStatus.Approved]: 'Aprovado',
@@ -76,6 +77,7 @@ export function buildBudgetUpdateAuditBody(input: {
     supplierName: string;
     amountCents: number;
     validUntil: string | null;
+    scheduledAt: Date | null;
     status: WorkBudgetStatus;
     notes: string | null;
   };
@@ -83,6 +85,7 @@ export function buildBudgetUpdateAuditBody(input: {
     supplierName?: string;
     amountCents?: number;
     validUntil?: string | null;
+    scheduledAt?: Date | null;
     status?: WorkBudgetStatus;
     notes?: string | null;
   };
@@ -114,6 +117,23 @@ export function buildBudgetUpdateAuditBody(input: {
         lines.push('Validade removida.');
       } else {
         lines.push(`Validade alterada de ${oldV} para ${newV}.`);
+      }
+    }
+  }
+  if (n.scheduledAt !== undefined) {
+    const oldMs = p.scheduledAt?.getTime() ?? null;
+    const newMs = n.scheduledAt?.getTime() ?? null;
+    if (oldMs !== newMs) {
+      if (!p.scheduledAt && n.scheduledAt) {
+        lines.push(
+          `Agendamento definido para ${formatTimelineInstantPt(n.scheduledAt)}.`,
+        );
+      } else if (p.scheduledAt && !n.scheduledAt) {
+        lines.push('Agendamento removido.');
+      } else if (p.scheduledAt && n.scheduledAt) {
+        lines.push(
+          `Agendamento alterado de ${formatTimelineInstantPt(p.scheduledAt)} para ${formatTimelineInstantPt(n.scheduledAt)}.`,
+        );
       }
     }
   }

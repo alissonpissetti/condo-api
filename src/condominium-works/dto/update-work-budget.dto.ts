@@ -4,14 +4,22 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { WorkBudgetStatus } from '../enums/work-budget-status.enum';
 
 export class UpdateWorkBudgetDto {
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  supplierId?: string | null;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -29,6 +37,16 @@ export class UpdateWorkBudgetDto {
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   validUntil?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Agendamento da visita do fornecedor (YYYY-MM-DDTHH:mm, horário de São Paulo).',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @Matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/)
+  scheduledAt?: string | null;
 
   @ApiPropertyOptional({ enum: WorkBudgetStatus })
   @IsOptional()

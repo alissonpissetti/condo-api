@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/user.entity';
 import { WorkBudgetStatus } from '../enums/work-budget-status.enum';
+import { CondominiumSupplier } from './condominium-supplier.entity';
 import { CondominiumWork } from './condominium-work.entity';
 
 @Entity('condominium_work_budgets')
@@ -22,6 +23,14 @@ export class CondominiumWorkBudget {
   @JoinColumn({ name: 'work_id' })
   work: CondominiumWork;
 
+  /** Cadastro de fornecedor (opcional); o nome fica denormalizado em `supplier_name`. */
+  @Column({ name: 'supplier_id', type: 'varchar', length: 36, nullable: true })
+  supplierId: string | null;
+
+  @ManyToOne(() => CondominiumSupplier, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'supplier_id' })
+  supplier: CondominiumSupplier | null;
+
   @Column({ name: 'supplier_name', type: 'varchar', length: 255 })
   supplierName: string;
 
@@ -30,6 +39,10 @@ export class CondominiumWorkBudget {
 
   @Column({ name: 'valid_until', type: 'date', nullable: true })
   validUntil: string | null;
+
+  /** Visita do fornecedor agendada (opcional). */
+  @Column({ name: 'scheduled_at', type: 'datetime', precision: 6, nullable: true })
+  scheduledAt: Date | null;
 
   @Column({ type: 'varchar', length: 32 })
   status: WorkBudgetStatus;

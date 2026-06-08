@@ -19,8 +19,11 @@ import type { WorkDocumentStoragePort } from '../storage/work-document-storage.p
 import { WORK_DOCUMENT_STORAGE } from '../storage/storage.tokens';
 import { User } from '../users/user.entity';
 import { CreateTimelineNoteDto } from './dto/create-timeline-note.dto';
+import { resolveBudgetScheduledAt } from './dto/parse-budget-scheduled-at';
 import { resolveTimelineRecordedAt } from './dto/parse-timeline-recorded-on';
 import { resolveRecordedOnWithFilenameFallback } from './utils/filename-recorded-on.util';
+import { formatBudgetTimelineSummary } from './utils/work-budget-summary.util';
+import { CondominiumSuppliersService } from './condominium-suppliers.service';
 import { CreateWorkBudgetDto } from './dto/create-work-budget.dto';
 import { CreateWorkDto } from './dto/create-work.dto';
 import { UpdateWorkBudgetDto } from './dto/update-work-budget.dto';
@@ -65,9 +68,11 @@ export type WorkTimelineAttachmentDto = {
 
 export type WorkBudgetDto = {
   id: string;
+  supplierId: string | null;
   supplierName: string;
   amountCents: number;
   validUntil: string | null;
+  scheduledAt: string | null;
   status: WorkBudgetStatus;
   notes: string | null;
   createdAt: string;
@@ -182,6 +187,7 @@ export class CondominiumWorksService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly governance: GovernanceService,
+    private readonly suppliers: CondominiumSuppliersService,
     private readonly config: ConfigService,
     @Inject(WORK_DOCUMENT_STORAGE)
     private readonly workStorage: WorkDocumentStoragePort,
@@ -474,19 +480,38 @@ export class CondominiumWorksService {
         ),
       ),
     );
+    const supplierFields = await this.resolveBudgetSupplierFields(
+      condominiumId,
+      userId,
+      dto,
+      true,
+    );
+    const status = dto.status ?? WorkBudgetStatus.AwaitingBudget;
+    if (status === WorkBudgetStatus.AwaitingBudget && list.length > 0) {
+      throw new BadRequestException(
+        'Anexe o orçamento na linha do tempo depois da visita do fornecedor.',
+      );
+    }
     const budget = this.budgetRepo.create({
       id: randomUUID(),
       workId,
-      supplierName: dto.supplierName.trim(),
-      amountCents: dto.amountCents,
+      supplierId: supplierFields.supplierId,
+      supplierName: supplierFields.supplierName,
+      amountCents: dto.amountCents ?? 0,
       validUntil: dto.validUntil ?? null,
-      status: dto.status ?? WorkBudgetStatus.Received,
+      scheduledAt: resolveBudgetScheduledAt(dto.scheduledAt),
+      status,
       notes: (dto.notes ?? '').trim() || null,
       createdByUserId: userId,
       createdAt: recordedAt,
     });
     await this.budgetRepo.save(budget);
-    const summary = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
+    const summary = formatBudgetTimelineSummary(
+      budget.supplierName,
+      budget.amountCents,
+      budget.status,
+      (cents) => this.formatCents(cents),
+    );
     const entry = this.entryRepo.create({
       id: randomUUID(),
       workId,
@@ -563,6 +588,7 @@ export class CondominiumWorksService {
       supplierName: budget.supplierName,
       amountCents: budget.amountCents,
       validUntil: budget.validUntil,
+      scheduledAt: budget.scheduledAt,
       status: budget.status,
       notes: budget.notes,
     };
@@ -574,6 +600,10 @@ export class CondominiumWorksService {
           dto.supplierName !== undefined ? dto.supplierName.trim() : undefined,
         amountCents: dto.amountCents,
         validUntil: dto.validUntil,
+        scheduledAt:
+          dto.scheduledAt !== undefined
+            ? resolveBudgetScheduledAt(dto.scheduledAt ?? undefined)
+            : undefined,
         status: dto.status,
         notes:
           dto.notes !== undefined
@@ -582,17 +612,30 @@ export class CondominiumWorksService {
       },
       formatCents: (cents) => this.formatCents(cents),
     });
-    if (dto.supplierName !== undefined) {
-      budget.supplierName = dto.supplierName.trim();
-    }
+    await this.applyBudgetSupplierPatch(condominiumId, userId, budget, dto);
     if (dto.amountCents !== undefined) {
       budget.amountCents = dto.amountCents;
     }
     if (dto.validUntil !== undefined) {
       budget.validUntil = dto.validUntil;
     }
+    if (dto.scheduledAt !== undefined) {
+      budget.scheduledAt = resolveBudgetScheduledAt(dto.scheduledAt ?? undefined);
+    }
     if (dto.status !== undefined) {
-      budget.status = dto.status;
+      const nextStatus = dto.status;
+      if (
+        nextStatus === WorkBudgetStatus.UnderReview &&
+        budget.status === WorkBudgetStatus.AwaitingBudget
+      ) {
+        const cents = dto.amountCents ?? budget.amountCents;
+        if (cents <= 0) {
+          throw new BadRequestException(
+            'Informe o valor do orçamento recebido.',
+          );
+        }
+      }
+      budget.status = nextStatus;
     }
     if (dto.notes !== undefined) {
       budget.notes = (dto.notes ?? '').trim() || null;
@@ -693,7 +736,10 @@ export class CondominiumWorksService {
     const hasRecordedOn =
       dto.recordedOn !== undefined && dto.recordedOn.trim().length > 0;
     const hasBudgetFields =
-      dto.amountCents !== undefined || dto.supplierName !== undefined;
+      dto.amountCents !== undefined ||
+      dto.supplierId !== undefined ||
+      dto.supplierName !== undefined ||
+      dto.scheduledAt !== undefined;
     if (!hasBody && !hasRecordedOn && !hasBudgetFields) {
       throw new BadRequestException(
         'Informe ao menos um campo para atualizar.',
@@ -765,6 +811,7 @@ export class CondominiumWorksService {
         supplierName: budget.supplierName,
         amountCents: budget.amountCents,
         validUntil: budget.validUntil,
+        scheduledAt: budget.scheduledAt,
         status: budget.status,
         notes: budget.notes,
       };
@@ -777,17 +824,32 @@ export class CondominiumWorksService {
               ? dto.supplierName.trim()
               : undefined,
           amountCents: dto.amountCents,
+          scheduledAt:
+            dto.scheduledAt !== undefined
+              ? resolveBudgetScheduledAt(dto.scheduledAt ?? undefined)
+              : undefined,
         },
         formatCents: (cents) => this.formatCents(cents),
       });
-      if (dto.supplierName !== undefined) {
-        budget.supplierName = dto.supplierName.trim();
+      if (dto.supplierId !== undefined || dto.supplierName !== undefined) {
+        await this.applyBudgetSupplierPatch(condominiumId, userId, budget, {
+          supplierId: dto.supplierId,
+          supplierName: dto.supplierName,
+        });
       }
       if (dto.amountCents !== undefined) {
         budget.amountCents = dto.amountCents;
       }
+      if (dto.scheduledAt !== undefined) {
+        budget.scheduledAt = resolveBudgetScheduledAt(dto.scheduledAt ?? undefined);
+      }
       await this.budgetRepo.save(budget);
-      entry.body = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
+      entry.body = formatBudgetTimelineSummary(
+        budget.supplierName,
+        budget.amountCents,
+        budget.status,
+        (cents) => this.formatCents(cents),
+      );
     }
 
     const timelineAuditBody = buildTimelineEntryUpdateAuditBody({
@@ -879,7 +941,12 @@ export class CondominiumWorksService {
     if (!entry) {
       return;
     }
-    const summary = `Orçamento: ${budget.supplierName} — ${this.formatCents(budget.amountCents)}`;
+    const summary = formatBudgetTimelineSummary(
+      budget.supplierName,
+      budget.amountCents,
+      budget.status,
+      (cents) => this.formatCents(cents),
+    );
     if (entry.body !== summary) {
       entry.body = summary;
       await this.entryRepo.save(entry);
@@ -1121,12 +1188,87 @@ export class CondominiumWorksService {
     return saved;
   }
 
+  private async resolveBudgetSupplierFields(
+    condominiumId: string,
+    userId: string,
+    input: Pick<CreateWorkBudgetDto, 'supplierId' | 'supplierName'>,
+    required: boolean,
+  ): Promise<{ supplierId: string | null; supplierName: string }> {
+    const supplierId = input.supplierId?.trim();
+    if (supplierId) {
+      const supplier = await this.suppliers.findOneInCondominium(
+        condominiumId,
+        supplierId,
+      );
+      return { supplierId: supplier.id, supplierName: supplier.name };
+    }
+    const supplierName = (input.supplierName ?? '').trim();
+    if (supplierName) {
+      const supplier = await this.suppliers.ensureByName(
+        condominiumId,
+        userId,
+        supplierName,
+      );
+      return { supplierId: supplier.id, supplierName: supplier.name };
+    }
+    if (required) {
+      throw new BadRequestException(
+        'Informe o fornecedor ou selecione um cadastrado.',
+      );
+    }
+    throw new BadRequestException('Informe o fornecedor.');
+  }
+
+  private async applyBudgetSupplierPatch(
+    condominiumId: string,
+    userId: string,
+    budget: CondominiumWorkBudget,
+    dto: Pick<UpdateWorkBudgetDto, 'supplierId' | 'supplierName'>,
+  ): Promise<void> {
+    if (dto.supplierId !== undefined) {
+      if (dto.supplierId === null) {
+        if (dto.supplierName !== undefined) {
+          const supplier = await this.suppliers.ensureByName(
+            condominiumId,
+            userId,
+            dto.supplierName,
+          );
+          budget.supplierId = supplier.id;
+          budget.supplierName = supplier.name;
+        } else {
+          budget.supplierId = null;
+        }
+        return;
+      }
+      const resolved = await this.resolveBudgetSupplierFields(
+        condominiumId,
+        userId,
+        { supplierId: dto.supplierId },
+        true,
+      );
+      budget.supplierId = resolved.supplierId;
+      budget.supplierName = resolved.supplierName;
+      return;
+    }
+    if (dto.supplierName !== undefined) {
+      const supplier = await this.suppliers.ensureByName(
+        condominiumId,
+        userId,
+        dto.supplierName,
+      );
+      budget.supplierId = supplier.id;
+      budget.supplierName = supplier.name;
+    }
+  }
+
   private mapBudget(b: CondominiumWorkBudget): WorkBudgetDto {
     return {
       id: b.id,
+      supplierId: b.supplierId,
       supplierName: b.supplierName,
       amountCents: b.amountCents,
       validUntil: b.validUntil,
+      scheduledAt: b.scheduledAt?.toISOString() ?? null,
       status: b.status,
       notes: b.notes,
       createdAt: b.createdAt.toISOString(),

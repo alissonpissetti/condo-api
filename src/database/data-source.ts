@@ -66,6 +66,12 @@ import { BankAccountInitialBalanceOn1751510000000 } from '../migrations/17515100
 import { TransactionWorkLink1751520000000 } from '../migrations/1751520000000-transaction-work-link';
 import { CondominiumFeeSlipDeliveryLogs1751530000000 } from '../migrations/1751530000000-condominium-fee-slip-delivery-logs';
 import { CondominiumWorkQueueOrder1751540000000 } from '../migrations/1751540000000-condominium-work-queue-order';
+import { CondominiumSuppliers1751550000000 } from '../migrations/1751550000000-condominium-suppliers';
+import { SupplierCategories1751560000000 } from '../migrations/1751560000000-supplier-categories';
+import { SupplierContactName1751570000000 } from '../migrations/1751570000000-supplier-contact-name';
+import { WorkBudgetScheduledAt1751580000000 } from '../migrations/1751580000000-work-budget-scheduled-at';
+import { PlanningPollQuestions1751590000000 } from '../migrations/1751590000000-planning-poll-questions';
+import { PlanningPollMinutesBody1751600000000 } from '../migrations/1751600000000-planning-poll-minutes-body';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -90,6 +96,8 @@ import { FundMonthlyAccrual } from '../finance/entities/fund-monthly-accrual.ent
 import { CondominiumBankAccount } from '../finance/entities/condominium-bank-account.entity';
 import { CondominiumFeeCharge } from '../finance/entities/condominium-fee-charge.entity';
 import { CondominiumWork } from '../condominium-works/entities/condominium-work.entity';
+import { CondominiumSupplierCategory } from '../condominium-works/entities/condominium-supplier-category.entity';
+import { CondominiumSupplier } from '../condominium-works/entities/condominium-supplier.entity';
 import { CondominiumWorkBudget } from '../condominium-works/entities/condominium-work-budget.entity';
 import { CondominiumWorkTimelineEntry } from '../condominium-works/entities/condominium-work-timeline-entry.entity';
 import { CondominiumWorkTimelineAttachment } from '../condominium-works/entities/condominium-work-timeline-attachment.entity';
@@ -123,6 +131,8 @@ export const AppDataSource = new DataSource({
     CondominiumBankAccount,
     CondominiumFeeCharge,
     CondominiumWork,
+    CondominiumSupplier,
+    CondominiumSupplierCategory,
     CondominiumWorkBudget,
     CondominiumWorkTimelineEntry,
     CondominiumWorkTimelineAttachment,
@@ -206,6 +216,12 @@ export const AppDataSource = new DataSource({
     TransactionWorkLink1751520000000,
     CondominiumFeeSlipDeliveryLogs1751530000000,
     CondominiumWorkQueueOrder1751540000000,
+    CondominiumSuppliers1751550000000,
+    SupplierCategories1751560000000,
+    SupplierContactName1751570000000,
+    WorkBudgetScheduledAt1751580000000,
+    PlanningPollQuestions1751590000000,
+    PlanningPollMinutesBody1751600000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

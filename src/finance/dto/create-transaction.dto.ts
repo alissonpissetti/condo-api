@@ -19,9 +19,9 @@ const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class CreateTransactionDto {
-  @ApiProperty({ enum: ['expense', 'income', 'investment'] })
-  @IsEnum(['expense', 'income', 'investment'])
-  kind: 'expense' | 'income' | 'investment';
+  @ApiProperty({ enum: ['expense', 'income', 'investment', 'yield'] })
+  @IsEnum(['expense', 'income', 'investment', 'yield'])
+  kind: 'expense' | 'income' | 'investment' | 'yield';
 
   @ApiProperty({ example: 150_00, description: 'Valor total em centavos' })
   @IsInt()

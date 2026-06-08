@@ -2021,6 +2021,8 @@ export class MonthlyTransparencyPdfService {
         return 'Despesa';
       case 'investment':
         return 'Aplicação';
+      case 'yield':
+        return 'Rendimento';
       default:
         return kind;
     }
@@ -3191,6 +3193,8 @@ export class MonthlyTransparencyPdfService {
         return 'Despesa';
       case 'investment':
         return 'Aplicação';
+      case 'yield':
+        return 'Rendimento';
       default:
         return kind;
     }

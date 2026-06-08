@@ -25,12 +25,14 @@ import { GovernanceRole } from './enums/governance-role.enum';
 import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
+import { sortedPollQuestions } from './poll-questions.util';
 import { GovernanceService } from './governance.service';
 import type { CondoAccess } from './governance.service';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { Person } from '../people/person.entity';
 import { UsersService } from '../users/users.service';
 import { Unit } from '../units/unit.entity';
+import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import { stripPollBodyToPlainText } from './poll-body-sanitize';
 
 @Injectable()
@@ -159,7 +161,7 @@ export class PlanningDocumentsService {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.pollRepo.findOne({
       where: { id: pollId, condominiumId },
-      relations: { options: true, condominium: true },
+      relations: { questions: { options: true }, condominium: true },
     });
     if (!poll) {
       throw new NotFoundException('Pauta não encontrada.');
@@ -183,7 +185,7 @@ export class PlanningDocumentsService {
       .getRawOne<{ cnt: string }>();
     const unitsVoted = Number(unitsRow?.cnt ?? 0);
 
-    const attendanceUnitLabels = await this.loadCondominiumUnitAttendanceLabels(
+    const attendanceRows = await this.loadCondominiumUnitAttendanceRows(
       condominiumId,
     );
 
@@ -193,7 +195,7 @@ export class PlanningDocumentsService {
       poll,
       counts,
       unitsVoted,
-      attendanceUnitLabels,
+      attendanceRows,
     );
 
     const storageKey = await this.fileStorage.savePlanningDocumentPdf(
@@ -206,6 +208,50 @@ export class PlanningDocumentsService {
         id: randomUUID(),
         condominiumId,
         kind: CondominiumDocumentKind.AssemblyMinutesDraft,
+        status: CondominiumDocumentStatus.Generated,
+        title,
+        storageKey,
+        mimeType: 'application/pdf',
+        pollId: poll.id,
+        visibleToAllResidents: false,
+        createdByUserId: userId,
+        electionPayload: null,
+      }),
+    );
+  }
+
+  async generateAttendanceSheet(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.pollRepo.findOne({
+      where: { id: pollId, condominiumId },
+      relations: { condominium: true },
+    });
+    if (!poll) {
+      throw new NotFoundException('Pauta não encontrada.');
+    }
+    const condo = await this.governance.getCondominiumOrThrow(condominiumId);
+    const attendanceRows = await this.loadCondominiumUnitAttendanceRows(
+      condominiumId,
+    );
+    const pdfBuffer = await this.buildPollAttendanceSheetPdf(
+      condo.name,
+      poll,
+      attendanceRows,
+    );
+    const storageKey = await this.fileStorage.savePlanningDocumentPdf(
+      condominiumId,
+      pdfBuffer,
+    );
+    const title = `Lista de presença — ${poll.title}`.slice(0, 500);
+    return this.docRepo.save(
+      this.docRepo.create({
+        id: randomUUID(),
+        condominiumId,
+        kind: CondominiumDocumentKind.AssemblyAttendanceSheet,
         status: CondominiumDocumentStatus.Generated,
         title,
         storageKey,
@@ -395,25 +441,42 @@ export class PlanningDocumentsService {
     return { signaturePng, displayName };
   }
 
+  private formatUnitAttendanceLabel(
+    identifier: string,
+    groupingName: string,
+  ): string {
+    const id = String(identifier ?? '').trim() || '—';
+    const gn = String(groupingName ?? '').trim();
+    return gn.length ? `${gn} — ${id}` : id;
+  }
+
   /**
-   * Frações do condomínio (agrupamento + identificador), para lista de presença no PDF da ata.
+   * Frações do condomínio para lista de presença (unidade + responsável como em Unidades).
    */
-  private async loadCondominiumUnitAttendanceLabels(
+  private async loadCondominiumUnitAttendanceRows(
     condominiumId: string,
-  ): Promise<string[]> {
-    const raw = await this.unitRepo
+  ): Promise<{ unitLabel: string; displayName: string | null }[]> {
+    const units = await this.unitRepo
       .createQueryBuilder('u')
-      .innerJoin('u.grouping', 'g')
+      .innerJoinAndSelect('u.grouping', 'g')
+      .leftJoinAndSelect('u.financialResponsiblePerson', 'frp')
+      .leftJoinAndSelect('u.responsibleLinks', 'rl')
+      .leftJoinAndSelect('rl.person', 'rp')
       .where('g.condominiumId = :cid', { cid: condominiumId })
-      .select('u.identifier', 'identifier')
-      .addSelect('g.name', 'groupingName')
       .orderBy('g.name', 'ASC')
       .addOrderBy('u.identifier', 'ASC')
-      .getRawMany<{ identifier: string; groupingName: string }>();
-    return raw.map((r) => {
-      const id = String(r.identifier ?? '').trim() || '—';
-      const gn = String(r.groupingName ?? '').trim();
-      return gn.length ? `${gn} — ${id}` : id;
+      .getMany();
+    return units.map((u) => {
+      const unitLabel = this.formatUnitAttendanceLabel(
+        u.identifier,
+        u.grouping?.name ?? '',
+      );
+      const displayName = resolveUnitFinancialResponsibleDisplayName({
+        financialResponsiblePerson: u.financialResponsiblePerson,
+        responsibleLinks: u.responsibleLinks,
+        responsibleDisplayName: u.responsibleDisplayName,
+      });
+      return { unitLabel, displayName };
     });
   }
 
@@ -425,7 +488,7 @@ export class PlanningDocumentsService {
     doc: any,
     margin: number,
     contentWidth: number,
-    unitLabels: string[],
+    rows: { unitLabel: string; displayName?: string | null }[],
     pageBottomReserve: number,
   ): void {
     /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- PDFKit */
@@ -483,11 +546,11 @@ export class PlanningDocumentsService {
       .fontSize(9.5)
       .fillColor(ink)
       .text(
-        'Preenchimento no ato da reunião. A coluna Unidade traz a identificação cadastrada no sistema. Acrescente linhas ou anexo se for necessário.',
+        'Preenchimento no ato da reunião. A coluna Nome traz o responsável cadastrado em Unidades (quando definido); a coluna Unidade traz a identificação da fração. Acrescente linhas ou anexo se for necessário.',
         { width: contentWidth, align: 'left', lineGap: 1.2 },
       );
     doc.moveDown(0.55);
-    if (unitLabels.length === 0) {
+    if (rows.length === 0) {
       doc
         .font('Helvetica-Oblique')
         .fontSize(9)
@@ -502,11 +565,14 @@ export class PlanningDocumentsService {
       doc.y = margin;
     }
     drawTableHeader();
-    const labels =
-      unitLabels.length > 0
-        ? unitLabels
-        : Array.from({ length: 8 }, () => ' ');
-    for (const label of labels) {
+    const tableRows =
+      rows.length > 0
+        ? rows
+        : Array.from({ length: 12 }, () => ({
+            unitLabel: ' ',
+            displayName: null as string | null,
+          }));
+    for (const row of tableRows) {
       ensureRowSpace();
       const y0 = doc.y;
       doc.save();
@@ -524,13 +590,24 @@ export class PlanningDocumentsService {
         .lineTo(margin + wNome + wUnit, y0 + rowH)
         .stroke();
       doc.restore();
-      const t = String(label).trim();
-      if (t.length) {
+      const name = String(row.displayName ?? '').trim();
+      if (name.length) {
         doc
           .font('Helvetica')
           .fontSize(8.5)
           .fillColor(ink)
-          .text(t, margin + wNome + 4, y0 + 8, {
+          .text(name, margin + 4, y0 + 6, {
+            width: wNome - 8,
+            lineGap: 0.5,
+          });
+      }
+      const unitText = String(row.unitLabel ?? '').trim();
+      if (unitText.length) {
+        doc
+          .font('Helvetica')
+          .fontSize(8.5)
+          .fillColor(ink)
+          .text(unitText, margin + wNome + 4, y0 + 8, {
             width: wUnit - 8,
             lineGap: 0.5,
           });
@@ -643,17 +720,9 @@ export class PlanningDocumentsService {
     if (poll.assemblyType === AssemblyType.Ata) {
       return [`1. ${poll.title}`];
     }
-    const out: string[] = [];
-    const opts = [...(poll.options ?? [])].sort(
-      (a, b) => a.sortOrder - b.sortOrder,
-    );
-    if (opts.length > 0) {
-      let i = 1;
-      for (const o of opts) {
-        out.push(`${i}. ${o.label}`);
-        i += 1;
-      }
-      return out;
+    const questions = sortedPollQuestions(poll);
+    if (questions.length > 0) {
+      return questions.map((q, i) => `${i + 1}. ${q.title}`);
     }
     return [`1. ${poll.title}`];
   }
@@ -669,7 +738,7 @@ export class PlanningDocumentsService {
     poll: PlanningPoll,
     counts: Record<string, number>,
     unitsVoted: number,
-    attendanceUnitLabels: string[],
+    attendanceRows: { unitLabel: string; displayName: string | null }[],
   ): Promise<Buffer> {
     const syndicName = (await this.getSyndicDisplayName(condominiumId))?.trim() || null;
     const horaEnc = this.formatHoraEncerramentoPoll(poll);
@@ -711,15 +780,7 @@ export class PlanningDocumentsService {
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
-      const voteMode = poll.allowMultiple
-        ? 'Escolha múltipla por fração'
-        : 'Escolha única por fração';
-
-      const decidedOption =
-        poll.decidedOptionId && poll.status === PlanningPollStatus.Decided
-          ? poll.options?.find((o) => o.id === poll.decidedOptionId)
-          : null;
-
+      const questions = sortedPollQuestions(poll);
       const totalMarks = Object.values(counts).reduce((a, b) => a + b, 0);
       const ordemDia = this.buildOrdemDiaLines(poll);
 
@@ -768,8 +829,9 @@ export class PlanningDocumentsService {
       doc.font('Helvetica-Bold').fontSize(10.5).text('Discussões e deliberações:');
       doc.moveDown(0.35);
       doc.font('Helvetica').fontSize(10.5);
-      if (poll.body) {
-        const plain = stripPollBodyToPlainText(poll.body);
+      const minutesHtml = poll.minutesBody?.trim() || poll.body?.trim() || '';
+      if (minutesHtml) {
+        const plain = stripPollBodyToPlainText(minutesHtml);
         if (plain) {
           doc.text(plain, { width: contentWidth, align: 'left', lineGap: 1.45 });
           doc.moveDown(0.4);
@@ -783,69 +845,88 @@ export class PlanningDocumentsService {
         doc.moveDown(0.4);
       } else {
         doc.text(
-          `O escrutínio no sistema: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Registro no sistema: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
+          `Escrutínio no sistema. Unidades com voto: ${unitsVoted}. Total de marcações: ${totalMarks}. Registro: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
           { width: contentWidth, align: 'left', lineGap: 1.3 },
         );
         doc.moveDown(0.45);
-        if (decidedOption) {
-          doc
-            .font('Helvetica-Bold')
-            .text(`Opção vencedora: «${decidedOption.label}».`);
-          doc.moveDown(0.45);
-        }
         doc.font('Helvetica');
         const colLabel = margin + 4;
         const colVotes = margin + contentWidth * 0.66;
         const rowH = 15;
-        const tableTop = doc.y;
-        let y = tableTop;
-        doc.save();
-        doc
-          .rect(margin, y, contentWidth, rowH)
-          .strokeColor(lineTable)
-          .lineWidth(0.45)
-          .stroke();
-        doc.restore();
-        doc.font('Helvetica-Bold').fontSize(8.2).text('Apuração (sistema)', margin, y + 3, {
-          width: contentWidth,
-        });
-        doc.y = y + rowH;
-        let i = 0;
-        for (const o of [...(poll.options ?? [])].sort(
-          (a, b) => a.sortOrder - b.sortOrder,
-        )) {
-          const c = counts[o.id] ?? 0;
-          y = doc.y;
+        for (const q of questions) {
+          const voteMode = q.allowMultiple
+            ? 'escolha múltipla'
+            : 'escolha única';
+          doc
+            .font('Helvetica-Bold')
+            .fontSize(9.5)
+            .text(`Deliberação: ${q.title} (${voteMode})`);
+          doc.moveDown(0.25);
+          if (
+            q.decidedOptionId &&
+            poll.status === PlanningPollStatus.Decided
+          ) {
+            const winner = q.options?.find((o) => o.id === q.decidedOptionId);
+            if (winner) {
+              doc
+                .font('Helvetica')
+                .fontSize(9)
+                .text(`Opção registada na ata: «${winner.label}».`);
+              doc.moveDown(0.25);
+            }
+          }
+          let y = doc.y;
+          const tableTop = y;
           doc.save();
           doc
             .rect(margin, y, contentWidth, rowH)
-            .strokeColor(lineGrid)
-            .lineWidth(0.3)
+            .strokeColor(lineTable)
+            .lineWidth(0.45)
             .stroke();
           doc.restore();
           doc
-            .font('Helvetica')
-            .fontSize(8.8)
-            .text(`${i + 1}. ${o.label}`, colLabel, y + 3, {
-              width: colVotes - colLabel - 4,
-            });
-          doc
             .font('Helvetica-Bold')
-            .text(String(c), colVotes, y + 3, {
-              width: margin + contentWidth - colVotes - 6,
-              align: 'right',
-            });
+            .fontSize(8.2)
+            .text('Apuração', margin, y + 3, { width: contentWidth });
           doc.y = y + rowH;
-          i += 1;
+          let i = 0;
+          for (const o of [...(q.options ?? [])].sort(
+            (a, b) => a.sortOrder - b.sortOrder,
+          )) {
+            const c = counts[o.id] ?? 0;
+            y = doc.y;
+            doc.save();
+            doc
+              .rect(margin, y, contentWidth, rowH)
+              .strokeColor(lineGrid)
+              .lineWidth(0.3)
+              .stroke();
+            doc.restore();
+            doc
+              .font('Helvetica')
+              .fontSize(8.8)
+              .text(`${i + 1}. ${o.label}`, colLabel, y + 3, {
+                width: colVotes - colLabel - 4,
+              });
+            doc
+              .font('Helvetica-Bold')
+              .text(String(c), colVotes, y + 3, {
+                width: margin + contentWidth - colVotes - 6,
+                align: 'right',
+              });
+            doc.y = y + rowH;
+            i += 1;
+          }
+          const tableBottom = doc.y;
+          doc.save();
+          doc
+            .rect(margin, tableTop, contentWidth, tableBottom - tableTop)
+            .strokeColor(lineTable)
+            .lineWidth(0.4)
+            .stroke();
+          doc.restore();
+          doc.moveDown(0.35);
         }
-        const tableBottom = doc.y;
-        doc.save();
-        doc
-          .rect(margin, tableTop, contentWidth, tableBottom - tableTop)
-          .strokeColor(lineTable)
-          .lineWidth(0.4)
-          .stroke();
-        doc.restore();
         doc.moveDown(0.45);
       }
       doc.font('Helvetica').fontSize(10.3);
@@ -870,8 +951,110 @@ export class PlanningDocumentsService {
         doc,
         margin,
         contentWidth,
-        attendanceUnitLabels,
+        attendanceRows,
         bottom,
+      );
+
+      stampPlatformFooterOnAllPages(doc);
+      doc.end();
+    });
+  }
+
+  /**
+   * Folha avulsa para impressão: lista de presença com colunas Nome / Unidade / Assinatura.
+   */
+  private async buildPollAttendanceSheetPdf(
+    condominiumName: string,
+    poll: PlanningPoll,
+    attendanceRows: { unitLabel: string; displayName: string | null }[],
+  ): Promise<Buffer> {
+    const syndicName = (await this.getSyndicDisplayName(poll.condominiumId))?.trim() || null;
+    return new Promise((resolve, reject) => {
+      const margin = 56;
+      const bottom = 72;
+      const doc = new PDFDocument({
+        size: 'A4',
+        bufferPages: true,
+        margins: { top: margin, bottom, left: margin, right: margin },
+        info: {
+          Title: `Lista de presença — ${poll.title}`.slice(0, 200),
+          Author: condominiumName.slice(0, 120),
+        },
+      });
+      installPlatformWatermarkUnderAllContent(doc, { opacity: 0.018 });
+      const chunks: Buffer[] = [];
+      const pageW = doc.page.width;
+      const contentWidth = pageW - margin * 2;
+      const ink = '#1a1a1a';
+
+      doc.on('data', (c: Buffer) => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      doc.x = margin;
+      doc.y = margin;
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(14)
+        .fillColor(ink)
+        .text('LISTA DE PRESENÇA — ASSEMBLEIA', {
+          width: contentWidth,
+          align: 'center',
+        });
+      doc.moveDown(0.55);
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(11)
+        .text(condominiumName, { width: contentWidth, align: 'center' });
+      doc.moveDown(0.75);
+      doc.font('Helvetica').fontSize(10.5).fillColor(ink);
+      doc.text(`Pauta: ${poll.title}`, { width: contentWidth, lineGap: 1.25 });
+      doc.moveDown(0.35);
+      doc.text(this.formatAosDiasDoMesEAnoLine(poll), {
+        width: contentWidth,
+        lineGap: 1.2,
+      });
+      doc.text(
+        `Horário de referência (abertura no sistema): ${this.formatHoraAberturaPoll(poll)}`,
+        { width: contentWidth, lineGap: 1.2 },
+      );
+      if (syndicName) {
+        doc.text(`Síndico(a): ${syndicName}`, {
+          width: contentWidth,
+          lineGap: 1.2,
+        });
+      }
+      doc.moveDown(0.65);
+      doc
+        .font('Helvetica')
+        .fontSize(9.5)
+        .text(
+          'Documento para pré-impressão e coleta de assinaturas no ato da assembleia. ' +
+            'Cada condômino presente deve assinar na coluna indicada. ' +
+            'Nomes (responsável por unidade, como em Unidades) e frações vêm do cadastro quando disponíveis; corrija à mão se necessário.',
+          { width: contentWidth, align: 'left', lineGap: 1.35 },
+        );
+      doc.moveDown(0.75);
+      this.drawPollAttendanceListTable(
+        doc,
+        margin,
+        contentWidth,
+        attendanceRows,
+        bottom,
+      );
+      doc.moveDown(0.5);
+      doc
+        .font('Helvetica-Oblique')
+        .fontSize(8.5)
+        .fillColor('#444444')
+        .text(
+          'Observações: ________________________________________________________________________________',
+          { width: contentWidth },
+        );
+      doc.moveDown(0.35);
+      doc.text(
+        '______________________________________________________________________________________________',
+        { width: contentWidth },
       );
 
       stampPlatformFooterOnAllPages(doc);

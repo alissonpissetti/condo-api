@@ -4,8 +4,14 @@ import { Person } from '../people/person.entity';
 import { PlanningModule } from '../planning/planning.module';
 import { User } from '../users/user.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
+import { CondominiumSupplierCategoriesController } from './condominium-supplier-categories.controller';
+import { CondominiumSupplierCategoriesService } from './condominium-supplier-categories.service';
+import { CondominiumSuppliersController } from './condominium-suppliers.controller';
+import { CondominiumSuppliersService } from './condominium-suppliers.service';
 import { CondominiumWorksController } from './condominium-works.controller';
 import { CondominiumWorksService } from './condominium-works.service';
+import { CondominiumSupplierCategory } from './entities/condominium-supplier-category.entity';
+import { CondominiumSupplier } from './entities/condominium-supplier.entity';
 import { CondominiumWorkBudget } from './entities/condominium-work-budget.entity';
 import { CondominiumWorkTimelineAttachment } from './entities/condominium-work-timeline-attachment.entity';
 import { CondominiumWorkTimelineEntry } from './entities/condominium-work-timeline-entry.entity';
@@ -16,6 +22,8 @@ import { WorkTransactionLinkService } from './work-transaction-link.service';
   imports: [
     TypeOrmModule.forFeature([
       CondominiumWork,
+      CondominiumSupplier,
+      CondominiumSupplierCategory,
       CondominiumWorkBudget,
       CondominiumWorkTimelineAttachment,
       CondominiumWorkTimelineEntry,
@@ -25,8 +33,21 @@ import { WorkTransactionLinkService } from './work-transaction-link.service';
     ]),
     PlanningModule,
   ],
-  controllers: [CondominiumWorksController],
-  providers: [CondominiumWorksService, WorkTransactionLinkService],
-  exports: [WorkTransactionLinkService],
+  controllers: [
+    CondominiumWorksController,
+    CondominiumSuppliersController,
+    CondominiumSupplierCategoriesController,
+  ],
+  providers: [
+    CondominiumWorksService,
+    CondominiumSuppliersService,
+    CondominiumSupplierCategoriesService,
+    WorkTransactionLinkService,
+  ],
+  exports: [
+    WorkTransactionLinkService,
+    CondominiumSuppliersService,
+    CondominiumSupplierCategoriesService,
+  ],
 })
 export class CondominiumWorksModule {}

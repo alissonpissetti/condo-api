@@ -13,7 +13,7 @@ import { User } from '../../users/user.entity';
 import { AssemblyType } from '../enums/assembly-type.enum';
 import { PlanningPollStatus } from '../enums/planning-poll-status.enum';
 import { PlanningPollAttachment } from './planning-poll-attachment.entity';
-import { PlanningPollOption } from './planning-poll-option.entity';
+import { PlanningPollQuestion } from './planning-poll-question.entity';
 
 @Entity('planning_polls')
 export class PlanningPoll {
@@ -32,6 +32,10 @@ export class PlanningPoll {
 
   @Column({ type: 'text', nullable: true })
   body: string | null;
+
+  /** Rascunho da ata final (modo reunião / IA); a `body` permanece como pauta original. */
+  @Column({ name: 'minutes_body', type: 'text', nullable: true })
+  minutesBody: string | null;
 
   @Column({ name: 'opens_at', type: 'datetime', precision: 6 })
   opensAt: Date;
@@ -62,8 +66,8 @@ export class PlanningPoll {
   @JoinColumn({ name: 'created_by_user_id' })
   createdBy: User;
 
-  @OneToMany(() => PlanningPollOption, (o) => o.poll, { cascade: ['insert'] })
-  options: PlanningPollOption[];
+  @OneToMany(() => PlanningPollQuestion, (q) => q.poll, { cascade: ['insert'] })
+  questions: PlanningPollQuestion[];
 
   @OneToMany(() => PlanningPollAttachment, (a) => a.poll)
   attachments: PlanningPollAttachment[];

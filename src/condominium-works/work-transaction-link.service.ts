@@ -59,7 +59,9 @@ export class WorkTransactionLinkService {
         ? 'Receita'
         : tx.kind === 'investment'
           ? 'Aplicação'
-          : 'Despesa';
+          : tx.kind === 'yield'
+            ? 'Rendimento'
+            : 'Despesa';
     const amount = (Number(tx.amountCents) / 100).toLocaleString('pt-BR', {
       style: 'currency',
       currency: 'BRL',

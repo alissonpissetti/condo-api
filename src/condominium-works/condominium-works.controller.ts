@@ -214,11 +214,16 @@ export class CondominiumWorksController {
     schema: {
       type: 'object',
       properties: {
+        supplierId: { type: 'string', format: 'uuid' },
         supplierName: { type: 'string' },
         amountCents: { type: 'string' },
         validUntil: { type: 'string' },
         status: { type: 'string' },
         notes: { type: 'string' },
+        scheduledAt: {
+          type: 'string',
+          description: 'Agendamento da visita (YYYY-MM-DDTHH:mm).',
+        },
         recordedOn: {
           type: 'string',
           description: 'Data e hora (YYYY-MM-DDTHH:mm). Padrão: agora.',
@@ -228,7 +233,6 @@ export class CondominiumWorksController {
           items: { type: 'string', format: 'binary' },
         },
       },
-      required: ['supplierName', 'amountCents'],
     },
   })
   @UseInterceptors(

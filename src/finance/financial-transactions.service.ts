@@ -20,6 +20,7 @@ import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
 import {
   FinancialTransaction,
+  type FinancialTransactionKind,
 } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
@@ -159,6 +160,12 @@ export class FinancialTransactionsService {
   ): Promise<FinancialTransaction> {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
     this.validateAllocationForKind(dto.kind, dto.allocationRule);
+    this.validateYieldKindConstraints(
+      dto.kind,
+      dto.allocationRule,
+      dto.fundId ?? null,
+      dto.workId,
+    );
     if (!isAllocationRule(dto.allocationRule)) {
       throw new BadRequestException('Invalid allocation rule');
     }
@@ -352,6 +359,12 @@ export class FinancialTransactionsService {
     },
   ): Promise<FinancialTransaction> {
     this.validateAllocationForKind(dto.kind, dto.allocationRule);
+    this.validateYieldKindConstraints(
+      dto.kind,
+      dto.allocationRule,
+      dto.fundId ?? null,
+      dto.workId,
+    );
     if (!isAllocationRule(dto.allocationRule)) {
       throw new BadRequestException('Invalid allocation rule');
     }
@@ -447,6 +460,16 @@ export class FinancialTransactionsService {
       throw new BadRequestException('Invalid allocation rule');
     }
     this.validateAllocationForKind(kind, allocationRule);
+    const resolvedFundId =
+      dto.fundId !== undefined ? dto.fundId : existing.fundId;
+    const resolvedWorkId =
+      dto.workId !== undefined ? dto.workId : existing.workId;
+    this.validateYieldKindConstraints(
+      kind,
+      allocationRule,
+      resolvedFundId,
+      resolvedWorkId,
+    );
     if (dto.fundId !== undefined && dto.fundId !== null) {
       await this.fundsService.findOne(condominiumId, dto.fundId, userId);
     }
@@ -738,6 +761,14 @@ export class FinancialTransactionsService {
         const kind = dto.kind ?? existing.kind;
         const allocationRule = dto.allocationRule ?? existing.allocationRule;
         this.validateAllocationForKind(kind, allocationRule);
+        const resolvedFundId =
+          dto.fundId !== undefined ? dto.fundId : existing.fundId;
+        this.validateYieldKindConstraints(
+          kind,
+          allocationRule,
+          resolvedFundId,
+          null,
+        );
         const amountCents =
           dto.amountCents !== undefined
             ? dto.amountCents
@@ -922,9 +953,14 @@ export class FinancialTransactionsService {
   }
 
   private validateAllocationForKind(
-    kind: 'expense' | 'income' | 'investment',
+    kind: FinancialTransactionKind,
     rule: { kind: string },
   ): void {
+    if (kind === 'yield' && rule.kind !== 'none') {
+      throw new BadRequestException(
+        'Rendimento não pode ser rateado entre unidades',
+      );
+    }
     if ((kind === 'expense' || kind === 'investment') && rule.kind === 'none') {
       throw new BadRequestException(
         'Expense and investment transactions require an allocation rule',
@@ -932,11 +968,41 @@ export class FinancialTransactionsService {
     }
   }
 
+  private validateYieldKindConstraints(
+    kind: FinancialTransactionKind,
+    rule: { kind: string },
+    fundId: string | null | undefined,
+    workId?: string | null,
+  ): void {
+    if (kind !== 'yield') {
+      return;
+    }
+    if (rule.kind !== 'none') {
+      throw new BadRequestException(
+        'Rendimento não pode ser rateado entre unidades',
+      );
+    }
+    if (fundId) {
+      throw new BadRequestException('Rendimento não pode ser vinculado a fundo');
+    }
+    if (workId?.trim()) {
+      throw new BadRequestException('Rendimento não pode ser vinculado a obra');
+    }
+  }
+
   private buildShares(
-    kind: 'expense' | 'income' | 'investment',
+    kind: FinancialTransactionKind,
     amountCents: number,
     unitIds: string[],
   ): { unitId: string; shareCents: string }[] {
+    if (kind === 'yield') {
+      if (unitIds.length > 0) {
+        throw new BadRequestException(
+          'Rendimento não pode ser rateado entre unidades',
+        );
+      }
+      return [];
+    }
     if (unitIds.length === 0) {
       if (kind === 'expense' || kind === 'investment') {
         throw new BadRequestException(

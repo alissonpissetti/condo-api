@@ -90,6 +90,23 @@ export class PlanningDocumentsController {
     return this.documents.generateMinutesDraft(condominiumId, pollId, userId);
   }
 
+  @Post('planning/polls/:pollId/attendance-sheet')
+  @ApiOperation({
+    summary:
+      'Gerar PDF da lista de presença (pré-impressão para assinaturas na assembleia)',
+  })
+  generateAttendanceSheet(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.documents.generateAttendanceSheet(
+      condominiumId,
+      pollId,
+      userId,
+    );
+  }
+
   @Post('documents/:documentId/final-upload')
   @ApiConsumes('multipart/form-data')
   @ApiBody({

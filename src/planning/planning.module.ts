@@ -12,6 +12,7 @@ import { CondominiumParticipant } from './entities/condominium-participant.entit
 import { GovernanceAuditLog } from './entities/governance-audit-log.entity';
 import { PlanningPollAttachment } from './entities/planning-poll-attachment.entity';
 import { PlanningPollOption } from './entities/planning-poll-option.entity';
+import { PlanningPollQuestion } from './entities/planning-poll-question.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
 import { PlanningPoll } from './entities/planning-poll.entity';
 import { GovernanceController } from './governance.controller';
@@ -20,6 +21,7 @@ import { PlanningDocumentsController } from './planning-documents.controller';
 import { PlanningDocumentsService } from './planning-documents.service';
 import { PlanningPollsController } from './planning-polls.controller';
 import { PlanningPollsService } from './planning-polls.service';
+import { PollAiDraftService } from './poll-ai-draft.service';
 
 @Module({
   imports: [
@@ -29,6 +31,7 @@ import { PlanningPollsService } from './planning-polls.service';
       PlanningPoll,
       PlanningPollAttachment,
       PlanningPollOption,
+      PlanningPollQuestion,
       PlanningPollVote,
       CondominiumDocument,
       Condominium,
@@ -45,7 +48,12 @@ import { PlanningPollsService } from './planning-polls.service';
     PlanningPollsController,
     PlanningDocumentsController,
   ],
-  providers: [GovernanceService, PlanningPollsService, PlanningDocumentsService],
+  providers: [
+    GovernanceService,
+    PlanningPollsService,
+    PlanningDocumentsService,
+    PollAiDraftService,
+  ],
   exports: [GovernanceService],
 })
 export class PlanningModule {}
