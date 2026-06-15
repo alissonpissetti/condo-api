@@ -72,6 +72,8 @@ import { SupplierContactName1751570000000 } from '../migrations/1751570000000-su
 import { WorkBudgetScheduledAt1751580000000 } from '../migrations/1751580000000-work-budget-scheduled-at';
 import { PlanningPollQuestions1751590000000 } from '../migrations/1751590000000-planning-poll-questions';
 import { PlanningPollMinutesBody1751600000000 } from '../migrations/1751600000000-planning-poll-minutes-body';
+import { PlanningPollFinalResolution1751700000000 } from '../migrations/1751700000000-planning-poll-final-resolution';
+import { PlanningPollArchivedAt1751800000000 } from '../migrations/1751800000000-planning-poll-archived-at';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -222,6 +224,8 @@ export const AppDataSource = new DataSource({
     WorkBudgetScheduledAt1751580000000,
     PlanningPollQuestions1751590000000,
     PlanningPollMinutesBody1751600000000,
+    PlanningPollFinalResolution1751700000000,
+    PlanningPollArchivedAt1751800000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

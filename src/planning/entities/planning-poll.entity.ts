@@ -59,6 +59,14 @@ export class PlanningPoll {
   @Column({ name: 'decided_option_id', type: 'varchar', length: 36, nullable: true })
   decidedOptionId: string | null;
 
+  /** Parecer final quando a reunião foi inconclusiva (prorrogação ou cancelamento). */
+  @Column({ name: 'final_opinion', type: 'text', nullable: true })
+  finalOpinion: string | null;
+
+  /** Quando preenchido, a pauta deixa de aparecer na lista padrão. */
+  @Column({ name: 'archived_at', type: 'datetime', precision: 6, nullable: true })
+  archivedAt: Date | null;
+
   @Column({ name: 'created_by_user_id' })
   createdByUserId: string;
 

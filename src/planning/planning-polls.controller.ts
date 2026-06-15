@@ -31,6 +31,7 @@ import { AiDraftPollDto } from './dto/ai-draft-poll.dto';
 import { AiMergeMeetingMinutesDto } from './dto/ai-merge-meeting-minutes.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
 import { DecidePollDto } from './dto/decide-poll.dto';
+import { RegisterPollFinalResolutionDto } from './dto/register-poll-final-resolution.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollsService } from './planning-polls.service';
@@ -233,6 +234,34 @@ export class PlanningPollsController {
     return this.polls.update(condominiumId, pollId, userId, dto);
   }
 
+  @Post(':pollId/archive')
+  @ApiOperation({
+    summary: 'Arquivar pauta',
+    description:
+      'Oculta a pauta da lista padrão sem apagar o histórico (síndico/titular).',
+  })
+  archive(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.archive(condominiumId, pollId, userId);
+  }
+
+  @Delete(':pollId')
+  @ApiOperation({
+    summary: 'Excluir pauta em rascunho',
+    description:
+      'Remove permanentemente uma pauta com status «rascunho» (síndico/titular).',
+  })
+  deleteDraft(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.deleteDraft(condominiumId, pollId, userId);
+  }
+
   @Post(':pollId/open')
   @ApiOperation({ summary: 'Abrir votação' })
   open(
@@ -264,6 +293,40 @@ export class PlanningPollsController {
     @Param('pollId', ParseUUIDPipe) pollId: string,
   ) {
     return this.polls.finalizeAtaPoll(condominiumId, pollId, userId);
+  }
+
+  @Post(':pollId/final-resolution')
+  @ApiOperation({
+    summary: 'Parecer final inconclusivo (prorrogar ou cancelar pauta)',
+    description:
+      'Após reunião encerrada sem decisão definitiva: registra parecer e marca a pauta como prorrogada ou sem necessidade.',
+  })
+  registerFinalResolution(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Body() body: RegisterPollFinalResolutionDto,
+  ) {
+    return this.polls.registerFinalResolution(
+      condominiumId,
+      pollId,
+      userId,
+      body,
+    );
+  }
+
+  @Post(':pollId/resume-postponed')
+  @ApiOperation({
+    summary: 'Retomar pauta prorrogada',
+    description:
+      'Volta a pauta prorrogada para rascunho, preservando o parecer anterior.',
+  })
+  resumePostponed(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.resumePostponedPoll(condominiumId, pollId, userId);
   }
 
   @Post(':pollId/decide')

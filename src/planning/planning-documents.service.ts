@@ -93,7 +93,9 @@ export class PlanningDocumentsService {
     if (
       !poll ||
       (poll.status !== PlanningPollStatus.Closed &&
-        poll.status !== PlanningPollStatus.Decided)
+        poll.status !== PlanningPollStatus.Decided &&
+        poll.status !== PlanningPollStatus.Postponed &&
+        poll.status !== PlanningPollStatus.Withdrawn)
     ) {
       return false;
     }
@@ -128,7 +130,12 @@ export class PlanningDocumentsService {
         ],
       })
       .andWhere('p.status IN (:...statuses)', {
-        statuses: [PlanningPollStatus.Closed, PlanningPollStatus.Decided],
+        statuses: [
+          PlanningPollStatus.Closed,
+          PlanningPollStatus.Decided,
+          PlanningPollStatus.Postponed,
+          PlanningPollStatus.Withdrawn,
+        ],
       })
       .andWhere(
         new Brackets((qb) => {

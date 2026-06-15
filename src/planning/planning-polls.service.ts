@@ -14,6 +14,10 @@ import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
 import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import { CastVoteDto } from './dto/cast-vote.dto';
+import {
+  PollFinalResolutionOutcome,
+  RegisterPollFinalResolutionDto,
+} from './dto/register-poll-final-resolution.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
@@ -128,12 +132,19 @@ export class PlanningPollsService {
     query: ListPlanningPollsQueryDto = {},
   ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    const includeArchived = query.includeArchived === true;
+    if (includeArchived) {
+      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    }
     const limit = Math.min(Math.max(query.limit ?? 100, 1), 100);
     const qRaw = query.q?.trim();
 
     const qb = this.pollRepo
       .createQueryBuilder('poll')
       .where('poll.condominiumId = :cid', { cid: condominiumId });
+    if (!includeArchived) {
+      qb.andWhere('poll.archivedAt IS NULL');
+    }
 
     if (qRaw) {
       const safe = qRaw.replace(/[%_]/g, '').trim();
@@ -209,7 +220,55 @@ export class PlanningPollsService {
 
   async getOne(condominiumId: string, pollId: string, userId: string) {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.archivedAt) {
+      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    }
+    return poll;
+  }
+
+  async archive(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ): Promise<PlanningPoll> {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.archivedAt) {
+      throw new BadRequestException('Esta pauta já está arquivada.');
+    }
+    poll.archivedAt = new Date();
+    await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  async deleteDraft(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ): Promise<{ ok: true }> {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Draft) {
+      throw new BadRequestException(
+        'Só pautas em rascunho podem ser excluídas.',
+      );
+    }
+    const attachments = await this.attachmentRepo.find({
+      where: { pollId: poll.id },
+    });
+    for (const att of attachments) {
+      try {
+        await this.attachmentStorage.deletePollAttachment(
+          condominiumId,
+          att.storageKey,
+        );
+      } catch {
+        /* ficheiro pode já não existir */
+      }
+    }
+    await this.pollRepo.delete({ id: poll.id, condominiumId });
+    return { ok: true };
   }
 
   async create(
@@ -606,6 +665,65 @@ export class PlanningPollsService {
     return this.loadPollForCondo(condominiumId, pollId);
   }
 
+  async registerFinalResolution(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    dto: RegisterPollFinalResolutionDto,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Closed) {
+      throw new BadRequestException(
+        'Só pautas encerradas podem receber parecer final inconclusivo.',
+      );
+    }
+    const opinion = dto.opinion.trim();
+    if (!opinion) {
+      throw new BadRequestException('Indique o parecer final.');
+    }
+    poll.finalOpinion = opinion;
+    if (dto.outcome === PollFinalResolutionOutcome.Postpone) {
+      if (dto.opensAt !== undefined || dto.closesAt !== undefined) {
+        const opens = dto.opensAt ? new Date(dto.opensAt) : poll.opensAt;
+        const closes = dto.closesAt ? new Date(dto.closesAt) : poll.closesAt;
+        if (closes <= opens) {
+          throw new BadRequestException(
+            'closesAt deve ser posterior a opensAt.',
+          );
+        }
+        if (dto.opensAt) {
+          poll.opensAt = opens;
+        }
+        if (dto.closesAt) {
+          poll.closesAt = closes;
+        }
+      }
+      poll.status = PlanningPollStatus.Postponed;
+    } else {
+      poll.status = PlanningPollStatus.Withdrawn;
+    }
+    await this.pollRepo.save(poll);
+    return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  async resumePostponedPoll(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Postponed) {
+      throw new BadRequestException(
+        'Só pautas prorrogadas podem ser retomadas para rascunho.',
+      );
+    }
+    poll.status = PlanningPollStatus.Draft;
+    await this.pollRepo.save(poll);
+    return this.loadPollForCondo(condominiumId, pollId);
+  }
+
   async results(condominiumId: string, pollId: string, userId: string) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
@@ -616,7 +734,9 @@ export class PlanningPollsService {
     if (
       !canSeeUnitDetail &&
       poll.status !== PlanningPollStatus.Closed &&
-      poll.status !== PlanningPollStatus.Decided
+      poll.status !== PlanningPollStatus.Decided &&
+      poll.status !== PlanningPollStatus.Postponed &&
+      poll.status !== PlanningPollStatus.Withdrawn
     ) {
       throw new ForbiddenException(
         'Resultados ainda não estão disponíveis para a sua situação (a pauta ainda não foi encerrada).',

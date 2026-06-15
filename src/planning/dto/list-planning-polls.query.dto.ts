@@ -74,4 +74,15 @@ export class ListPlanningPollsQueryDto {
   )
   @IsBoolean()
   includeMyVotes?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Quando `true`, inclui pautas arquivadas (apenas síndico/titular). Por omissão, ficam ocultas.',
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === true || value === 'true' || value === '1',
+  )
+  @IsBoolean()
+  includeArchived?: boolean;
 }
