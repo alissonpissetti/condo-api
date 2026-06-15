@@ -59,6 +59,16 @@ export class UpdateTransactionDto {
 
   @ApiPropertyOptional({
     nullable: true,
+    description:
+      'Fornecedor do condomínio; null remove a associação. Não altera rateio nem valores.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  supplierId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
     description: 'Nova chave de documento; use null para remover o documento.',
   })
   @IsOptional()

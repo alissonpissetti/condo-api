@@ -14,6 +14,8 @@ export const SAAS_PLAN_FEATURE_KEYS = [
   'financialStatement',
   'funds',
   'condoFees',
+  'suppliers',
+  'works',
   'planning',
   'documents',
 ] as const;
@@ -36,6 +38,8 @@ export const SAAS_PLAN_FEATURE_LABELS: Record<SaasPlanFeatureKey, string> = {
   financialStatement: 'Extrato',
   funds: 'Fundos',
   condoFees: 'Taxas condominiais',
+  suppliers: 'Fornecedores',
+  works: 'Obras',
   planning: 'Pautas / planejamento',
   documents: 'Comunicação',
 };

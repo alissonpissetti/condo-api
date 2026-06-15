@@ -9,6 +9,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
+import { Supplier } from '../../suppliers/entities/supplier.entity';
 import type { AllocationRule } from '../allocation.types';
 import { FinancialFund } from './financial-fund.entity';
 import { TransactionUnitShare } from './transaction-unit-share.entity';
@@ -39,6 +40,13 @@ export class FinancialTransaction {
   @ManyToOne(() => FinancialFund, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'fund_id' })
   fund: FinancialFund | null;
+
+  @Column({ name: 'supplier_id', type: 'varchar', length: 36, nullable: true })
+  supplierId: string | null;
+
+  @ManyToOne(() => Supplier, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'supplier_id' })
+  supplier: Supplier | null;
 
   /**
    * expense | income | investment (aplicação de capital; rateio como despesa).

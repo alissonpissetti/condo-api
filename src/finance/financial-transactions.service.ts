@@ -18,6 +18,7 @@ import {
   FinancialTransaction,
 } from './entities/financial-transaction.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
+import { Supplier } from '../suppliers/entities/supplier.entity';
 import { parseDateOnlyFromApi } from './date-only.util';
 import { FinancialFundsService } from './financial-funds.service';
 import { FundBalanceService } from './fund-balance.service';
@@ -29,6 +30,8 @@ export class FinancialTransactionsService {
   constructor(
     @InjectRepository(FinancialTransaction)
     private readonly txRepo: Repository<FinancialTransaction>,
+    @InjectRepository(Supplier)
+    private readonly supplierRepo: Repository<Supplier>,
     private readonly dataSource: DataSource,
     private readonly condominiumsService: CondominiumsService,
     private readonly allocationResolver: AllocationResolverService,
@@ -55,6 +58,7 @@ export class FinancialTransactionsService {
     const qb = this.txRepo
       .createQueryBuilder('t')
       .leftJoinAndSelect('t.fund', 'fund')
+      .leftJoinAndSelect('t.supplier', 'supplier')
       .leftJoinAndSelect('t.unitShares', 'shares')
       .leftJoinAndSelect('shares.unit', 'unit')
       .where('t.condominium_id = :condominiumId', { condominiumId })
@@ -100,7 +104,7 @@ export class FinancialTransactionsService {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const t = await this.txRepo.findOne({
       where: { id: transactionId, condominiumId },
-      relations: { fund: true, unitShares: { unit: true } },
+      relations: { fund: true, supplier: true, unitShares: { unit: true } },
     });
     if (!t) {
       throw new NotFoundException('Transaction not found');
@@ -170,7 +174,7 @@ export class FinancialTransactionsService {
     const id = await this.persistTransaction(condominiumId, dto, shares, opts);
     const t = await this.txRepo.findOne({
       where: { id, condominiumId },
-      relations: { fund: true, unitShares: { unit: true } },
+      relations: { fund: true, supplier: true, unitShares: { unit: true } },
     });
     if (!t) {
       throw new NotFoundException('Transaction not found');
@@ -251,6 +255,13 @@ export class FinancialTransactionsService {
       allocationRule,
     );
     const shares = this.buildShares(kind, amountCents, unitIds);
+    let resolvedSupplierId: string | null | undefined;
+    if (dto.supplierId !== undefined) {
+      resolvedSupplierId = await this.resolveSupplierIdForCondominium(
+        condominiumId,
+        dto.supplierId,
+      );
+    }
     await this.dataSource.transaction(async (manager) => {
       await manager.delete(TransactionUnitShare, {
         transactionId: existing.id,
@@ -273,6 +284,9 @@ export class FinancialTransactionsService {
       if (hasDocPatch) {
         existing.documentStorageKeys = nextDocKeys.length ? nextDocKeys : null;
         existing.documentStorageKey = nextDocKeys[0] ?? null;
+      }
+      if (dto.supplierId !== undefined) {
+        existing.supplierId = resolvedSupplierId ?? null;
       }
       await manager.save(existing);
       for (const row of shares) {
@@ -365,6 +379,7 @@ export class FinancialTransactionsService {
       dto.documentStorageKeys,
       dto.documentStorageKey,
       dto.receiptStorageKey,
+      dto.supplierId,
     ].some((v) => v !== undefined);
     if (!hasPatch) {
       throw new BadRequestException('Nada para atualizar na série');
@@ -437,6 +452,14 @@ export class FinancialTransactionsService {
       }
     }
 
+    let seriesSupplierId: string | null | undefined;
+    if (dto.supplierId !== undefined) {
+      seriesSupplierId = await this.resolveSupplierIdForCondominium(
+        condominiumId,
+        dto.supplierId,
+      );
+    }
+
     await this.dataSource.transaction(async (manager) => {
       for (let i = 0; i < rows.length; i++) {
         const existing = rows[i];
@@ -476,6 +499,9 @@ export class FinancialTransactionsService {
             seriesDocKeys && seriesDocKeys.length ? seriesDocKeys : null;
           existing.documentStorageKey = seriesDocKeys?.[0] ?? null;
         }
+        if (dto.supplierId !== undefined) {
+          existing.supplierId = seriesSupplierId ?? null;
+        }
         await manager.save(existing);
         for (const row of shares) {
           await manager.save(
@@ -491,7 +517,7 @@ export class FinancialTransactionsService {
 
     return this.txRepo.find({
       where: { condominiumId, recurringSeriesId: seriesId },
-      relations: { fund: true, unitShares: { unit: true } },
+      relations: { fund: true, supplier: true, unitShares: { unit: true } },
       order: { occurredOn: 'ASC', id: 'ASC' },
     });
   }
@@ -644,6 +670,28 @@ export class FinancialTransactionsService {
     }));
   }
 
+  private async resolveSupplierIdForCondominium(
+    condominiumId: string,
+    supplierId: string | null | undefined,
+  ): Promise<string | null> {
+    if (supplierId === undefined || supplierId === null) {
+      return null;
+    }
+    const sid = String(supplierId).trim();
+    if (!sid) {
+      return null;
+    }
+    const s = await this.supplierRepo.findOne({
+      where: { id: sid, condominiumId },
+    });
+    if (!s) {
+      throw new BadRequestException(
+        'Fornecedor não encontrado neste condomínio.',
+      );
+    }
+    return sid;
+  }
+
   private async persistTransaction(
     condominiumId: string,
     dto: CreateTransactionDto,
@@ -656,9 +704,14 @@ export class FinancialTransactionsService {
       : occurredOn;
     const documentKeys = this.resolveCreateDocumentKeys(dto);
     return this.dataSource.transaction(async (manager) => {
+      const supplierId = await this.resolveSupplierIdForCondominium(
+        condominiumId,
+        dto.supplierId,
+      );
       const tx = manager.create(FinancialTransaction, {
         condominiumId,
         fundId: dto.fundId ?? null,
+        supplierId,
         kind: dto.kind,
         amountCents: String(dto.amountCents),
         occurredOn,

@@ -16,7 +16,9 @@ import { StorageModule } from './storage/storage.module';
 import { UnitsModule } from './units/units.module';
 import { PlatformModule } from './platform/platform.module';
 import { SupportModule } from './support/support.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
 import { UsersModule } from './users/users.module';
+import { WorksModule } from './works/works.module';
 
 @Module({
   imports: [
@@ -53,6 +55,8 @@ import { UsersModule } from './users/users.module';
     CommunicationsModule,
     PlatformModule,
     SupportModule,
+    SuppliersModule,
+    WorksModule,
   ],
 })
 export class AppModule {}

@@ -33,6 +33,10 @@ export class PlanningPoll {
   @Column({ type: 'text', nullable: true })
   body: string | null;
 
+  /** Rascunho da ata final (modo reunião); `body` permanece como pauta original. */
+  @Column({ name: 'minutes_body', type: 'text', nullable: true })
+  minutesBody: string | null;
+
   @Column({ name: 'opens_at', type: 'datetime', precision: 6 })
   opensAt: Date;
 

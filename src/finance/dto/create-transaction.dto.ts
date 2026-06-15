@@ -58,6 +58,14 @@ export class CreateTransactionDto {
 
   @ApiPropertyOptional({
     description:
+      'Fornecedor do condomínio (cadastro em Fornecedores). Opcional; útil para exibir chave PIX ao pagar.',
+  })
+  @IsOptional()
+  @IsUUID()
+  supplierId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
       'Chave do documento (boleto/contrato/print) retornada por POST /condominiums/:id/transaction-receipts (opcional).',
   })
   @IsOptional()

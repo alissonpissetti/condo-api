@@ -95,4 +95,14 @@ export class UpdateRecurringSeriesDto {
   @IsString()
   @Matches(RECEIPT_KEY_RE, { message: 'receiptStorageKey inválida' })
   receiptStorageKey?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Mesmo fornecedor em todas as parcelas da série; null remove o vínculo em todas.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  supplierId?: string | null;
 }

@@ -45,6 +45,15 @@ export class UpdatePlanningPollDto {
   @MaxLength(100000)
   body?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Rascunho HTML da ata final (modo reunião). A pauta original permanece em `body`.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100000)
+  minutesBody?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsDateString()

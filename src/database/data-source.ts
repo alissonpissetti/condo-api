@@ -67,6 +67,14 @@ import { CondominiumFeeChargePaymentLogs1751250000000 } from '../migrations/1751
 import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751260000000-units-financial-responsible-person';
 import { UnitsPendingWhatsappPhone1751410000000 } from '../migrations/1751410000000-units-pending-whatsapp-phone';
 import { FinancialTransactionPaymentStatus1751420000000 } from '../migrations/1751420000000-financial-transaction-payment-status';
+import { Suppliers1751430000000 } from '../migrations/1751430000000-suppliers';
+import { FinancialTransactionSupplier1751450000000 } from '../migrations/1751450000000-financial-transaction-supplier';
+import { ConstructionWorks1751460000000 } from '../migrations/1751460000000-construction-works';
+import { PlanningPollMinutesAndMeetingNotes1751470000000 } from '../migrations/1751470000000-planning-poll-minutes-and-meeting-notes';
+import { SupplierCategory } from '../suppliers/entities/supplier-category.entity';
+import { Supplier } from '../suppliers/entities/supplier.entity';
+import { ConstructionProjectUpdate } from '../works/entities/construction-project-update.entity';
+import { ConstructionProject } from '../works/entities/construction-project.entity';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { CondominiumLibraryDocument } from '../condominium-library/entities/condominium-library-document.entity';
@@ -100,10 +108,15 @@ export const AppDataSource = new DataSource({
     LoginSmsChallenge,
     PasswordResetChallenge,
     FinancialFund,
+    /** Obrigatório antes de `FinancialTransaction`: relação `supplier` e FKs em obras. */
+    SupplierCategory,
+    Supplier,
     FinancialTransaction,
     TransactionUnitShare,
     FundMonthlyAccrual,
     CondominiumFeeCharge,
+    ConstructionProject,
+    ConstructionProjectUpdate,
     SaasCondominiumBilling,
     SaasCharge,
     SaasPlan,
@@ -172,6 +185,10 @@ export const AppDataSource = new DataSource({
     UnitsFinancialResponsiblePerson1751260000000,
     UnitsPendingWhatsappPhone1751410000000,
     FinancialTransactionPaymentStatus1751420000000,
+    Suppliers1751430000000,
+    FinancialTransactionSupplier1751450000000,
+    ConstructionWorks1751460000000,
+    PlanningPollMinutesAndMeetingNotes1751470000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

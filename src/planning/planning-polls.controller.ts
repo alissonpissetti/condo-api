@@ -28,7 +28,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { CastVoteDto } from './dto/cast-vote.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
+import { CreateMeetingNoteDto } from './dto/create-meeting-note.dto';
 import { DecidePollDto } from './dto/decide-poll.dto';
+import { GenerateMeetingMinutesDto } from './dto/generate-meeting-minutes.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollsService } from './planning-polls.service';
@@ -232,6 +234,51 @@ export class PlanningPollsController {
     @Body() body: DecidePollDto,
   ) {
     return this.polls.decide(condominiumId, pollId, userId, body.optionId);
+  }
+
+  @Post(':pollId/meeting-notes')
+  @ApiOperation({
+    summary: 'Registrar anotação pura da reunião (modo reunião)',
+  })
+  @ApiParam({ name: 'pollId', format: 'uuid' })
+  addMeetingNote(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Body() body: CreateMeetingNoteDto,
+  ) {
+    return this.polls.addMeetingNote(condominiumId, pollId, userId, body);
+  }
+
+  @Get(':pollId/meeting-notes')
+  @ApiOperation({ summary: 'Listar anotações puras da reunião' })
+  @ApiParam({ name: 'pollId', format: 'uuid' })
+  listMeetingNotes(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+  ) {
+    return this.polls.listMeetingNotes(condominiumId, pollId, userId);
+  }
+
+  @Post(':pollId/meeting-minutes/generate')
+  @ApiOperation({
+    summary:
+      'Gerar ou regerar a ata final com IA a partir de todas as anotações e do contexto da pauta',
+  })
+  @ApiParam({ name: 'pollId', format: 'uuid' })
+  generateMeetingMinutes(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Body() body: GenerateMeetingMinutesDto,
+  ) {
+    return this.polls.generateMeetingMinutes(
+      condominiumId,
+      pollId,
+      userId,
+      body,
+    );
   }
 
   @Post(':pollId/votes')

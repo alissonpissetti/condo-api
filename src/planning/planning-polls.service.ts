@@ -14,9 +14,12 @@ import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
 import { CastVoteDto } from './dto/cast-vote.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
+import { CreateMeetingNoteDto } from './dto/create-meeting-note.dto';
+import { GenerateMeetingMinutesDto } from './dto/generate-meeting-minutes.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollAttachment } from './entities/planning-poll-attachment.entity';
+import { PlanningPollMeetingNote } from './entities/planning-poll-meeting-note.entity';
 import { PlanningPollOption } from './entities/planning-poll-option.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
 import { PlanningPoll } from './entities/planning-poll.entity';
@@ -24,8 +27,9 @@ import { AssemblyType } from './enums/assembly-type.enum';
 import { GovernanceRole } from './enums/governance-role.enum';
 import { PlanningPollStatus } from './enums/planning-poll-status.enum';
 import { GovernanceService } from './governance.service';
+import { PlanningAiService } from './planning-ai.service';
 import { PollAttachmentStorageHelper } from './poll-attachment-storage.helper';
-import { sanitizePollBodyRich } from './poll-body-sanitize';
+import { sanitizePollBodyRich, stripPollBodyToPlainText } from './poll-body-sanitize';
 import {
   normalizeMulterOriginalName,
   repairMojibakeUtf8Filename,
@@ -44,6 +48,8 @@ export class PlanningPollsService {
     private readonly voteRepo: Repository<PlanningPollVote>,
     @InjectRepository(PlanningPollAttachment)
     private readonly attachmentRepo: Repository<PlanningPollAttachment>,
+    @InjectRepository(PlanningPollMeetingNote)
+    private readonly meetingNoteRepo: Repository<PlanningPollMeetingNote>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
     @InjectRepository(Grouping)
@@ -51,6 +57,7 @@ export class PlanningPollsService {
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     private readonly governance: GovernanceService,
+    private readonly planningAi: PlanningAiService,
     config: ConfigService,
   ) {
     this.attachmentStorage = new PollAttachmentStorageHelper(config);
@@ -344,6 +351,10 @@ export class PlanningPollsService {
         );
       }
       poll.body = sanitizePollBodyRich(dto.body) ?? null;
+    }
+    if (dto.minutesBody !== undefined) {
+      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+      poll.minutesBody = sanitizePollBodyRich(dto.minutesBody) ?? null;
     }
     if (dto.opensAt !== undefined || dto.closesAt !== undefined) {
       if (poll.status !== PlanningPollStatus.Draft) {
@@ -1022,5 +1033,105 @@ export class PlanningPollsService {
       [poll.id],
     );
     return snap[poll.id] ?? { byUnit: [] };
+  }
+
+  async listMeetingNotes(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    await this.loadPollForCondo(condominiumId, pollId);
+    const rows = await this.meetingNoteRepo.find({
+      where: { condominiumId, pollId },
+      order: { createdAt: 'ASC' },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      text: r.text,
+      createdAt: r.createdAt.toISOString(),
+      createdByUserId: r.createdByUserId,
+    }));
+  }
+
+  async addMeetingNote(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    dto: CreateMeetingNoteDto,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    await this.loadPollForCondo(condominiumId, pollId);
+    const text = dto.text.trim();
+    const row = await this.meetingNoteRepo.save(
+      this.meetingNoteRepo.create({
+        condominiumId,
+        pollId,
+        text,
+        createdByUserId: userId,
+      }),
+    );
+    return {
+      id: row.id,
+      text: row.text,
+      createdAt: row.createdAt.toISOString(),
+      createdByUserId: row.createdByUserId,
+    };
+  }
+
+  async generateMeetingMinutes(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    dto: GenerateMeetingMinutesDto,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    const notes = await this.meetingNoteRepo.find({
+      where: { condominiumId, pollId },
+      order: { createdAt: 'ASC' },
+    });
+
+    const voteLines: string[] = [];
+    if ((poll.options ?? []).length) {
+      const raw = await this.voteRepo
+        .createQueryBuilder('v')
+        .innerJoinAndSelect('v.unit', 'u')
+        .innerJoinAndSelect('v.option', 'o')
+        .where('v.pollId = :pid', { pid: poll.id })
+        .orderBy('u.identifier', 'ASC')
+        .addOrderBy('o.sortOrder', 'ASC')
+        .getMany();
+      for (const row of raw) {
+        voteLines.push(
+          `${row.unit.identifier}: ${row.option.label}`,
+        );
+      }
+      for (const o of poll.options ?? []) {
+        const cnt = raw.filter((r) => r.optionId === o.id).length;
+        voteLines.push(`Total «${o.label}»: ${cnt} voto(s)`);
+      }
+    }
+
+    const currentHtml =
+      dto.currentBodyHtml?.trim() ||
+      poll.minutesBody?.trim() ||
+      '';
+    const body = await this.planningAi.generateMeetingMinutesHtml({
+      pollTitle: poll.title,
+      pollBodyPlain: stripPollBodyToPlainText(poll.body),
+      competenceDate: poll.competenceDate,
+      assemblyType: poll.assemblyType,
+      voteSummaryPlain: voteLines.join('\n'),
+      meetingNotes: notes.map((n) => ({
+        createdAt: n.createdAt.toISOString(),
+        text: n.text,
+      })),
+      currentMinutesPlain: stripPollBodyToPlainText(currentHtml),
+    });
+
+    poll.minutesBody = body;
+    await this.pollRepo.save(poll);
+    return { body };
   }
 }

@@ -20,6 +20,7 @@ import { FinancialFund } from './entities/financial-fund.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
+import { Supplier } from '../suppliers/entities/supplier.entity';
 import { FinanceMonthCronService } from './finance-month-cron.service';
 import { FinanceStatementController } from './finance-statement.controller';
 import { FinanceStatementService } from './finance-statement.service';
@@ -45,6 +46,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       UnitResponsiblePerson,
       Grouping,
       CondominiumParticipant,
+      Supplier,
     ]),
     CondominiumsModule,
     PlanningModule,
