@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
 import type { AllocationRule } from '../allocation.types';
+import { CondominiumBankAccount } from './condominium-bank-account.entity';
 import { FinancialFund } from './financial-fund.entity';
 
 export type FinancialRecurrenceFrequency =
@@ -54,6 +55,13 @@ export class FinancialTransactionRecurrence {
   @ManyToOne(() => FinancialFund, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'fund_id' })
   fund: FinancialFund | null;
+
+  @Column({ name: 'bank_account_id', nullable: true })
+  bankAccountId: string | null;
+
+  @ManyToOne(() => CondominiumBankAccount, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'bank_account_id' })
+  bankAccount: CondominiumBankAccount | null;
 
   @Column({ name: 'allocation_rule', type: 'json' })
   allocationRule: AllocationRule;

@@ -14,7 +14,10 @@ import {
 } from 'class-validator';
 import { AssemblyType } from '../enums/assembly-type.enum';
 import { PlanningPollStatus } from '../enums/planning-poll-status.enum';
-import { PlanningPollOptionInputDto } from './create-planning-poll.dto';
+import {
+  PlanningPollOptionInputDto,
+  PlanningPollQuestionInputDto,
+} from './create-planning-poll.dto';
 
 export class UpdatePlanningPollDto {
   @ApiPropertyOptional({ enum: PlanningPollStatus })
@@ -47,11 +50,11 @@ export class UpdatePlanningPollDto {
 
   @ApiPropertyOptional({
     description:
-      'Rascunho HTML da ata final (modo reunião). A pauta original permanece em `body`.',
+      'HTML do rascunho da ata final (modo reunião). Não altera a descrição/pauta original em `body`.',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(100000)
+  @MaxLength(120000)
   minutesBody?: string;
 
   @ApiPropertyOptional()
@@ -77,15 +80,27 @@ export class UpdatePlanningPollDto {
   @IsEnum(AssemblyType)
   assemblyType?: AssemblyType;
 
-  @ApiPropertyOptional({ description: 'Apenas em rascunho.' })
+  @ApiPropertyOptional({ description: 'Legado; apenas em rascunho.' })
   @IsOptional()
   @IsBoolean()
   allowMultiple?: boolean;
 
   @ApiPropertyOptional({
+    type: [PlanningPollQuestionInputDto],
+    description:
+      'Substitui todas as deliberações e opções (rascunho). Preferir a «options» legada.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(24)
+  @ValidateNested({ each: true })
+  @Type(() => PlanningPollQuestionInputDto)
+  questions?: PlanningPollQuestionInputDto[];
+
+  @ApiPropertyOptional({
     type: [PlanningPollOptionInputDto],
     description:
-      'Substitui todas as opções (rascunho). Obrigatório ao sair do tipo «Ata» para ordinária ou eleição. Omitir em tipo «Ata».',
+      'Legado: substitui uma única deliberação (rascunho). Obrigatório ao sair de «Ata» se «questions» omitido.',
   })
   @IsOptional()
   @IsArray()

@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
+import { CondominiumWorksModule } from '../condominium-works/condominium-works.module';
 import { PlanningModule } from '../planning/planning.module';
 import { UsersModule } from '../users/users.module';
 import { TwilioWhatsappModule } from '../twilio-whatsapp/twilio-whatsapp.module';
@@ -13,10 +14,13 @@ import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { AllocationResolverService } from './allocation-resolver.service';
 import { CondominiumFeesController } from './condominium-fees.controller';
 import { CondominiumFeesService } from './condominium-fees.service';
+import { CondominiumBankAccountsController } from './condominium-bank-accounts.controller';
+import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { PublicFeeSlipController } from './public-fee-slip.controller';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
 import { CondominiumFeeChargePaymentLog } from './entities/condominium-fee-charge-payment-log.entity';
 import { FinancialFund } from './entities/financial-fund.entity';
+import { CondominiumBankAccount } from './entities/condominium-bank-account.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
@@ -42,6 +46,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       FundMonthlyAccrual,
       CondominiumFeeCharge,
       CondominiumFeeChargePaymentLog,
+      CondominiumBankAccount,
       Unit,
       UnitResponsiblePerson,
       Grouping,
@@ -49,6 +54,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       Supplier,
     ]),
     CondominiumsModule,
+    CondominiumWorksModule,
     PlanningModule,
     UsersModule,
     TwilioWhatsappModule,
@@ -68,6 +74,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FinancialTransactionsController,
     TransactionReceiptsController,
     FinanceStatementController,
+    CondominiumBankAccountsController,
     CondominiumFeesController,
     PublicFeeSlipController,
   ],
@@ -76,6 +83,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FinancialFundsService,
     FinancialTransactionsService,
     FinanceStatementService,
+    CondominiumBankAccountsService,
     FundAccrualService,
     FundBalanceService,
     CondominiumFeesService,

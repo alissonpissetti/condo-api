@@ -5,8 +5,11 @@ import { AllocationResolverService } from './allocation-resolver.service';
 import { isAllocationRule } from './allocation.types';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { FinancialFund } from './entities/financial-fund.entity';
+import { distributePositiveCents } from './distribute-cents';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
 import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
+import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
+import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { FinancialTransactionsService } from './financial-transactions.service';
 import { lastDayOfCompetenceYm, ymCompare } from './finance-competence.util';
 
@@ -23,10 +26,11 @@ export class FundAccrualService {
     private readonly txRepo: Repository<FinancialTransaction>,
     private readonly allocationResolver: AllocationResolverService,
     private readonly txService: FinancialTransactionsService,
+    private readonly bankAccounts: CondominiumBankAccountsService,
   ) {}
 
   /**
-   * Gera despesas de fundo para a competência (idempotente por fundo + YM).
+   * Gera mensalidades de fundo (receita, quitada) para a competência (idempotente por fundo + YM).
    */
   async ensureAccrualsForCompetence(
     condominiumId: string,
@@ -67,7 +71,73 @@ export class FundAccrualService {
     if (txIds.length === 0) {
       return;
     }
-    await this.txRepo.delete({ id: In(txIds) });
+    const txs = await this.txRepo.find({
+      where: { id: In(txIds), condominiumId },
+      select: { id: true, paymentStatus: true },
+    });
+    const deletableIds = txs
+      .filter((t) => t.paymentStatus === 'pending')
+      .map((t) => t.id);
+    if (deletableIds.length === 0) {
+      return;
+    }
+    await this.txRepo.delete({ id: In(deletableIds) });
+  }
+
+  /**
+   * Mensalidades antigas foram geradas como despesa; converte para receita (saldo do fundo)
+   * mantendo o vínculo com fund_monthly_accruals.
+   */
+  private async normalizeLegacyAccrualTransaction(
+    transactionId: string,
+  ): Promise<void> {
+    const tx = await this.txRepo.findOne({
+      where: { id: transactionId },
+      relations: { unitShares: true },
+    });
+    if (!tx) {
+      return;
+    }
+    if (tx.kind === 'income' && tx.paymentStatus === 'paid') {
+      return;
+    }
+    if (tx.kind !== 'income') {
+      if (tx.paymentStatus !== 'pending') {
+        return;
+      }
+      const unitIds = (tx.unitShares ?? []).map((s) => s.unitId);
+      if (unitIds.length === 0) {
+        return;
+      }
+      const amountCents = Number(tx.amountCents);
+      const shares = this.buildAccrualShares(amountCents, unitIds);
+      tx.kind = 'income';
+      await this.txRepo.manager.delete(TransactionUnitShare, { transactionId });
+      await this.txRepo.manager.save(
+        shares.map((row) =>
+          this.txRepo.manager.create(TransactionUnitShare, {
+            transactionId,
+            unitId: row.unitId,
+            shareCents: row.shareCents,
+          }),
+        ),
+      );
+    }
+    if (tx.paymentStatus !== 'paid') {
+      tx.paymentStatus = 'paid';
+      await this.txRepo.save(tx);
+    }
+  }
+
+  private buildAccrualShares(
+    amountCents: number,
+    unitIds: string[],
+  ): { unitId: string; shareCents: string }[] {
+    const parts = distributePositiveCents(BigInt(amountCents), unitIds.length);
+    return unitIds.map((unitId, i) => ({
+      unitId,
+      shareCents: (-parts[i]).toString(),
+    }));
   }
 
   private async ensureSingleFundAccrual(
@@ -79,6 +149,7 @@ export class FundAccrualService {
       where: { fundId: fund.id, competenceYm },
     });
     if (existing) {
+      await this.normalizeLegacyAccrualTransaction(existing.transactionId);
       return;
     }
 
@@ -131,18 +202,24 @@ export class FundAccrualService {
     }
 
     const occurredOn = lastDayOfCompetenceYm(competenceYm);
+    const bankAccountId =
+      await this.bankAccounts.resolvePrimaryAccountId(condominiumId);
     const dto: CreateTransactionDto = {
-      kind: 'expense',
+      /** Receita: aumenta o saldo do fundo; rateio negativo nas unidades entra na taxa via ABS em sumSharesByUnit. */
+      kind: 'income',
       amountCents,
       occurredOn,
       title: `Mensalidade fundo ${fund.name} (${competenceYm})`,
       description: 'Lançamento automático do fechamento mensal.',
+      bankAccountId,
       fundId: fund.id,
       allocationRule: rule,
     };
 
     try {
-      const tx = await this.txService.createInternal(condominiumId, dto);
+      const tx = await this.txService.createInternal(condominiumId, dto, {
+        paymentStatus: 'paid',
+      });
       await this.accrualRepo.save(
         this.accrualRepo.create({
           fundId: fund.id,

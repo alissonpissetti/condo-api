@@ -12,15 +12,23 @@ import { In, Repository } from 'typeorm';
 import { Grouping } from '../groupings/grouping.entity';
 import { Person } from '../people/person.entity';
 import { Unit } from '../units/unit.entity';
+import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import { CastVoteDto } from './dto/cast-vote.dto';
+import {
+  PollFinalResolutionOutcome,
+  RegisterPollFinalResolutionDto,
+} from './dto/register-poll-final-resolution.dto';
 import { CreatePlanningPollDto } from './dto/create-planning-poll.dto';
 import { CreateMeetingNoteDto } from './dto/create-meeting-note.dto';
 import { GenerateMeetingMinutesDto } from './dto/generate-meeting-minutes.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
+import { RegisterAbstentionDto } from './dto/register-abstention.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
+import { PlanningPollAbstention } from './entities/planning-poll-abstention.entity';
 import { PlanningPollAttachment } from './entities/planning-poll-attachment.entity';
 import { PlanningPollMeetingNote } from './entities/planning-poll-meeting-note.entity';
 import { PlanningPollOption } from './entities/planning-poll-option.entity';
+import { PlanningPollQuestion } from './entities/planning-poll-question.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
 import { PlanningPoll } from './entities/planning-poll.entity';
 import { AssemblyType } from './enums/assembly-type.enum';
@@ -34,6 +42,22 @@ import {
   normalizeMulterOriginalName,
   repairMojibakeUtf8Filename,
 } from './upload-filename-encoding.util';
+import {
+  allPollOptions,
+  allQuestionsDecided,
+  buildPollOrdemDiaLines,
+  buildQuestionEntities,
+  pollHasVoting,
+  resolveQuestionInputsFromCreate,
+  resolveQuestionInputsFromUpdate,
+  sortedPollQuestions,
+} from './poll-questions.util';
+
+export type VotableUnitRow = {
+  id: string;
+  identifier: string;
+  responsibleName: string | null;
+};
 
 @Injectable()
 export class PlanningPollsService {
@@ -44,8 +68,12 @@ export class PlanningPollsService {
     private readonly pollRepo: Repository<PlanningPoll>,
     @InjectRepository(PlanningPollOption)
     private readonly optionRepo: Repository<PlanningPollOption>,
+    @InjectRepository(PlanningPollQuestion)
+    private readonly questionRepo: Repository<PlanningPollQuestion>,
     @InjectRepository(PlanningPollVote)
     private readonly voteRepo: Repository<PlanningPollVote>,
+    @InjectRepository(PlanningPollAbstention)
+    private readonly abstentionRepo: Repository<PlanningPollAbstention>,
     @InjectRepository(PlanningPollAttachment)
     private readonly attachmentRepo: Repository<PlanningPollAttachment>,
     @InjectRepository(PlanningPollMeetingNote)
@@ -74,9 +102,7 @@ export class PlanningPollsService {
   }
 
   private normalizePollRelations(poll: PlanningPoll): void {
-    if (poll.options?.length) {
-      poll.options.sort((a, b) => a.sortOrder - b.sortOrder);
-    }
+    sortedPollQuestions(poll);
     if (poll.attachments?.length) {
       poll.attachments.sort((a, b) => a.sortOrder - b.sortOrder);
       for (const a of poll.attachments) {
@@ -85,16 +111,124 @@ export class PlanningPollsService {
     }
   }
 
+  /** Pautas legadas: opções sem deliberações carregadas via relação TypeORM. */
+  private async resolveQuestionsWithLegacy(
+    poll: PlanningPoll,
+  ): Promise<PlanningPollQuestion[]> {
+    const qs = sortedPollQuestions(poll);
+    if (qs.length > 0) {
+      return qs;
+    }
+    const dbQuestions = await this.questionRepo.find({
+      where: { pollId: poll.id },
+      relations: { options: true },
+      order: { sortOrder: 'ASC' },
+    });
+    if (dbQuestions.length > 0) {
+      for (const q of dbQuestions) {
+        if (q.options?.length) {
+          q.options.sort((a, b) => a.sortOrder - b.sortOrder);
+        }
+      }
+      return dbQuestions;
+    }
+    const opts = await this.optionRepo.find({
+      where: { pollId: poll.id },
+      order: { sortOrder: 'ASC', label: 'ASC' },
+    });
+    if (opts.length === 0) {
+      return [];
+    }
+    const questionId =
+      opts.map((o) => o.questionId).find((id) => !!id) ?? poll.id;
+    return [
+      {
+        id: questionId,
+        pollId: poll.id,
+        title: poll.title,
+        sortOrder: 0,
+        allowMultiple: poll.allowMultiple,
+        decidedOptionId: poll.decidedOptionId,
+        options: opts,
+      } as PlanningPollQuestion,
+    ];
+  }
+
+  private async ensureQuestionRowForPoll(
+    poll: PlanningPoll,
+  ): Promise<PlanningPollQuestion> {
+    const existing = await this.questionRepo.findOne({
+      where: { pollId: poll.id },
+      order: { sortOrder: 'ASC' },
+    });
+    if (existing) {
+      return existing;
+    }
+    const opts = await this.optionRepo.find({
+      where: { pollId: poll.id },
+      order: { sortOrder: 'ASC', label: 'ASC' },
+    });
+    const created = await this.questionRepo.save(
+      this.questionRepo.create({
+        pollId: poll.id,
+        title: poll.title,
+        sortOrder: 0,
+        allowMultiple: poll.allowMultiple,
+        decidedOptionId: null,
+      }),
+    );
+    for (const o of opts) {
+      if (o.questionId !== created.id) {
+        await this.optionRepo.update({ id: o.id }, { questionId: created.id });
+      }
+    }
+    return created;
+  }
+
+  private async resolveQuestionForDecide(
+    poll: PlanningPoll,
+    questionId: string,
+  ): Promise<PlanningPollQuestion | null> {
+    const direct = await this.questionRepo.findOne({
+      where: { id: questionId, pollId: poll.id },
+    });
+    if (direct) {
+      return direct;
+    }
+    if (questionId === poll.id) {
+      const rows = await this.questionRepo.find({
+        where: { pollId: poll.id },
+        order: { sortOrder: 'ASC' },
+        take: 2,
+      });
+      if (rows.length === 1) {
+        return rows[0];
+      }
+      if (rows.length === 0) {
+        return this.ensureQuestionRowForPoll(poll);
+      }
+    }
+    return null;
+  }
+
   private async loadPollForCondo(condominiumId: string, pollId: string) {
     const poll = await this.pollRepo.findOne({
       where: { id: pollId, condominiumId },
-      relations: { options: true, attachments: true },
+      relations: { questions: { options: true }, attachments: true },
     });
     if (!poll) {
       throw new NotFoundException('Pauta não encontrada.');
     }
     this.normalizePollRelations(poll);
+    await this.hydrateLegacyQuestions(poll);
     return poll;
+  }
+
+  private async hydrateLegacyQuestions(poll: PlanningPoll): Promise<void> {
+    const legacyQuestions = await this.resolveQuestionsWithLegacy(poll);
+    if (legacyQuestions.length > 0 && (poll.questions?.length ?? 0) === 0) {
+      poll.questions = legacyQuestions;
+    }
   }
 
   private defaultRegisteredRangeUtc(): { from: Date; to: Date } {
@@ -120,12 +254,19 @@ export class PlanningPollsService {
     query: ListPlanningPollsQueryDto = {},
   ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    const includeArchived = query.includeArchived === true;
+    if (includeArchived) {
+      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    }
     const limit = Math.min(Math.max(query.limit ?? 100, 1), 100);
     const qRaw = query.q?.trim();
 
     const qb = this.pollRepo
       .createQueryBuilder('poll')
       .where('poll.condominiumId = :cid', { cid: condominiumId });
+    if (!includeArchived) {
+      qb.andWhere('poll.archivedAt IS NULL');
+    }
 
     if (qRaw) {
       const safe = qRaw.replace(/[%_]/g, '').trim();
@@ -174,18 +315,19 @@ export class PlanningPollsService {
     }
     const list = await this.pollRepo.find({
       where: { id: In(ids), condominiumId },
-      relations: { options: true, attachments: true },
+      relations: { questions: { options: true }, attachments: true },
     });
     const order = new Map(ids.map((id, i) => [id, i]));
     list.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     for (const p of list) {
       this.normalizePollRelations(p);
+      await this.hydrateLegacyQuestions(p);
     }
     if (!query.includeMyVotes) {
       return list;
     }
     const pollIdsWithOptions = list
-      .filter((p) => (p.options ?? []).length > 0)
+      .filter((p) => pollHasVoting(p))
       .map((p) => p.id);
     const snapshot = await this.buildMyVotesSnapshotForPolls(
       condominiumId,
@@ -201,7 +343,55 @@ export class PlanningPollsService {
 
   async getOne(condominiumId: string, pollId: string, userId: string) {
     await this.governance.assertAnyAccess(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.archivedAt) {
+      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    }
+    return poll;
+  }
+
+  async archive(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ): Promise<PlanningPoll> {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.archivedAt) {
+      throw new BadRequestException('Esta pauta já está arquivada.');
+    }
+    poll.archivedAt = new Date();
+    await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  async deleteDraft(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ): Promise<{ ok: true }> {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Draft) {
+      throw new BadRequestException(
+        'Só pautas em rascunho podem ser excluídas.',
+      );
+    }
+    const attachments = await this.attachmentRepo.find({
+      where: { pollId: poll.id },
+    });
+    for (const att of attachments) {
+      try {
+        await this.attachmentStorage.deleteFile(
+          condominiumId,
+          att.storageKey,
+        );
+      } catch {
+        /* ficheiro pode já não existir */
+      }
+    }
+    await this.pollRepo.delete({ id: poll.id, condominiumId });
+    return { ok: true };
   }
 
   async create(
@@ -215,54 +405,45 @@ export class PlanningPollsService {
     if (closes <= opens) {
       throw new BadRequestException('closesAt deve ser posterior a opensAt.');
     }
-    const allowMultiple = dto.allowMultiple ?? false;
-    if (dto.assemblyType === AssemblyType.Election && allowMultiple) {
-      throw new BadRequestException(
-        'Eleições utilizam escolha única por unidade.',
-      );
-    }
-    if (dto.assemblyType === AssemblyType.Ata) {
-      if (allowMultiple) {
-        throw new BadRequestException(
-          'Pauta «Ata» não utiliza escolha múltipla.',
-        );
-      }
-      if (dto.options?.length) {
-        throw new BadRequestException(
-          'Pauta «Ata» não admite opções de voto no sistema.',
-        );
-      }
-    } else if (!dto.options || dto.options.length < 2) {
-      throw new BadRequestException('Indique pelo menos duas opções de voto.');
-    }
-    const optionInputs =
-      dto.assemblyType === AssemblyType.Ata ? [] : dto.options;
+    const questionInputs = resolveQuestionInputsFromCreate(dto);
+    const legacyAllowMultiple =
+      dto.assemblyType === AssemblyType.Ata
+        ? false
+        : (questionInputs[0]?.allowMultiple ?? dto.allowMultiple ?? false);
     const competenceSrc =
       dto.competenceDate?.trim() || new Date().toISOString().slice(0, 10);
     const competenceYmd = this.normalizeCompetenceYmdOrThrow(competenceSrc);
+    const pollId = randomUUID();
     const poll = this.pollRepo.create({
-      id: randomUUID(),
+      id: pollId,
       condominiumId,
       title: dto.title,
       body: sanitizePollBodyRich(dto.body) ?? null,
+      minutesBody: null,
       opensAt: opens,
       closesAt: closes,
       competenceDate: competenceYmd,
       status: PlanningPollStatus.Draft,
       assemblyType: dto.assemblyType,
-      allowMultiple,
+      allowMultiple: legacyAllowMultiple,
       decidedOptionId: null,
       createdByUserId: userId,
-      options: optionInputs.map((o, i) =>
-        this.optionRepo.create({
-          id: randomUUID(),
-          label: o.label,
-          sortOrder: i,
-        }),
-      ),
+      questions: buildQuestionEntities(pollId, questionInputs),
     });
     const saved = await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, saved.id);
+  }
+
+  private async replacePollQuestions(
+    pollId: string,
+    inputs: ReturnType<typeof resolveQuestionInputsFromCreate>,
+  ): Promise<void> {
+    await this.voteRepo.delete({ pollId });
+    await this.questionRepo.delete({ pollId });
+    if (inputs.length === 0) {
+      return;
+    }
+    await this.questionRepo.save(buildQuestionEntities(pollId, inputs));
   }
 
   async update(
@@ -277,52 +458,34 @@ export class PlanningPollsService {
     const touchesAssemblyConfig =
       dto.assemblyType !== undefined ||
       dto.allowMultiple !== undefined ||
-      dto.options !== undefined;
+      dto.options !== undefined ||
+      dto.questions !== undefined;
     if (touchesAssemblyConfig) {
       if (poll.status !== PlanningPollStatus.Draft) {
         throw new BadRequestException(
-          'Tipo de assembleia, opções e modo de votação só são editáveis em rascunho.',
+          'Tipo de assembleia, deliberações e opções só são editáveis em rascunho.',
         );
       }
     }
 
+    const nextAssembly = dto.assemblyType ?? poll.assemblyType;
+    let resolvedQuestions: ReturnType<
+      typeof resolveQuestionInputsFromUpdate
+    > = null;
     if (touchesAssemblyConfig && poll.status === PlanningPollStatus.Draft) {
-      const nextAssembly = dto.assemblyType ?? poll.assemblyType;
-      let nextAllow = dto.allowMultiple ?? poll.allowMultiple;
+      resolvedQuestions = resolveQuestionInputsFromUpdate(
+        dto,
+        poll,
+        nextAssembly,
+      );
       if (
-        nextAssembly === AssemblyType.Election ||
-        nextAssembly === AssemblyType.Ata
-      ) {
-        nextAllow = false;
-      }
-      if (nextAssembly === AssemblyType.Ata) {
-        if (dto.options && dto.options.length > 0) {
-          throw new BadRequestException(
-            'Pauta «Ata» não admite opções de voto no sistema.',
-          );
-        }
-      } else if (dto.options !== undefined) {
-        const labels = dto.options
-          .map((o) => o.label.trim())
-          .filter(Boolean);
-        if (labels.length < 2) {
-          throw new BadRequestException(
-            'Indique pelo menos duas opções de voto.',
-          );
-        }
-      } else if (
         prevAssembly === AssemblyType.Ata &&
         dto.assemblyType !== undefined &&
         dto.assemblyType !== AssemblyType.Ata &&
-        dto.options === undefined
+        resolvedQuestions === null
       ) {
         throw new BadRequestException(
-          'Ao sair do tipo «Ata», envie a lista «options» com pelo menos duas opções.',
-        );
-      }
-      if (nextAssembly === AssemblyType.Election && nextAllow) {
-        throw new BadRequestException(
-          'Eleições utilizam escolha única por unidade.',
+          'Ao sair do tipo «Ata», envie «questions» (ou «options» legado) com pelo menos uma deliberação.',
         );
       }
     }
@@ -353,13 +516,26 @@ export class PlanningPollsService {
       poll.body = sanitizePollBodyRich(dto.body) ?? null;
     }
     if (dto.minutesBody !== undefined) {
-      await this.governance.assertSyndicOrOwner(condominiumId, userId);
+      const canEditMinutes =
+        poll.status === PlanningPollStatus.Draft ||
+        poll.status === PlanningPollStatus.Open ||
+        poll.status === PlanningPollStatus.Closed ||
+        poll.status === PlanningPollStatus.Decided;
+      if (!canEditMinutes) {
+        throw new BadRequestException(
+          'Rascunho da ata não pode ser alterado neste estado da pauta.',
+        );
+      }
       poll.minutesBody = sanitizePollBodyRich(dto.minutesBody) ?? null;
     }
     if (dto.opensAt !== undefined || dto.closesAt !== undefined) {
-      if (poll.status !== PlanningPollStatus.Draft) {
+      const canEditVotingPeriod =
+        poll.status === PlanningPollStatus.Draft ||
+        poll.status === PlanningPollStatus.Open ||
+        poll.status === PlanningPollStatus.Closed;
+      if (!canEditVotingPeriod) {
         throw new BadRequestException(
-          'Datas de abertura/encerramento só são editáveis em rascunho.',
+          'Datas de abertura/encerramento só são editáveis em rascunho, com votação aberta ou encerrada.',
         );
       }
       const opens = dto.opensAt ? new Date(dto.opensAt) : poll.opensAt;
@@ -402,26 +578,13 @@ export class PlanningPollsService {
       poll.allowMultiple = false;
     }
 
-    if (touchesAssemblyConfig && poll.status === PlanningPollStatus.Draft) {
-      if (poll.assemblyType === AssemblyType.Ata) {
-        await this.optionRepo.delete({ pollId: poll.id });
-        poll.decidedOptionId = null;
-      } else if (dto.options !== undefined) {
-        const labels = dto.options
-          .map((o) => o.label.trim())
-          .filter(Boolean);
-        await this.optionRepo.delete({ pollId: poll.id });
-        poll.decidedOptionId = null;
-        const rows = labels.map((label, i) =>
-          this.optionRepo.create({
-            id: randomUUID(),
-            pollId: poll.id,
-            label,
-            sortOrder: i,
-          }),
-        );
-        await this.optionRepo.save(rows);
-      }
+    if (resolvedQuestions !== null && poll.status === PlanningPollStatus.Draft) {
+      await this.replacePollQuestions(poll.id, resolvedQuestions);
+      poll.decidedOptionId = null;
+      poll.allowMultiple =
+        poll.assemblyType === AssemblyType.Ata
+          ? false
+          : (resolvedQuestions[0]?.allowMultiple ?? poll.allowMultiple);
     }
 
     if (dto.status !== undefined) {
@@ -550,6 +713,11 @@ export class PlanningPollsService {
     if (poll.status !== PlanningPollStatus.Draft) {
       throw new BadRequestException('Só rascunhos podem ser abertos.');
     }
+    if (poll.assemblyType !== AssemblyType.Ata && !pollHasVoting(poll)) {
+      throw new BadRequestException(
+        'Indique pelo menos uma deliberação com duas opções antes de abrir a votação.',
+      );
+    }
     poll.status = PlanningPollStatus.Open;
     await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, pollId);
@@ -576,7 +744,7 @@ export class PlanningPollsService {
     }
     if (poll.status !== PlanningPollStatus.Closed) {
       throw new BadRequestException(
-        'Encerre a pauta antes de concluir o registo da ata.',
+        'Encerre a pauta antes de concluir o registro da ata.',
       );
     }
     poll.status = PlanningPollStatus.Decided;
@@ -589,44 +757,169 @@ export class PlanningPollsService {
     condominiumId: string,
     pollId: string,
     userId: string,
+    questionId: string,
     optionId: string,
   ) {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
     if (poll.assemblyType === AssemblyType.Ata) {
       throw new BadRequestException(
-        'Pautas «Ata» não têm opção vencedora; use «Concluir registo da ata».',
+        'Pautas «Ata» não têm opção vencedora; use «Concluir registro da ata».',
       );
     }
     if (poll.status !== PlanningPollStatus.Closed) {
       throw new BadRequestException('Encerre a pauta antes de decidir.');
     }
-    const opt = poll.options?.find((o) => o.id === optionId);
+    const question = await this.resolveQuestionForDecide(poll, questionId);
+    if (!question) {
+      throw new BadRequestException('Deliberação inválida.');
+    }
+    const opt = await this.optionRepo.findOne({
+      where: { id: optionId, pollId: poll.id, questionId: question.id },
+    });
     if (!opt) {
       throw new BadRequestException('Opção inválida.');
     }
+    await this.questionRepo.update(
+      { id: question.id, pollId: poll.id },
+      { decidedOptionId: optionId },
+    );
     poll.decidedOptionId = optionId;
-    poll.status = PlanningPollStatus.Decided;
+    await this.pollRepo.save(poll);
+    const refreshed = await this.loadPollForCondo(condominiumId, pollId);
+    if (allQuestionsDecided(refreshed)) {
+      refreshed.status = PlanningPollStatus.Decided;
+      await this.pollRepo.save(refreshed);
+    }
+    return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  async registerFinalResolution(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    dto: RegisterPollFinalResolutionDto,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Closed) {
+      throw new BadRequestException(
+        'Só pautas encerradas podem receber parecer final inconclusivo.',
+      );
+    }
+    const opinion = dto.opinion.trim();
+    if (!opinion) {
+      throw new BadRequestException('Indique o parecer final.');
+    }
+    poll.finalOpinion = opinion;
+    if (dto.outcome === PollFinalResolutionOutcome.Postpone) {
+      if (dto.opensAt !== undefined || dto.closesAt !== undefined) {
+        const opens = dto.opensAt ? new Date(dto.opensAt) : poll.opensAt;
+        const closes = dto.closesAt ? new Date(dto.closesAt) : poll.closesAt;
+        if (closes <= opens) {
+          throw new BadRequestException(
+            'closesAt deve ser posterior a opensAt.',
+          );
+        }
+        if (dto.opensAt) {
+          poll.opensAt = opens;
+        }
+        if (dto.closesAt) {
+          poll.closesAt = closes;
+        }
+      }
+      poll.status = PlanningPollStatus.Postponed;
+    } else {
+      poll.status = PlanningPollStatus.Withdrawn;
+    }
     await this.pollRepo.save(poll);
     return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  async resumePostponedPoll(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+  ) {
+    await this.governance.assertSyndicOrOwner(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (poll.status !== PlanningPollStatus.Postponed) {
+      throw new BadRequestException(
+        'Só pautas prorrogadas podem ser retomadas para rascunho.',
+      );
+    }
+    poll.status = PlanningPollStatus.Draft;
+    await this.pollRepo.save(poll);
+    return this.loadPollForCondo(condominiumId, pollId);
+  }
+
+  private async countCondominiumUnits(condominiumId: string): Promise<number> {
+    const units = await this.listCondominiumUnits(condominiumId);
+    return units.length;
+  }
+
+  private async listCondominiumUnits(
+    condominiumId: string,
+  ): Promise<{ id: string; identifier: string }[]> {
+    const groupings = await this.groupingRepo.find({
+      where: { condominiumId },
+      select: ['id'],
+    });
+    const gids = groupings.map((g) => g.id);
+    if (gids.length === 0) {
+      return [];
+    }
+    const units = await this.unitRepo.find({
+      where: { groupingId: In(gids) },
+      select: ['id', 'identifier'],
+      order: { identifier: 'ASC' },
+    });
+    return units.map((u) => ({ id: u.id, identifier: u.identifier }));
+  }
+
+  private quorumPercent(
+    participatingUnits: number,
+    totalUnits: number,
+  ): number | null {
+    if (totalUnits <= 0) {
+      return null;
+    }
+    return Math.round((participatingUnits / totalUnits) * 1000) / 10;
   }
 
   async results(condominiumId: string, pollId: string, userId: string) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    const canSeeUnitDetail = await this.governance.canViewAggregatesWithUnitDetail(
+    const canViewEarly = await this.governance.canViewAggregatesWithUnitDetail(
       condominiumId,
       userId,
     );
+    const canSeeVoteByUnit = await this.governance.canViewUnitVoteDetail(
+      condominiumId,
+      userId,
+    );
+    const votingPeriodEnded = new Date(poll.closesAt).getTime() <= Date.now();
     if (
-      !canSeeUnitDetail &&
+      !canViewEarly &&
       poll.status !== PlanningPollStatus.Closed &&
-      poll.status !== PlanningPollStatus.Decided
+      poll.status !== PlanningPollStatus.Decided &&
+      poll.status !== PlanningPollStatus.Postponed &&
+      poll.status !== PlanningPollStatus.Withdrawn &&
+      !votingPeriodEnded
     ) {
       throw new ForbiddenException(
         'Resultados ainda não estão disponíveis para a sua situação (a pauta ainda não foi encerrada).',
       );
     }
+    const questions = sortedPollQuestions(poll);
+    const allOpts = allPollOptions(poll);
+    const optionToQuestion = new Map<string, string>();
+    for (const q of questions) {
+      for (const o of q.options ?? []) {
+        optionToQuestion.set(o.id, q.id);
+      }
+    }
+
     const raw = await this.voteRepo
       .createQueryBuilder('v')
       .select('v.optionId', 'optionId')
@@ -638,13 +931,6 @@ export class PlanningPollsService {
     for (const r of raw) {
       counts[r.optionId] = Number(r.cnt);
     }
-    const unitsRow = await this.voteRepo
-      .createQueryBuilder('v')
-      .select('COUNT(DISTINCT v.unitId)', 'cnt')
-      .where('v.pollId = :pollId', { pollId: poll.id })
-      .getRawOne<{ cnt: string }>();
-    const unitsVoted = Number(unitsRow?.cnt ?? 0);
-    const optionSelections = Object.values(counts).reduce((a, b) => a + b, 0);
 
     const voteRows = await this.voteRepo
       .createQueryBuilder('v')
@@ -655,39 +941,115 @@ export class PlanningPollsService {
       .addOrderBy('o.sortOrder', 'ASC')
       .addOrderBy('o.label', 'ASC')
       .getMany();
-    const byUnit = new Map<
+
+    const allUnits = await this.listCondominiumUnits(condominiumId);
+    const totalUnits = allUnits.length;
+    const pollParticipatingUnits = new Set<string>();
+
+    const questionResults = questions.map((q) => {
+      const qOptionIds = new Set((q.options ?? []).map((o) => o.id));
+      const unitsForQ = new Set<string>();
+      let selections = 0;
+      const byUnit = new Map<
+        string,
+        {
+          unitId: string;
+          identifier: string;
+          choices: { id: string; label: string }[];
+        }
+      >();
+      for (const row of voteRows) {
+        if (!qOptionIds.has(row.optionId)) continue;
+        unitsForQ.add(row.unitId);
+        selections += 1;
+        if (!byUnit.has(row.unitId)) {
+          byUnit.set(row.unitId, {
+            unitId: row.unitId,
+            identifier: row.unit.identifier,
+            choices: [],
+          });
+        }
+        byUnit.get(row.unitId)!.choices.push({
+          id: row.option.id,
+          label: row.option.label,
+        });
+      }
+      for (const uid of unitsForQ) {
+        pollParticipatingUnits.add(uid);
+      }
+      const unitsVotedCount = unitsForQ.size;
+      const abstentionUnits = allUnits
+        .filter((u) => !unitsForQ.has(u.id))
+        .map((u) => ({ unitId: u.id, identifier: u.identifier }));
+      const abstentions = abstentionUnits.length;
+      return {
+        questionId: q.id,
+        title: q.title,
+        allowMultiple: q.allowMultiple,
+        decidedOptionId: q.decidedOptionId,
+        options: (q.options ?? []).map((o) => ({
+          id: o.id,
+          label: o.label,
+          votes: counts[o.id] ?? 0,
+        })),
+        unitsVoted: unitsVotedCount,
+        unitsParticipating: unitsVotedCount,
+        quorumPercent: this.quorumPercent(unitsVotedCount, totalUnits),
+        totalOptionSelections: selections,
+        abstentions,
+        abstentionsByUnit: canSeeVoteByUnit ? abstentionUnits : [],
+        votesByUnit: canSeeVoteByUnit ? [...byUnit.values()] : [],
+      };
+    });
+
+    const unitsRow = await this.voteRepo
+      .createQueryBuilder('v')
+      .select('COUNT(DISTINCT v.unitId)', 'cnt')
+      .where('v.pollId = :pollId', { pollId: poll.id })
+      .getRawOne<{ cnt: string }>();
+    const unitsVoted = Number(unitsRow?.cnt ?? 0);
+    const optionSelections = Object.values(counts).reduce((a, b) => a + b, 0);
+
+    const byUnitAll = new Map<
       string,
       { unitId: string; identifier: string; choices: { id: string; label: string }[] }
     >();
     for (const row of voteRows) {
       const uid = row.unitId;
-      if (!byUnit.has(uid)) {
-        byUnit.set(uid, {
+      if (!byUnitAll.has(uid)) {
+        byUnitAll.set(uid, {
           unitId: uid,
           identifier: row.unit.identifier,
           choices: [],
         });
       }
-      byUnit.get(uid)!.choices.push({
+      byUnitAll.get(uid)!.choices.push({
         id: row.option.id,
         label: row.option.label,
       });
     }
 
+    const unitsParticipating = pollParticipatingUnits.size;
+    const totalAbstentions = Math.max(0, totalUnits - unitsParticipating);
+
     return {
       pollId: poll.id,
       status: poll.status,
       allowMultiple: poll.allowMultiple,
-      options: (poll.options ?? []).map((o) => ({
+      totalUnits,
+      unitsParticipating,
+      quorumPercent: this.quorumPercent(unitsParticipating, totalUnits),
+      totalAbstentions,
+      questions: questionResults,
+      options: allOpts.map((o) => ({
         id: o.id,
         label: o.label,
         votes: counts[o.id] ?? 0,
+        questionId: optionToQuestion.get(o.id) ?? null,
       })),
       unitsVoted,
-      /** Soma das marcações por opção (numa pauta multi, pode exceder o nº de unidades). */
       totalOptionSelections: optionSelections,
-      /** Uma linha por unidade que votou; só para gestão. */
-      votesByUnit: canSeeUnitDetail ? [...byUnit.values()] : [],
+      votesByUnit: canSeeVoteByUnit ? [...byUnitAll.values()] : [],
     };
   }
 
@@ -739,7 +1101,7 @@ export class PlanningPollsService {
   ) {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    if (!(poll.options ?? []).length) {
+    if (!pollHasVoting(poll)) {
       throw new BadRequestException(
         'Esta pauta não admite votação eletrônica.',
       );
@@ -787,20 +1149,70 @@ export class PlanningPollsService {
     if (!extendedUnitVote) {
       await this.assertUserRepresentsUnit(unit, userId);
     }
-    const optionIds = this.uniqueOptionIdsInOrder(dto.optionIds);
+    const submittedOptionIds = this.uniqueOptionIdsInOrder(dto.optionIds);
+    if (submittedOptionIds.length === 0) {
+      throw new BadRequestException('Indique pelo menos uma opção de voto.');
+    }
+    const questions = sortedPollQuestions(poll);
+    const optionMeta = new Map<
+      string,
+      { questionId: string; allowMultiple: boolean }
+    >();
+    for (const q of questions) {
+      for (const o of q.options ?? []) {
+        optionMeta.set(o.id, {
+          questionId: q.id,
+          allowMultiple: q.allowMultiple,
+        });
+      }
+    }
+    for (const oid of submittedOptionIds) {
+      if (!optionMeta.has(oid)) {
+        throw new BadRequestException('Opção inválida para esta pauta.');
+      }
+    }
+    const existingRows = await this.voteRepo.find({
+      where: { pollId: poll.id, unitId: dto.unitId },
+    });
+    const existingOptionIds = existingRows.map((r) => r.optionId);
+    const optionIds = this.mergeUnitVoteOptionIds(
+      questions,
+      existingOptionIds,
+      submittedOptionIds,
+    );
     if (optionIds.length === 0) {
       throw new BadRequestException('Indique pelo menos uma opção de voto.');
     }
-    if (!poll.allowMultiple && optionIds.length !== 1) {
-      throw new BadRequestException(
-        'Esta pauta aceita apenas uma opção por unidade.',
-      );
-    }
-    const validIds = new Set((poll.options ?? []).map((o) => o.id));
+    const byQuestion = new Map<string, string[]>();
     for (const oid of optionIds) {
-      if (!validIds.has(oid)) {
-        throw new BadRequestException('Opção inválida para esta pauta.');
+      const meta = optionMeta.get(oid)!;
+      if (!byQuestion.has(meta.questionId)) {
+        byQuestion.set(meta.questionId, []);
       }
+      byQuestion.get(meta.questionId)!.push(oid);
+    }
+    for (const q of questions) {
+      const oids = byQuestion.get(q.id) ?? [];
+      if (!extendedUnitVote && oids.length === 0) {
+        throw new BadRequestException(
+          `Responda a deliberação: «${q.title}».`,
+        );
+      }
+      if (!q.allowMultiple && oids.length > 1) {
+        throw new BadRequestException(
+          `A deliberação «${q.title}» aceita apenas uma opção por unidade.`,
+        );
+      }
+    }
+    const votedQuestionIds = [...byQuestion.entries()]
+      .filter(([, oids]) => oids.length > 0)
+      .map(([questionId]) => questionId);
+    if (votedQuestionIds.length > 0) {
+      await this.abstentionRepo.delete({
+        pollId: poll.id,
+        unitId: dto.unitId,
+        questionId: In(votedQuestionIds),
+      });
     }
     const castAt = new Date();
     await this.voteRepo.delete({ pollId: poll.id, unitId: dto.unitId });
@@ -816,6 +1228,242 @@ export class PlanningPollsService {
     );
     await this.voteRepo.save(rows);
     return { ok: true };
+  }
+
+  async registerAbstention(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    dto: RegisterAbstentionDto,
+  ) {
+    await this.governance.assertAnyAccess(condominiumId, userId);
+    const extendedUnitVote = await this.canVoteForAnyUnit(
+      condominiumId,
+      userId,
+    );
+    if (!extendedUnitVote) {
+      throw new ForbiddenException(
+        'Só titular ou síndico podem registar abstenções após encerramento.',
+      );
+    }
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (!pollHasVoting(poll)) {
+      throw new BadRequestException('Esta pauta não admite votação.');
+    }
+    if (poll.status !== PlanningPollStatus.Closed) {
+      throw new BadRequestException(
+        'Abstenções só podem ser registadas após encerrar a votação.',
+      );
+    }
+    const question = sortedPollQuestions(poll).find(
+      (q) => q.id === dto.questionId,
+    );
+    if (!question) {
+      throw new BadRequestException('Deliberação inválida.');
+    }
+    const unit = await this.unitRepo.findOne({
+      where: { id: dto.unitId },
+      relations: { responsibleLinks: { person: true }, ownerPerson: true },
+    });
+    if (!unit) {
+      throw new NotFoundException('Unidade não encontrada.');
+    }
+    const g = await this.groupingRepo.findOne({
+      where: { id: unit.groupingId, condominiumId },
+    });
+    if (!g) {
+      throw new ForbiddenException('Unidade não pertence a este condomínio.');
+    }
+    const qOptionIds = (question.options ?? []).map((o) => o.id);
+    if (qOptionIds.length > 0) {
+      await this.voteRepo.delete({
+        pollId: poll.id,
+        unitId: dto.unitId,
+        optionId: In(qOptionIds),
+      });
+    }
+    await this.abstentionRepo.delete({
+      pollId: poll.id,
+      unitId: dto.unitId,
+      questionId: dto.questionId,
+    });
+    await this.abstentionRepo.save(
+      this.abstentionRepo.create({
+        pollId: poll.id,
+        unitId: dto.unitId,
+        questionId: dto.questionId,
+        recordedByUserId: userId,
+      }),
+    );
+    return { ok: true };
+  }
+
+  async applyAiMeetingVotes(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    entries: {
+      unitIdentifier: string;
+      selections: { questionIndex: number; optionIndex: number }[];
+    }[],
+  ): Promise<
+    { unitIdentifier: string; ok: boolean; message?: string }[]
+  > {
+    if (!entries.length) {
+      return [];
+    }
+    if (!(await this.canVoteForAnyUnit(condominiumId, userId))) {
+      return entries.map((e) => ({
+        unitIdentifier: e.unitIdentifier,
+        ok: false,
+        message: 'Sem permissão para registar votos pela IA.',
+      }));
+    }
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (!pollHasVoting(poll)) {
+      return entries.map((e) => ({
+        unitIdentifier: e.unitIdentifier,
+        ok: false,
+        message: 'Esta pauta não admite votação.',
+      }));
+    }
+    const units = await this.myVotableUnits(condominiumId, userId);
+    const questions = sortedPollQuestions(poll);
+    const out: { unitIdentifier: string; ok: boolean; message?: string }[] =
+      [];
+    for (const entry of entries) {
+      const label = String(entry.unitIdentifier ?? '').trim();
+      if (!label) {
+        out.push({
+          unitIdentifier: label || '—',
+          ok: false,
+          message: 'Unidade não indicada.',
+        });
+        continue;
+      }
+      try {
+        const unit = this.matchUnitForAiVote(units, label);
+        if (!unit) {
+          throw new BadRequestException(
+            `Unidade «${label}» não encontrada.`,
+          );
+        }
+        const optionIds: string[] = [];
+        for (const sel of entry.selections ?? []) {
+          const qi = Number(sel.questionIndex);
+          const oi = Number(sel.optionIndex);
+          if (!Number.isFinite(qi) || !Number.isFinite(oi)) {
+            throw new BadRequestException('Índices de deliberação/opção inválidos.');
+          }
+          const q = questions[Math.trunc(qi) - 1];
+          if (!q) {
+            throw new BadRequestException(
+              `Deliberação ${Math.trunc(qi)} inválida.`,
+            );
+          }
+          const opts = q.options ?? [];
+          const opt = opts[Math.trunc(oi) - 1];
+          if (!opt) {
+            throw new BadRequestException(
+              `Opção ${Math.trunc(oi)} inválida na deliberação ${Math.trunc(qi)}.`,
+            );
+          }
+          optionIds.push(opt.id);
+        }
+        if (optionIds.length === 0) {
+          throw new BadRequestException('Nenhuma opção de voto indicada.');
+        }
+        await this.castVote(condominiumId, pollId, userId, {
+          unitId: unit.id,
+          optionIds,
+        });
+        out.push({ unitIdentifier: label, ok: true });
+      } catch (err) {
+        out.push({
+          unitIdentifier: label,
+          ok: false,
+          message: this.humanizeVoteError(err),
+        });
+      }
+    }
+    return out;
+  }
+
+  private matchUnitForAiVote(
+    units: { id: string; identifier: string }[],
+    raw: string,
+  ): { id: string; identifier: string } | null {
+    const norm = (s: string) =>
+      s.trim().toLowerCase().replace(/\s+/g, ' ');
+    const target = norm(raw);
+    const exact = units.find((u) => norm(u.identifier) === target);
+    if (exact) {
+      return exact;
+    }
+    const digits = target.replace(/\D/g, '');
+    if (digits) {
+      const matches = units.filter(
+        (u) => norm(u.identifier).replace(/\D/g, '') === digits,
+      );
+      if (matches.length === 1) {
+        return matches[0];
+      }
+    }
+    return null;
+  }
+
+  private humanizeVoteError(err: unknown): string {
+    if (err instanceof BadRequestException || err instanceof ForbiddenException) {
+      const r = err.getResponse();
+      if (typeof r === 'string') {
+        return r;
+      }
+      if (r && typeof r === 'object' && 'message' in r) {
+        const m = (r as { message: unknown }).message;
+        if (Array.isArray(m)) {
+          return m.map(String).join('; ');
+        }
+        if (typeof m === 'string') {
+          return m;
+        }
+      }
+    }
+    if (err instanceof NotFoundException) {
+      return err.message;
+    }
+    return err instanceof Error ? err.message : 'Falha ao registar voto.';
+  }
+
+  /**
+   * Mescla votos enviados com os já registados na unidade: deliberações presentes
+   * no pedido são substituídas; as restantes mantêm o voto anterior.
+   */
+  private mergeUnitVoteOptionIds(
+    questions: ReturnType<typeof sortedPollQuestions>,
+    existingOptionIds: string[],
+    submittedOptionIds: string[],
+  ): string[] {
+    const submittedQuestionIds = new Set<string>();
+    for (const oid of submittedOptionIds) {
+      for (const q of questions) {
+        if ((q.options ?? []).some((o) => o.id === oid)) {
+          submittedQuestionIds.add(q.id);
+          break;
+        }
+      }
+    }
+    const merged: string[] = [];
+    for (const q of questions) {
+      const qOptIds = new Set((q.options ?? []).map((o) => o.id));
+      const submittedForQ = submittedOptionIds.filter((id) => qOptIds.has(id));
+      const existingForQ = existingOptionIds.filter((id) => qOptIds.has(id));
+      if (submittedQuestionIds.has(q.id)) {
+        merged.push(...submittedForQ);
+      } else {
+        merged.push(...existingForQ);
+      }
+    }
+    return this.uniqueOptionIdsInOrder(merged);
   }
 
   /** Uma opção por entrada; sem duplicados (cada unidade só tem um voto substituível). */
@@ -848,10 +1496,28 @@ export class PlanningPollsService {
   /**
    * Exige `assertAnyAccess` já feito pelo chamador.
    */
+  private readonly votableUnitRelations = {
+    ownerPerson: true,
+    financialResponsiblePerson: true,
+    responsibleLinks: { person: true },
+  } as const;
+
+  private mapVotableUnit(u: Unit): VotableUnitRow {
+    return {
+      id: u.id,
+      identifier: u.identifier,
+      responsibleName: resolveUnitFinancialResponsibleDisplayName({
+        financialResponsiblePerson: u.financialResponsiblePerson,
+        responsibleLinks: u.responsibleLinks,
+        responsibleDisplayName: u.responsibleDisplayName,
+      }),
+    };
+  }
+
   private async representedUnitsList(
     condominiumId: string,
     userId: string,
-  ): Promise<{ id: string; identifier: string }[]> {
+  ): Promise<VotableUnitRow[]> {
     const groupings = await this.groupingRepo.find({
       where: { condominiumId },
       select: ['id'],
@@ -862,14 +1528,14 @@ export class PlanningPollsService {
     }
     const units = await this.unitRepo.find({
       where: { groupingId: In(gids) },
-      relations: { ownerPerson: true, responsibleLinks: { person: true } },
+      relations: this.votableUnitRelations,
       order: { identifier: 'ASC' },
     });
-    const out: { id: string; identifier: string }[] = [];
+    const out: VotableUnitRow[] = [];
     for (const u of units) {
       try {
         await this.assertUserRepresentsUnit(u, userId);
-        out.push({ id: u.id, identifier: u.identifier });
+        out.push(this.mapVotableUnit(u));
       } catch {
         /* skip */
       }
@@ -880,7 +1546,7 @@ export class PlanningPollsService {
   async myVotableUnits(
     condominiumId: string,
     userId: string,
-  ): Promise<{ id: string; identifier: string }[]> {
+  ): Promise<VotableUnitRow[]> {
     await this.governance.assertAnyAccess(condominiumId, userId);
     if (await this.canVoteForAnyUnit(condominiumId, userId)) {
       const groupings = await this.groupingRepo.find({
@@ -893,10 +1559,10 @@ export class PlanningPollsService {
       }
       const units = await this.unitRepo.find({
         where: { groupingId: In(gids) },
-        relations: { ownerPerson: true, responsibleLinks: { person: true } },
+        relations: this.votableUnitRelations,
         order: { identifier: 'ASC' },
       });
-      return units.map((u) => ({ id: u.id, identifier: u.identifier }));
+      return units.map((u) => this.mapVotableUnit(u));
     }
     return this.representedUnitsList(condominiumId, userId);
   }
@@ -1024,7 +1690,7 @@ export class PlanningPollsService {
   }> {
     await this.governance.assertAnyAccess(condominiumId, userId);
     const poll = await this.loadPollForCondo(condominiumId, pollId);
-    if (!(poll.options ?? []).length) {
+    if (!pollHasVoting(poll)) {
       return { byUnit: [] };
     }
     const snap = await this.buildMyVotesSnapshotForPolls(
@@ -1033,6 +1699,57 @@ export class PlanningPollsService {
       [poll.id],
     );
     return snap[poll.id] ?? { byUnit: [] };
+  }
+
+  async getUnitVoteInPoll(
+    condominiumId: string,
+    pollId: string,
+    userId: string,
+    unitId: string,
+  ): Promise<{
+    unitId: string;
+    identifier: string;
+    choices: { id: string; label: string }[];
+  }> {
+    await this.governance.assertAnyAccess(condominiumId, userId);
+    const poll = await this.loadPollForCondo(condominiumId, pollId);
+    if (!pollHasVoting(poll)) {
+      throw new BadRequestException('Esta pauta não admite votação.');
+    }
+    const unit = await this.unitRepo.findOne({ where: { id: unitId } });
+    if (!unit) {
+      throw new NotFoundException('Unidade não encontrada.');
+    }
+    const grouping = await this.groupingRepo.findOne({
+      where: { id: unit.groupingId, condominiumId },
+    });
+    if (!grouping) {
+      throw new ForbiddenException('Unidade não pertence a este condomínio.');
+    }
+    const extendedUnitVote = await this.canVoteForAnyUnit(
+      condominiumId,
+      userId,
+    );
+    if (!extendedUnitVote) {
+      await this.assertUserRepresentsUnit(unit, userId);
+    }
+    const rows = await this.voteRepo.find({
+      where: { pollId: poll.id, unitId },
+      relations: { option: true },
+    });
+    rows.sort((a, b) => {
+      const so = (a.option?.sortOrder ?? 0) - (b.option?.sortOrder ?? 0);
+      if (so !== 0) return so;
+      return (a.option?.label ?? '').localeCompare(b.option?.label ?? '', 'pt');
+    });
+    return {
+      unitId: unit.id,
+      identifier: unit.identifier,
+      choices: rows.map((row) => ({
+        id: row.option.id,
+        label: row.option.label,
+      })),
+    };
   }
 
   async listMeetingNotes(
@@ -1093,7 +1810,8 @@ export class PlanningPollsService {
     });
 
     const voteLines: string[] = [];
-    if ((poll.options ?? []).length) {
+    const questions = sortedPollQuestions(poll);
+    if (pollHasVoting(poll)) {
       const raw = await this.voteRepo
         .createQueryBuilder('v')
         .innerJoinAndSelect('v.unit', 'u')
@@ -1103,13 +1821,13 @@ export class PlanningPollsService {
         .addOrderBy('o.sortOrder', 'ASC')
         .getMany();
       for (const row of raw) {
-        voteLines.push(
-          `${row.unit.identifier}: ${row.option.label}`,
-        );
+        voteLines.push(`${row.unit.identifier}: ${row.option.label}`);
       }
-      for (const o of poll.options ?? []) {
-        const cnt = raw.filter((r) => r.optionId === o.id).length;
-        voteLines.push(`Total «${o.label}»: ${cnt} voto(s)`);
+      for (const q of questions) {
+        for (const o of q.options ?? []) {
+          const cnt = raw.filter((r) => r.optionId === o.id).length;
+          voteLines.push(`[${q.title}] Total «${o.label}»: ${cnt} voto(s)`);
+        }
       }
     }
 
@@ -1122,6 +1840,7 @@ export class PlanningPollsService {
       pollBodyPlain: stripPollBodyToPlainText(poll.body),
       competenceDate: poll.competenceDate,
       assemblyType: poll.assemblyType,
+      ordemDiaLines: buildPollOrdemDiaLines(poll),
       voteSummaryPlain: voteLines.join('\n'),
       meetingNotes: notes.map((n) => ({
         createdAt: n.createdAt.toISOString(),
@@ -1130,8 +1849,8 @@ export class PlanningPollsService {
       currentMinutesPlain: stripPollBodyToPlainText(currentHtml),
     });
 
-    poll.minutesBody = body;
+    poll.minutesBody = body.body;
     await this.pollRepo.save(poll);
-    return { body };
+    return { body: body.body, aiEnhanced: body.aiEnhanced };
   }
 }

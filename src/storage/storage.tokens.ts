@@ -1,1 +1,2 @@
 export const RECEIPT_STORAGE = Symbol('RECEIPT_STORAGE');
+export const WORK_DOCUMENT_STORAGE = Symbol('WORK_DOCUMENT_STORAGE');

@@ -54,6 +54,25 @@ import { CommunicationAudienceChannels1751000000000 } from '../migrations/175100
 import { CommunicationReadLinks1751100000000 } from '../migrations/1751100000000-communication-read-links';
 import { CommunicationReadAccessLogs1751200000000 } from '../migrations/1751200000000-communication-read-access-logs';
 import { CommunicationDisplayNames1751210000000 } from '../migrations/1751210000000-communication-display-names';
+import { Suppliers1751430000000 } from '../migrations/1751430000000-suppliers';
+import { FinancialTransactionSupplier1751450000000 } from '../migrations/1751450000000-financial-transaction-supplier';
+import { CondominiumWorks1751450000000 } from '../migrations/1751450000000-condominium-works';
+import { ConstructionWorks1751460000000 } from '../migrations/1751460000000-construction-works';
+import { CondominiumWorkBudgetAttachments1751460000000 } from '../migrations/1751460000000-condominium-work-budget-attachments';
+import { CondominiumWorkTimelineAttachments1751470000000 } from '../migrations/1751470000000-condominium-work-timeline-attachments';
+import { PlanningPollMinutesAndMeetingNotes1751470000000 } from '../migrations/1751470000000-planning-poll-minutes-and-meeting-notes';
+import { CondominiumBankAccounts1751480000000 } from '../migrations/1751480000000-condominium-bank-accounts';
+import { TransactionBankAccount1751490000000 } from '../migrations/1751490000000-transaction-bank-account';
+import { TransactionTransfer1751500000000 } from '../migrations/1751500000000-transaction-transfer';
+import { BankAccountInitialBalanceOn1751510000000 } from '../migrations/1751510000000-bank-account-initial-balance-on';
+import { TransactionWorkLink1751520000000 } from '../migrations/1751520000000-transaction-work-link';
+import { CondominiumWorkQueueOrder1751540000000 } from '../migrations/1751540000000-condominium-work-queue-order';
+import { CondominiumSuppliers1751550000000 } from '../migrations/1751550000000-condominium-suppliers';
+import { SupplierCategories1751560000000 } from '../migrations/1751560000000-supplier-categories';
+import { SupplierContactName1751570000000 } from '../migrations/1751570000000-supplier-contact-name';
+import { WorkBudgetScheduledAt1751580000000 } from '../migrations/1751580000000-work-budget-scheduled-at';
+import { PlanningPollQuestions1751590000000 } from '../migrations/1751590000000-planning-poll-questions';
+import { PlanningPollAbstentions1751610000000 } from '../migrations/1751610000000-planning-poll-abstentions';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
 import { SupportTicketMessagesViewToken1751230000000 } from '../migrations/1751230000000-support-ticket-messages-view-token';
 import { SupportTicketTarget1751300000000 } from '../migrations/1751300000000-support-ticket-target';
@@ -67,14 +86,6 @@ import { CondominiumFeeChargePaymentLogs1751250000000 } from '../migrations/1751
 import { UnitsFinancialResponsiblePerson1751260000000 } from '../migrations/1751260000000-units-financial-responsible-person';
 import { UnitsPendingWhatsappPhone1751410000000 } from '../migrations/1751410000000-units-pending-whatsapp-phone';
 import { FinancialTransactionPaymentStatus1751420000000 } from '../migrations/1751420000000-financial-transaction-payment-status';
-import { Suppliers1751430000000 } from '../migrations/1751430000000-suppliers';
-import { FinancialTransactionSupplier1751450000000 } from '../migrations/1751450000000-financial-transaction-supplier';
-import { ConstructionWorks1751460000000 } from '../migrations/1751460000000-construction-works';
-import { PlanningPollMinutesAndMeetingNotes1751470000000 } from '../migrations/1751470000000-planning-poll-minutes-and-meeting-notes';
-import { SupplierCategory } from '../suppliers/entities/supplier-category.entity';
-import { Supplier } from '../suppliers/entities/supplier.entity';
-import { ConstructionProjectUpdate } from '../works/entities/construction-project-update.entity';
-import { ConstructionProject } from '../works/entities/construction-project.entity';
 import { PeopleAddress1744700000000 } from '../migrations/1744700000000-people-address';
 import { UsersPhoneSmsLogin1744600000000 } from '../migrations/1744600000000-users-phone-sms-login';
 import { CondominiumLibraryDocument } from '../condominium-library/entities/condominium-library-document.entity';
@@ -83,7 +94,18 @@ import { FinancialFund } from '../finance/entities/financial-fund.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { TransactionUnitShare } from '../finance/entities/transaction-unit-share.entity';
 import { FundMonthlyAccrual } from '../finance/entities/fund-monthly-accrual.entity';
+import { CondominiumBankAccount } from '../finance/entities/condominium-bank-account.entity';
 import { CondominiumFeeCharge } from '../finance/entities/condominium-fee-charge.entity';
+import { CondominiumWork } from '../condominium-works/entities/condominium-work.entity';
+import { CondominiumSupplierCategory } from '../condominium-works/entities/condominium-supplier-category.entity';
+import { CondominiumSupplier } from '../condominium-works/entities/condominium-supplier.entity';
+import { CondominiumWorkBudget } from '../condominium-works/entities/condominium-work-budget.entity';
+import { CondominiumWorkTimelineEntry } from '../condominium-works/entities/condominium-work-timeline-entry.entity';
+import { CondominiumWorkTimelineAttachment } from '../condominium-works/entities/condominium-work-timeline-attachment.entity';
+import { SupplierCategory } from '../suppliers/entities/supplier-category.entity';
+import { Supplier } from '../suppliers/entities/supplier.entity';
+import { ConstructionProjectUpdate } from '../works/entities/construction-project-update.entity';
+import { ConstructionProject } from '../works/entities/construction-project.entity';
 import { SaasCharge } from '../platform/entities/saas-charge.entity';
 import { SaasCondominiumBilling } from '../platform/entities/saas-condominium-billing.entity';
 import { SaasPlan } from '../platform/entities/saas-plan.entity';
@@ -108,13 +130,19 @@ export const AppDataSource = new DataSource({
     LoginSmsChallenge,
     PasswordResetChallenge,
     FinancialFund,
-    /** Obrigatório antes de `FinancialTransaction`: relação `supplier` e FKs em obras. */
     SupplierCategory,
     Supplier,
     FinancialTransaction,
     TransactionUnitShare,
     FundMonthlyAccrual,
+    CondominiumBankAccount,
     CondominiumFeeCharge,
+    CondominiumWork,
+    CondominiumSupplier,
+    CondominiumSupplierCategory,
+    CondominiumWorkBudget,
+    CondominiumWorkTimelineEntry,
+    CondominiumWorkTimelineAttachment,
     ConstructionProject,
     ConstructionProjectUpdate,
     SaasCondominiumBilling,
@@ -187,8 +215,23 @@ export const AppDataSource = new DataSource({
     FinancialTransactionPaymentStatus1751420000000,
     Suppliers1751430000000,
     FinancialTransactionSupplier1751450000000,
+    CondominiumWorks1751450000000,
     ConstructionWorks1751460000000,
+    CondominiumWorkBudgetAttachments1751460000000,
+    CondominiumWorkTimelineAttachments1751470000000,
     PlanningPollMinutesAndMeetingNotes1751470000000,
+    CondominiumBankAccounts1751480000000,
+    TransactionBankAccount1751490000000,
+    TransactionTransfer1751500000000,
+    BankAccountInitialBalanceOn1751510000000,
+    TransactionWorkLink1751520000000,
+    CondominiumWorkQueueOrder1751540000000,
+    CondominiumSuppliers1751550000000,
+    SupplierCategories1751560000000,
+    SupplierContactName1751570000000,
+    WorkBudgetScheduledAt1751580000000,
+    PlanningPollQuestions1751590000000,
+    PlanningPollAbstentions1751610000000,
   ],
   synchronize: false,
   logging: process.env.TYPEORM_LOGGING === 'true',

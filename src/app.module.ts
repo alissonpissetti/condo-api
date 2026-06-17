@@ -16,9 +16,9 @@ import { StorageModule } from './storage/storage.module';
 import { UnitsModule } from './units/units.module';
 import { PlatformModule } from './platform/platform.module';
 import { SupportModule } from './support/support.module';
+import { CondominiumWorksModule } from './condominium-works/condominium-works.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { UsersModule } from './users/users.module';
-import { WorksModule } from './works/works.module';
 
 @Module({
   imports: [
@@ -55,8 +55,8 @@ import { WorksModule } from './works/works.module';
     CommunicationsModule,
     PlatformModule,
     SupportModule,
+    CondominiumWorksModule,
     SuppliersModule,
-    WorksModule,
   ],
 })
 export class AppModule {}

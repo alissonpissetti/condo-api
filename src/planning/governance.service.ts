@@ -368,9 +368,8 @@ export class GovernanceService {
   }
 
   /**
-   * Dono, síndico, subsíndico ou admin: vêem totais e o detalhe de voto por unidade.
-   * Morador com papel «member» ou acesso de residente: não (recebem vista agregada
-   * controlada noutro ponto, após encerrar a pauta).
+   * Dono, síndico, subsíndico ou admin: vêem totais agregados antes do encerramento.
+   * Morador com papel «member» ou acesso de residente: só após encerrar a pauta.
    */
   async canViewAggregatesWithUnitDetail(
     condominiumId: string,
@@ -390,6 +389,21 @@ export class GovernanceService {
       return true;
     }
     return false;
+  }
+
+  /** Detalhe «quem votou no quê»: titular da conta ou síndico. */
+  async canViewUnitVoteDetail(
+    condominiumId: string,
+    userId: string,
+  ): Promise<boolean> {
+    await this.ensureBootstrapParticipants(condominiumId);
+    const access = await this.resolveAccess(condominiumId, userId);
+    if (access?.kind === 'owner') {
+      return true;
+    }
+    return (
+      access?.kind === 'participant' && access.role === GovernanceRole.Syndic
+    );
   }
 
   async assertCanManageRoles(

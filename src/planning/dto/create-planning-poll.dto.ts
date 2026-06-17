@@ -20,6 +20,30 @@ export class PlanningPollOptionInputDto {
   label: string;
 }
 
+export class PlanningPollQuestionInputDto {
+  @ApiProperty({
+    description: 'Enunciado / assunto desta deliberação na pauta.',
+  })
+  @IsString()
+  @MaxLength(512)
+  title: string;
+
+  @ApiPropertyOptional({
+    description: 'Escolha múltipla nesta deliberação (por unidade).',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  allowMultiple?: boolean;
+
+  @ApiProperty({ type: [PlanningPollOptionInputDto] })
+  @IsArray()
+  @ArrayMaxSize(24)
+  @ValidateNested({ each: true })
+  @Type(() => PlanningPollOptionInputDto)
+  options: PlanningPollOptionInputDto[];
+}
+
 export class CreatePlanningPollDto {
   @ApiProperty()
   @IsString()
@@ -55,21 +79,35 @@ export class CreatePlanningPollDto {
   assemblyType: AssemblyType;
 
   @ApiPropertyOptional({
-    description: 'Se verdadeiro, cada unidade pode assinalar várias opções.',
+    description:
+      'Legado: aplica-se à única deliberação quando «questions» não é enviado.',
     default: false,
   })
   @IsOptional()
   @IsBoolean()
   allowMultiple?: boolean;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
+    type: [PlanningPollQuestionInputDto],
+    description:
+      'Deliberações / votações desta pauta (mínimo 1 para ordinária ou eleição). Cada item tem enunciado e opções.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(24)
+  @ValidateNested({ each: true })
+  @Type(() => PlanningPollQuestionInputDto)
+  questions?: PlanningPollQuestionInputDto[];
+
+  @ApiPropertyOptional({
     type: [PlanningPollOptionInputDto],
     description:
-      'Obrigatório para assembleia ordinária ou eleição (mínimo 2). Omitir ou enviar vazio para tipo «Ata» (sem votação).',
+      'Legado: uma única deliberação com o título da pauta. Preferir «questions».',
   })
+  @IsOptional()
   @IsArray()
   @ArrayMaxSize(24)
   @ValidateNested({ each: true })
   @Type(() => PlanningPollOptionInputDto)
-  options: PlanningPollOptionInputDto[];
+  options?: PlanningPollOptionInputDto[];
 }

@@ -32,6 +32,7 @@ import { CreateMeetingNoteDto } from './dto/create-meeting-note.dto';
 import { DecidePollDto } from './dto/decide-poll.dto';
 import { GenerateMeetingMinutesDto } from './dto/generate-meeting-minutes.dto';
 import { ListPlanningPollsQueryDto } from './dto/list-planning-polls.query.dto';
+import { RegisterAbstentionDto } from './dto/register-abstention.dto';
 import { UpdatePlanningPollDto } from './dto/update-planning-poll.dto';
 import { PlanningPollsService } from './planning-polls.service';
 
@@ -167,6 +168,26 @@ export class PlanningPollsController {
     return this.polls.getMyUnitVotesInPoll(condominiumId, pollId, userId);
   }
 
+  @Get(':pollId/units/:unitId/vote')
+  @ApiOperation({
+    summary: 'Voto registado de uma unidade (para edição)',
+    description:
+      'Titular ou síndico podem consultar o voto de uma unidade ao intervir em seu nome, sem expor a lista completa.',
+  })
+  unitVoteInPoll(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Param('unitId', ParseUUIDPipe) unitId: string,
+  ) {
+    return this.polls.getUnitVoteInPoll(
+      condominiumId,
+      pollId,
+      userId,
+      unitId,
+    );
+  }
+
   @Post()
   @ApiOperation({ summary: 'Criar pauta (rascunho)' })
   create(
@@ -233,12 +254,20 @@ export class PlanningPollsController {
     @Param('pollId', ParseUUIDPipe) pollId: string,
     @Body() body: DecidePollDto,
   ) {
-    return this.polls.decide(condominiumId, pollId, userId, body.optionId);
+    return this.polls.decide(
+      condominiumId,
+      pollId,
+      userId,
+      body.questionId,
+      body.optionId,
+    );
   }
 
   @Post(':pollId/meeting-notes')
   @ApiOperation({
-    summary: 'Registrar anotação pura da reunião (modo reunião)',
+    summary: 'Registrar anotação de contexto para a ata',
+    description:
+      'Titular ou síndico. Pode ser usada fora ou dentro do modo reunião; todas as anotações entram no contexto da geração da ata com IA.',
   })
   @ApiParam({ name: 'pollId', format: 'uuid' })
   addMeetingNote(
@@ -251,7 +280,9 @@ export class PlanningPollsController {
   }
 
   @Get(':pollId/meeting-notes')
-  @ApiOperation({ summary: 'Listar anotações puras da reunião' })
+  @ApiOperation({
+    summary: 'Listar anotações de contexto para a ata',
+  })
   @ApiParam({ name: 'pollId', format: 'uuid' })
   listMeetingNotes(
     @CurrentUser() userId: string,
@@ -265,6 +296,8 @@ export class PlanningPollsController {
   @ApiOperation({
     summary:
       'Gerar ou regerar a ata final com IA a partir de todas as anotações e do contexto da pauta',
+    description:
+      'Obrigatório DEEPSEEK_API_KEY na API (ou OPENAI_API_KEY). A secção Discussões e deliberações é integralmente reescrita em português formal.',
   })
   @ApiParam({ name: 'pollId', format: 'uuid' })
   generateMeetingMinutes(
@@ -294,5 +327,20 @@ export class PlanningPollsController {
     @Body() dto: CastVoteDto,
   ) {
     return this.polls.castVote(condominiumId, pollId, userId, dto);
+  }
+
+  @Post(':pollId/abstentions')
+  @ApiOperation({
+    summary: 'Registrar abstenção de unidade (após encerrar votação)',
+    description:
+      'Titular ou síndico registam abstenção por deliberação e unidade, só com a pauta encerrada.',
+  })
+  registerAbstention(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('pollId', ParseUUIDPipe) pollId: string,
+    @Body() dto: RegisterAbstentionDto,
+  ) {
+    return this.polls.registerAbstention(condominiumId, pollId, userId, dto);
   }
 }

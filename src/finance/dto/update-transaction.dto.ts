@@ -20,10 +20,10 @@ const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class UpdateTransactionDto {
-  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment'] })
+  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment', 'yield'] })
   @IsOptional()
-  @IsEnum(['expense', 'income', 'investment'])
-  kind?: 'expense' | 'income' | 'investment';
+  @IsEnum(['expense', 'income', 'investment', 'yield'])
+  kind?: 'expense' | 'income' | 'investment' | 'yield';
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -47,25 +47,41 @@ export class UpdateTransactionDto {
   @IsString()
   description?: string | null;
 
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  bankAccountId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUUID()
   fundId?: string | null;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsObject()
-  allocationRule?: AllocationRule;
-
   @ApiPropertyOptional({
+    format: 'uuid',
     nullable: true,
     description:
-      'Fornecedor do condomínio; null remove a associação. Não altera rateio nem valores.',
+      'Obra associada; use null para remover. O lançamento passa a constar na timeline da obra.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  workId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Fornecedor associado; use null para remover.',
   })
   @IsOptional()
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsUUID()
   supplierId?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  allocationRule?: AllocationRule;
 
   @ApiPropertyOptional({
     nullable: true,

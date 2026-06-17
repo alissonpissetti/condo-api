@@ -9,12 +9,18 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
+import { CondominiumWork } from '../../condominium-works/entities/condominium-work.entity';
 import { Supplier } from '../../suppliers/entities/supplier.entity';
 import type { AllocationRule } from '../allocation.types';
+import { CondominiumBankAccount } from './condominium-bank-account.entity';
 import { FinancialFund } from './financial-fund.entity';
 import { TransactionUnitShare } from './transaction-unit-share.entity';
 
-export type FinancialTransactionKind = 'expense' | 'income' | 'investment';
+export type FinancialTransactionKind =
+  | 'expense'
+  | 'income'
+  | 'investment'
+  | 'yield';
 
 /** Quitação do lançamento (impacta inclusão na geração da taxa condominial). */
 export type FinancialTransactionPaymentStatus =
@@ -41,6 +47,13 @@ export class FinancialTransaction {
   @JoinColumn({ name: 'fund_id' })
   fund: FinancialFund | null;
 
+  @Column({ name: 'bank_account_id', nullable: true })
+  bankAccountId: string | null;
+
+  @ManyToOne(() => CondominiumBankAccount, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'bank_account_id' })
+  bankAccount: CondominiumBankAccount | null;
+
   @Column({ name: 'supplier_id', type: 'varchar', length: 36, nullable: true })
   supplierId: string | null;
 
@@ -48,8 +61,17 @@ export class FinancialTransaction {
   @JoinColumn({ name: 'supplier_id' })
   supplier: Supplier | null;
 
+  /** Obra associada; quando preenchido, gera entrada na timeline da obra. */
+  @Column({ name: 'work_id', type: 'varchar', length: 36, nullable: true })
+  workId: string | null;
+
+  @ManyToOne(() => CondominiumWork, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'work_id' })
+  work: CondominiumWork | null;
+
   /**
-   * expense | income | investment (aplicação de capital; rateio como despesa).
+   * expense | income | investment (aplicação de capital; rateio como despesa) |
+   * yield (rendimento de aplicação).
    * No saldo do fundo: receita soma; despesa e aplicação subtraem.
    */
   @Column({ type: 'varchar', length: 16 })
@@ -100,6 +122,26 @@ export class FinancialTransaction {
   /** `json` é suportado por PostgreSQL e MySQL/MariaDB (`jsonb` só existe no PG). */
   @Column({ name: 'allocation_rule', type: 'json' })
   allocationRule: AllocationRule;
+
+  /**
+   * Par de transferência entre contas/fundos (duas linhas: saída + entrada).
+   */
+  @Column({
+    name: 'transfer_group_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  transferGroupId: string | null;
+
+  /** ID da outra perna da transferência (saída ↔ entrada). */
+  @Column({
+    name: 'transfer_counterpart_id',
+    type: 'varchar',
+    length: 36,
+    nullable: true,
+  })
+  transferCounterpartId: string | null;
 
   /** Agrupa parcelas criadas em lote (mesmo UUID em todas as transações da série). */
   @Column({

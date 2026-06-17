@@ -13,7 +13,7 @@ import { User } from '../../users/user.entity';
 import { AssemblyType } from '../enums/assembly-type.enum';
 import { PlanningPollStatus } from '../enums/planning-poll-status.enum';
 import { PlanningPollAttachment } from './planning-poll-attachment.entity';
-import { PlanningPollOption } from './planning-poll-option.entity';
+import { PlanningPollQuestion } from './planning-poll-question.entity';
 
 @Entity('planning_polls')
 export class PlanningPoll {
@@ -33,7 +33,7 @@ export class PlanningPoll {
   @Column({ type: 'text', nullable: true })
   body: string | null;
 
-  /** Rascunho da ata final (modo reunião); `body` permanece como pauta original. */
+  /** Rascunho da ata final (modo reunião / IA); a `body` permanece como pauta original. */
   @Column({ name: 'minutes_body', type: 'text', nullable: true })
   minutesBody: string | null;
 
@@ -59,6 +59,14 @@ export class PlanningPoll {
   @Column({ name: 'decided_option_id', type: 'varchar', length: 36, nullable: true })
   decidedOptionId: string | null;
 
+  /** Parecer final quando a reunião foi inconclusiva (prorrogação ou cancelamento). */
+  @Column({ name: 'final_opinion', type: 'text', nullable: true })
+  finalOpinion: string | null;
+
+  /** Quando preenchido, a pauta deixa de aparecer na lista padrão. */
+  @Column({ name: 'archived_at', type: 'datetime', precision: 6, nullable: true })
+  archivedAt: Date | null;
+
   @Column({ name: 'created_by_user_id' })
   createdByUserId: string;
 
@@ -66,8 +74,8 @@ export class PlanningPoll {
   @JoinColumn({ name: 'created_by_user_id' })
   createdBy: User;
 
-  @OneToMany(() => PlanningPollOption, (o) => o.poll, { cascade: ['insert'] })
-  options: PlanningPollOption[];
+  @OneToMany(() => PlanningPollQuestion, (q) => q.poll, { cascade: ['insert'] })
+  questions: PlanningPollQuestion[];
 
   @OneToMany(() => PlanningPollAttachment, (a) => a.poll)
   attachments: PlanningPollAttachment[];

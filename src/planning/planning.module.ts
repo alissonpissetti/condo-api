@@ -10,9 +10,11 @@ import { UnitResponsiblePerson } from '../units/unit-responsible-person.entity';
 import { CondominiumDocument } from './entities/condominium-document.entity';
 import { CondominiumParticipant } from './entities/condominium-participant.entity';
 import { GovernanceAuditLog } from './entities/governance-audit-log.entity';
+import { PlanningPollAbstention } from './entities/planning-poll-abstention.entity';
 import { PlanningPollAttachment } from './entities/planning-poll-attachment.entity';
 import { PlanningPollMeetingNote } from './entities/planning-poll-meeting-note.entity';
 import { PlanningPollOption } from './entities/planning-poll-option.entity';
+import { PlanningPollQuestion } from './entities/planning-poll-question.entity';
 import { PlanningPollVote } from './entities/planning-poll-vote.entity';
 import { PlanningPoll } from './entities/planning-poll.entity';
 import { GovernanceController } from './governance.controller';
@@ -32,6 +34,8 @@ import { PlanningAiService } from './planning-ai.service';
       PlanningPollAttachment,
       PlanningPollMeetingNote,
       PlanningPollOption,
+      PlanningPollQuestion,
+      PlanningPollAbstention,
       PlanningPollVote,
       CondominiumDocument,
       Condominium,

@@ -19,10 +19,10 @@ const RECEIPT_KEY_RE =
   /^receipts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|png|jpe?g|webp)$/i;
 
 export class UpdateRecurringSeriesDto {
-  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment'] })
+  @ApiPropertyOptional({ enum: ['expense', 'income', 'investment', 'yield'] })
   @IsOptional()
-  @IsEnum(['expense', 'income', 'investment'])
-  kind?: 'expense' | 'income' | 'investment';
+  @IsEnum(['expense', 'income', 'investment', 'yield'])
+  kind?: 'expense' | 'income' | 'investment' | 'yield';
 
   @ApiPropertyOptional({
     description:
@@ -43,6 +43,21 @@ export class UpdateRecurringSeriesDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsUUID()
   fundId?: string | null;
+
+  @ApiPropertyOptional({ description: 'Conta bancária para todas as parcelas.' })
+  @IsOptional()
+  @IsUUID()
+  bankAccountId?: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Fornecedor para todas as parcelas; null remove.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  supplierId?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -95,14 +110,4 @@ export class UpdateRecurringSeriesDto {
   @IsString()
   @Matches(RECEIPT_KEY_RE, { message: 'receiptStorageKey inválida' })
   receiptStorageKey?: string | null;
-
-  @ApiPropertyOptional({
-    nullable: true,
-    description:
-      'Mesmo fornecedor em todas as parcelas da série; null remove o vínculo em todas.',
-  })
-  @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined)
-  @IsUUID()
-  supplierId?: string | null;
 }

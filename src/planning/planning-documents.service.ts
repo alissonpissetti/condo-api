@@ -31,7 +31,15 @@ import { CondominiumParticipant } from './entities/condominium-participant.entit
 import { Person } from '../people/person.entity';
 import { UsersService } from '../users/users.service';
 import { Unit } from '../units/unit.entity';
-import { stripPollBodyToPlainText } from './poll-body-sanitize';
+import {
+  extractHtmlSectionByHeading,
+  stripPollBodyToPlainText,
+} from './poll-body-sanitize';
+import {
+  allPollOptions,
+  buildPollOrdemDiaLines,
+  sortedPollQuestions,
+} from './poll-questions.util';
 
 @Injectable()
 export class PlanningDocumentsService {
@@ -159,7 +167,7 @@ export class PlanningDocumentsService {
     await this.governance.assertSyndicOrOwner(condominiumId, userId);
     const poll = await this.pollRepo.findOne({
       where: { id: pollId, condominiumId },
-      relations: { options: true, condominium: true },
+      relations: { questions: { options: true }, condominium: true },
     });
     if (!poll) {
       throw new NotFoundException('Pauta não encontrada.');
@@ -640,22 +648,7 @@ export class PlanningDocumentsService {
    * Itens numerados para o campo «Ordem do dia» (modelo ata de reunião de condomínio).
    */
   private buildOrdemDiaLines(poll: PlanningPoll): string[] {
-    if (poll.assemblyType === AssemblyType.Ata) {
-      return [`1. ${poll.title}`];
-    }
-    const out: string[] = [];
-    const opts = [...(poll.options ?? [])].sort(
-      (a, b) => a.sortOrder - b.sortOrder,
-    );
-    if (opts.length > 0) {
-      let i = 1;
-      for (const o of opts) {
-        out.push(`${i}. ${o.label}`);
-        i += 1;
-      }
-      return out;
-    }
-    return [`1. ${poll.title}`];
+    return buildPollOrdemDiaLines(poll);
   }
 
   /**
@@ -717,7 +710,7 @@ export class PlanningDocumentsService {
 
       const decidedOption =
         poll.decidedOptionId && poll.status === PlanningPollStatus.Decided
-          ? poll.options?.find((o) => o.id === poll.decidedOptionId)
+          ? allPollOptions(poll).find((o) => o.id === poll.decidedOptionId)
           : null;
 
       const totalMarks = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -768,7 +761,18 @@ export class PlanningDocumentsService {
       doc.font('Helvetica-Bold').fontSize(10.5).text('Discussões e deliberações:');
       doc.moveDown(0.35);
       doc.font('Helvetica').fontSize(10.5);
-      if (poll.body) {
+      const discussionsFromMinutes = extractHtmlSectionByHeading(
+        poll.minutesBody,
+        /discuss[oõ]es\s+e\s+delibera[cç][oõ]es/i,
+      );
+      if (discussionsFromMinutes?.trim()) {
+        doc.text(discussionsFromMinutes, {
+          width: contentWidth,
+          align: 'left',
+          lineGap: 1.45,
+        });
+        doc.moveDown(0.4);
+      } else if (poll.body) {
         const plain = stripPollBodyToPlainText(poll.body);
         if (plain) {
           doc.text(plain, { width: contentWidth, align: 'left', lineGap: 1.45 });
@@ -811,9 +815,7 @@ export class PlanningDocumentsService {
         });
         doc.y = y + rowH;
         let i = 0;
-        for (const o of [...(poll.options ?? [])].sort(
-          (a, b) => a.sortOrder - b.sortOrder,
-        )) {
+        for (const o of allPollOptions(poll)) {
           const c = counts[o.id] ?? 0;
           y = doc.y;
           doc.save();

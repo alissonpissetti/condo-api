@@ -51,6 +51,39 @@ function pollBodyHtmlToNewlinesPreservingBlocks(html: string): string {
   return s;
 }
 
+/**
+ * Extrai o texto de uma secção `<h3>…</h3>` do HTML da ata (ex.: Discussões e deliberações).
+ */
+export function extractHtmlSectionByHeading(
+  html: string | null | undefined,
+  headingPattern: RegExp,
+): string | null {
+  if (html == null || !String(html).trim()) {
+    return null;
+  }
+  const chunks = String(html).split(/<h3\b[^>]*>/i);
+  for (let i = 1; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const close = chunk.search(/<\/h3>/i);
+    if (close < 0) {
+      continue;
+    }
+    const title = chunk
+      .slice(0, close)
+      .replace(/<[^>]+>/g, '')
+      .trim();
+    if (!headingPattern.test(title)) {
+      continue;
+    }
+    const body = chunk.slice(close + 5);
+    const nextH3 = body.search(/<h3\b/i);
+    const sectionHtml = nextH3 >= 0 ? body.slice(0, nextH3) : body;
+    const plain = stripPollBodyToPlainText(sectionHtml);
+    return plain.trim() ? plain : null;
+  }
+  return null;
+}
+
 /** Texto simples para PDF / pré-visualizações sem HTML. */
 export function stripPollBodyToPlainText(html: string | null | undefined): string {
   if (html == null || !String(html).trim()) {
