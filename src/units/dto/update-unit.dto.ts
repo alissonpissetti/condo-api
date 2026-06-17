@@ -38,7 +38,7 @@ export class UpdateUnitDto {
   @ApiPropertyOptional({
     nullable: true,
     description:
-      'Nome do responsável só para exibição (PDF/UI) sem associar pessoa na base.',
+      'Nome do contato da unidade sem convite aceito: taxas, PDFs, slips e comunicados até existir ficha de pessoa.',
   })
   @IsOptional()
   @IsString()
@@ -59,7 +59,7 @@ export class UpdateUnitDto {
   @ApiPropertyOptional({
     nullable: true,
     description:
-      'Celular (WhatsApp) de referência quando a unidade ainda não tem proprietário nem responsável com ficha. Formato livre (com DDD); a API normaliza com 55. `null` ou vazio limpa.',
+      'Celular (WhatsApp) do contato sem convite: slips, mensagens e pré-preenchimento de convite. Só quando não há proprietário nem responsável com ficha. Formato livre (com DDD); a API normaliza com 55. `null` ou vazio limpa.',
   })
   @IsOptional()
   @ValidateIf((_, v) => v !== null && v !== undefined)

@@ -33,6 +33,28 @@ export class UnitsService {
     private readonly governanceService: GovernanceService,
   ) {}
 
+  /**
+   * ID canônico em `people` / `unit_responsible_people` (preserva maiúsculas do UUID).
+   * Comparação case-insensitive para aceitar o valor vindo do front.
+   */
+  private async resolveFinancialResponsiblePersonIdForUnit(
+    unitId: string,
+    personId: string,
+  ): Promise<string> {
+    const trimmed = personId.trim();
+    const row = await this.unitResponsibleRepo
+      .createQueryBuilder('urp')
+      .where('urp.unitId = :unitId', { unitId })
+      .andWhere('LOWER(urp.personId) = LOWER(:personId)', { personId: trimmed })
+      .getOne();
+    if (!row) {
+      throw new BadRequestException(
+        'O responsável financeiro deve ser uma das pessoas já associadas como responsável desta unidade.',
+      );
+    }
+    return row.personId;
+  }
+
   private async assertFinancialResponsiblePerson(
     unitId: string,
     personId: string | null | undefined,
@@ -40,14 +62,7 @@ export class UnitsService {
     if (personId === undefined || personId === null) {
       return;
     }
-    const ok = await this.unitResponsibleRepo.exist({
-      where: { unitId, personId },
-    });
-    if (!ok) {
-      throw new BadRequestException(
-        'O responsável financeiro tem de ser uma das pessoas já associadas como responsável desta unidade.',
-      );
-    }
+    await this.resolveFinancialResponsiblePersonIdForUnit(unitId, personId);
   }
 
   private async requireGroupingInCondo(
@@ -191,9 +206,14 @@ export class UnitsService {
       const pid =
         dto.financialResponsiblePersonId === null
           ? null
-          : dto.financialResponsiblePersonId.trim();
-      await this.assertFinancialResponsiblePerson(unit.id, pid);
-      unit.financialResponsiblePersonId = pid;
+          : await this.resolveFinancialResponsiblePersonIdForUnit(
+              unit.id,
+              dto.financialResponsiblePersonId,
+            );
+      await this.unitRepo.update(
+        { id: unit.id, groupingId },
+        { financialResponsiblePersonId: pid },
+      );
     }
     if (dto.pendingWhatsappPhone !== undefined) {
       const responsibleCount = await this.unitResponsibleRepo.count({
@@ -206,7 +226,7 @@ export class UnitsService {
         unit.pendingWhatsappPhone = null;
       } else if (hasLinkedPerson) {
         throw new BadRequestException(
-          'Não é possível guardar WhatsApp de referência: a unidade já tem proprietário ou responsável com ficha. Limpe primeiro ou use o telefone na ficha da pessoa.',
+          'Não é possível salvar WhatsApp de referência: a unidade já tem proprietário ou responsável com ficha. Limpe primeiro ou use o telefone na ficha da pessoa.',
         );
       } else {
         const norm = normalizeBrCellphone(raw);
@@ -222,21 +242,60 @@ export class UnitsService {
         unit.pendingWhatsappPhone = norm;
       }
     }
-    const saved = await this.unitRepo.save(unit);
-    const withLinks = await this.unitRepo.findOne({
-      where: { id: saved.id, groupingId },
+
+    const needsEntitySave =
+      dto.identifier !== undefined ||
+      dto.floor !== undefined ||
+      dto.notes !== undefined ||
+      dto.ownerDisplayName !== undefined ||
+      dto.responsibleDisplayName !== undefined ||
+      dto.pendingWhatsappPhone !== undefined;
+
+    if (needsEntitySave) {
+      let toSave = unit;
+      if (dto.financialResponsiblePersonId !== undefined) {
+        const fresh = await this.unitRepo.findOne({
+          where: { id: unit.id, groupingId },
+        });
+        if (!fresh) {
+          throw new NotFoundException('Unit not found');
+        }
+        if (dto.identifier !== undefined) {
+          fresh.identifier = unit.identifier;
+        }
+        if (dto.floor !== undefined) {
+          fresh.floor = unit.floor;
+        }
+        if (dto.notes !== undefined) {
+          fresh.notes = unit.notes;
+        }
+        if (dto.ownerDisplayName !== undefined) {
+          fresh.ownerDisplayName = unit.ownerDisplayName;
+        }
+        if (dto.responsibleDisplayName !== undefined) {
+          fresh.responsibleDisplayName = unit.responsibleDisplayName;
+        }
+        if (dto.pendingWhatsappPhone !== undefined) {
+          fresh.pendingWhatsappPhone = unit.pendingWhatsappPhone;
+        }
+        toSave = fresh;
+      }
+      await this.unitRepo.save(toSave);
+    }
+
+    const reloaded = await this.unitRepo.findOne({
+      where: { id: unit.id, groupingId },
       relations: {
         ownerPerson: true,
         responsibleLinks: { person: true },
         financialResponsiblePerson: true,
       },
     });
-    if (withLinks) {
-      flattenUnitResponsiblesForApi(withLinks);
-      return withLinks;
+    if (!reloaded) {
+      throw new NotFoundException('Unit not found');
     }
-    flattenUnitResponsiblesForApi(saved);
-    return saved;
+    flattenUnitResponsiblesForApi(reloaded);
+    return reloaded;
   }
 
   async remove(

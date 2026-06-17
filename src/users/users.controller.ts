@@ -31,7 +31,7 @@ export class UsersController {
 
   @Get('me/signature')
   @ApiOperation({
-    summary: 'Descarregar PNG da assinatura gravada',
+    summary: 'Baixar PNG da assinatura gravada',
     description: '404 se ainda não existir assinatura.',
   })
   async getMySignaturePng(

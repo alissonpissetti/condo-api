@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, In, Repository } from 'typeorm';
+import { Between, In, IsNull, Not, Repository } from 'typeorm';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { GovernanceRole } from '../planning/enums/governance-role.enum';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -22,20 +22,40 @@ import { GovernanceService } from '../planning/governance.service';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 import { Unit } from '../units/unit.entity';
-import { formatDateOnlyYmdUtc, parseDateOnlyFromApi } from './date-only.util';
+import {
+  formatDateOnlyYmdUtc,
+  parseDateOnlyFromApi,
+  todayLocalCalendarAsUtcNoon,
+} from './date-only.util';
+import {
+  openFeeLineTypeLabelPt,
+  openFeeStatusLabelPt,
+} from './open-fee-due.util';
 import { CondominiumFeeCharge } from './entities/condominium-fee-charge.entity';
 import { FinancialFund } from './entities/financial-fund.entity';
+import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
+import { CondominiumBankAccount } from './entities/condominium-bank-account.entity';
 import {
   firstDayOfCompetenceYm,
   isValidCompetenceYm,
+  lastDayBeforeCompetenceYm,
   lastDayOfCompetenceYm,
 } from './finance-competence.util';
 import { isAllocationRule } from './allocation.types';
 import { distributePositiveCents } from './distribute-cents';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
 import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
+import {
+  FinanceStatementService,
+  type StatementLedgerSection,
+  type StatementMovementRow,
+} from './finance-statement.service';
 import { FundBalanceService } from './fund-balance.service';
+import {
+  accessAllowsManagement,
+  genericFeeMovementTitle,
+} from './finance-extrato-display.util';
 import {
   buildPixBrCode,
   sanitizePixCity,
@@ -58,6 +78,37 @@ type FundPdfRow = {
   id: string;
   name: string;
   allocationSummary: string;
+};
+
+type BankAccountPdfRow = {
+  id: string;
+  /** Apelido da conta no sistema. */
+  name: string;
+  /** Instituição (lista fixa no cadastro), se informada. */
+  bankLabel: string | null;
+  openingCents: bigint;
+  incomeCents: bigint;
+  outflowCents: bigint;
+  closingCents: bigint;
+};
+
+/** Linha do extrato de fundos no PDF (mesma lógica do extrato mensal do painel). */
+type FundExtratoPdfRow = {
+  id: string;
+  name: string;
+  openingCents: bigint;
+  incomeCents: bigint;
+  expenseCents: bigint;
+  closingCents: bigint;
+};
+
+type GeneralCashPdfSummary = {
+  openingYmd: string;
+  closingYmd: string;
+  openingCents: bigint;
+  closingCents: bigint;
+  bankSeedCents: bigint;
+  movementsOpeningCents: bigint;
 };
 
 /** Unidades listadas por agrupamento (PDF: seção antes dos fundos). */
@@ -84,13 +135,18 @@ export class MonthlyTransparencyPdfService {
     private readonly unitRepo: Repository<Unit>,
     @InjectRepository(FinancialFund)
     private readonly fundRepo: Repository<FinancialFund>,
+    @InjectRepository(FundMonthlyAccrual)
+    private readonly fundAccrualRepo: Repository<FundMonthlyAccrual>,
     @InjectRepository(Grouping)
     private readonly groupingRepo: Repository<Grouping>,
     @InjectRepository(CondominiumParticipant)
     private readonly participantRepo: Repository<CondominiumParticipant>,
+    @InjectRepository(CondominiumBankAccount)
+    private readonly bankAccountRepo: Repository<CondominiumBankAccount>,
     private readonly condominiumsService: CondominiumsService,
     private readonly governance: GovernanceService,
     private readonly fundBalance: FundBalanceService,
+    private readonly financeStatement: FinanceStatementService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
   ) {}
 
@@ -106,10 +162,15 @@ export class MonthlyTransparencyPdfService {
     }
 
     const targetUnitId = unitId?.trim() || null;
+    let anonymizeFeeMovements = true;
     if (targetUnitId) {
       await this.assertUnitAccess(condominiumId, userId, targetUnitId);
     } else {
-      await this.governance.assertManagement(condominiumId, userId);
+      const access = await this.governance.assertManagement(
+        condominiumId,
+        userId,
+      );
+      anonymizeFeeMovements = !accessAllowsManagement(access);
     }
     const condo = await this.condominiumsService.findById(condominiumId);
     if (!condo) {
@@ -135,31 +196,6 @@ export class MonthlyTransparencyPdfService {
       throw new NotFoundException('Unit not found in condominium');
     }
 
-    const periodTransactions = await this.txRepo.find({
-      where: {
-        condominiumId,
-        kind: In(['expense', 'investment', 'income']),
-        occurredOn: Between(from, to),
-      },
-      relations: { fund: true, unitShares: true },
-      order: { occurredOn: 'ASC', id: 'ASC' },
-    });
-    const txs = periodTransactions.filter(
-      (t) =>
-        t.kind !== 'income' &&
-        t.paymentStatus === 'pending',
-    );
-
-    const charges = await this.chargeRepo.find({
-      where: { condominiumId, competenceYm: ym },
-      relations: { unit: { grouping: true } },
-    });
-    charges.sort((a, b) =>
-      (a.unit?.identifier ?? '').localeCompare(b.unit?.identifier ?? '', 'pt'),
-    );
-    const fixos = txs.filter((t) => t.fund?.isPermanent === true);
-    const variavel = txs.filter((t) => t.fund?.isPermanent !== true);
-
     let managementLogoBuffer: Buffer | null = null;
     if (condo.managementLogoStorageKey) {
       try {
@@ -173,81 +209,17 @@ export class MonthlyTransparencyPdfService {
       }
     }
 
-    const fundReport =
-      await this.fundBalance.fundBalancesForCompetenceReport(condominiumId, ym);
-    const funds = await this.fundRepo.find({
-      where: { condominiumId },
-      order: { name: 'ASC' },
-    });
-    const groupings = await this.groupingRepo.find({
-      where: { condominiumId },
-      order: { name: 'ASC' },
-    });
-    const groupingNameById = new Map(
-      groupings.map((g) => [g.id, g.name.trim() || '—']),
+    const statement = await this.financeStatement.statement(
+      condominiumId,
+      userId,
+      fromStr,
+      toStr,
     );
-    const allUnitsForAlloc = await this.unitRepo.find({
-      where: { grouping: { condominiumId } },
-      relations: {
-        grouping: true,
-        ownerPerson: true,
-        responsibleLinks: { person: true },
-        financialResponsiblePerson: true,
-      },
-    });
-    const unitById = new Map(allUnitsForAlloc.map((u) => [u.id, u]));
-
-    const unitsByGroupingId = new Map<string, Unit[]>();
-    for (const u of allUnitsForAlloc) {
-      const list = unitsByGroupingId.get(u.groupingId) ?? [];
-      list.push(u);
-      unitsByGroupingId.set(u.groupingId, list);
-    }
-    for (const list of unitsByGroupingId.values()) {
-      list.sort((a, b) =>
-        a.identifier.localeCompare(b.identifier, 'pt', { sensitivity: 'base' }),
-      );
-    }
-    const agrupamentosDisplay: AgrupamentosPdfRow[] = groupings.map((g) => {
-      const units = unitsByGroupingId.get(g.id) ?? [];
-      const gname = g.name.trim() || '—';
-      return {
-        groupingName: gname,
-        unitLines: units.map((u) => {
-          const id = u.identifier.trim() || '—';
-          const owner =
-            u.ownerPerson?.fullName?.trim() ||
-            u.ownerDisplayName?.trim() ||
-            null;
-          const resp =
-            resolveUnitFinancialResponsibleDisplayName({
-              financialResponsiblePerson: u.financialResponsiblePerson ?? null,
-              responsibleLinks: u.responsibleLinks ?? null,
-              responsibleDisplayName: u.responsibleDisplayName ?? null,
-            }) ?? '—';
-          const parts = [id];
-          if (owner) {
-            parts.push(`Proprietário: ${owner}`);
-          }
-          parts.push(`Responsável: ${resp}`);
-          return parts.join(' — ');
-        }),
-      };
-    });
-
-    const fundRows: FundPdfRow[] = funds.map((f) => ({
-      id: f.id,
-      name: f.name,
-      allocationSummary: this.describeFundAllocation(
-        f,
-        groupingNameById,
-        unitById,
-        allUnitsForAlloc,
-      ),
-    }));
-
-    const administracaoDisplay =
-      await this.loadAdministracaoForPdf(condominiumId);
+    const statementFundSections = [...statement.funds].sort((a, b) =>
+      (a.fundName ?? '').localeCompare(b.fundName ?? '', 'pt', {
+        sensitivity: 'base',
+      }),
+    );
 
     /** Quando o PDF é pedido com `unitId`, o slip PIX deve refletir todas as taxas em aberto (soma e detalhe), não só a competência do relatório. */
     let openChargesForTargetPix: CondominiumFeeCharge[] = [];
@@ -259,20 +231,45 @@ export class MonthlyTransparencyPdfService {
       });
     }
 
+    const [
+      administracao,
+      competenceCharges,
+      periodExpenseTxs,
+      fundMensalidadeTxs,
+    ] = await Promise.all([
+      this.loadAdministracaoForPdf(condominiumId),
+      this.chargeRepo.find({
+        where: { condominiumId, competenceYm: ym },
+      }),
+      this.txRepo.find({
+        where: {
+          condominiumId,
+          occurredOn: Between(from, to),
+          paymentStatus: Not('cancelled'),
+          kind: In(['expense', 'investment']),
+        },
+        relations: { unitShares: true, fund: true },
+        order: { occurredOn: 'ASC', createdAt: 'ASC' },
+      }),
+      this.loadFundMensalidadeTransactionsForUnitExtrato(
+        condominiumId,
+        ym,
+      ),
+    ]);
+    const agrupamentosRows = this.buildAgrupamentosPdfRows(allUnitCols);
+    const unitExtratoTxs = periodExpenseTxs.filter((t) =>
+      this.includeInUnitExtratoPdf(t),
+    );
+    const fixos = unitExtratoTxs.filter((t) => t.recurringSeriesId != null);
+    const variavel = unitExtratoTxs.filter((t) => t.recurringSeriesId == null);
+
     return await this.renderPdf({
       condoName: condo.name,
       competenceYm: ym,
       periodLabel: this.formatExpensePeriodLabelPtBr(fromStr, toStr),
-      unitCols,
-      fixos,
-      variavel,
-      periodTransactions,
-      charges,
       managementLogoBuffer,
-      funds: fundRows,
-      fundReport,
-      agrupamentosDisplay,
-      administracao: administracaoDisplay,
+      competenceYmPtBr: this.formatCompetenceYmPtBr(ym),
+      unitCols: allUnitCols,
       targetUnit,
       billingPixKey: condo.billingPixKey,
       billingPixBeneficiaryName: condo.billingPixBeneficiaryName,
@@ -281,7 +278,187 @@ export class MonthlyTransparencyPdfService {
         condo.transparencyPdfIncludePixQrCode !== false,
       syndicWhatsappForReceipts: condo.syndicWhatsappForReceipts,
       openChargesForTargetPix,
+      competenceCharges,
+      fixos,
+      variavel,
+      fundMensalidadeTxs,
+      administracao,
+      agrupamentosRows,
+      statementGeneral: statement.general,
+      statementFundSections,
+      anonymizeFeeMovements,
     });
+  }
+
+  /** Agrupamentos com lista de unidades (seção do slip por unidade). */
+  private buildAgrupamentosPdfRows(unitCols: UnitCol[]): AgrupamentosPdfRow[] {
+    const byGroup = new Map<string, UnitCol[]>();
+    for (const u of unitCols) {
+      const g = u.groupingName?.trim() || '—';
+      const list = byGroup.get(g) ?? [];
+      list.push(u);
+      byGroup.set(g, list);
+    }
+    return [...byGroup.entries()]
+      .sort(([a], [b]) => a.localeCompare(b, 'pt', { sensitivity: 'base' }))
+      .map(([groupingName, units]) => ({
+        groupingName,
+        unitLines: [...units]
+          .sort((a, b) =>
+            a.identifier.localeCompare(b.identifier, 'pt', {
+              sensitivity: 'base',
+            }),
+          )
+          .map((u) => {
+            const id = u.identifier?.trim() || '—';
+            const resp = u.responsibleName?.trim();
+            return resp ? `${id} — ${resp}` : id;
+          }),
+      }));
+  }
+
+  private async loadBankAccountsPdfData(
+    condominiumId: string,
+    from: Date,
+    to: Date,
+    competenceYm: string,
+  ): Promise<BankAccountPdfRow[]> {
+    const openingYmd = lastDayBeforeCompetenceYm(competenceYm);
+    const accounts = await this.bankAccountRepo.find({
+      where: { condominiumId, isActive: true },
+      order: { name: 'ASC', createdAt: 'ASC' },
+    });
+    if (accounts.length === 0) {
+      return [];
+    }
+
+    const periodTxs = await this.txRepo.find({
+      where: {
+        condominiumId,
+        bankAccountId: Not(IsNull()),
+        occurredOn: Between(from, to),
+        paymentStatus: Not('cancelled'),
+      },
+      select: {
+        id: true,
+        bankAccountId: true,
+        kind: true,
+        amountCents: true,
+      },
+    });
+    const periodFees = await this.chargeRepo.find({
+      where: {
+        condominiumId,
+        bankAccountId: Not(IsNull()),
+        status: 'paid',
+        paidAt: Between(from, to),
+        incomeTransactionId: IsNull(),
+      },
+      select: { id: true, bankAccountId: true, amountDueCents: true },
+    });
+
+    const incomeByAccount = new Map<string, bigint>();
+    const outflowByAccount = new Map<string, bigint>();
+    const bump = (
+      map: Map<string, bigint>,
+      accountId: string,
+      delta: bigint,
+    ): void => {
+      map.set(accountId, (map.get(accountId) ?? 0n) + delta);
+    };
+
+    for (const t of periodTxs) {
+      if (!t.bankAccountId) {
+        continue;
+      }
+      const d = this.fundBalance.signedDeltaCents(t);
+      if (d > 0n) {
+        bump(incomeByAccount, t.bankAccountId, d);
+      } else if (d < 0n) {
+        bump(outflowByAccount, t.bankAccountId, -d);
+      }
+    }
+    for (const c of periodFees) {
+      if (!c.bankAccountId) {
+        continue;
+      }
+      bump(
+        incomeByAccount,
+        c.bankAccountId,
+        BigInt(String(c.amountDueCents)),
+      );
+    }
+
+    const rows: BankAccountPdfRow[] = [];
+    for (const acc of accounts) {
+      const openingCents = await this.fundBalance.bankAccountBalanceAsOf(
+        condominiumId,
+        acc.id,
+        openingYmd,
+      );
+      const incomeCents = incomeByAccount.get(acc.id) ?? 0n;
+      const outflowCents = outflowByAccount.get(acc.id) ?? 0n;
+      rows.push({
+        id: acc.id,
+        name: acc.name.trim() || '—',
+        bankLabel: acc.bankName?.trim() || null,
+        openingCents,
+        incomeCents,
+        outflowCents,
+        closingCents: openingCents + incomeCents - outflowCents,
+      });
+    }
+    return rows;
+  }
+
+  private buildFundExtratoRowsFromStatement(
+    funds: FinancialFund[],
+    sections: StatementLedgerSection[],
+  ): FundExtratoPdfRow[] {
+    return funds.map((f) => {
+      const sec = sections.find((s) => s.fundId === f.id);
+      const opening = BigInt(sec?.openingBalanceCents ?? '0');
+      let incomeCents = 0n;
+      let expenseCents = 0n;
+      for (const m of sec?.movements ?? []) {
+        const d = BigInt(m.signedDeltaCents);
+        if (d > 0n) {
+          incomeCents += d;
+        } else if (d < 0n) {
+          expenseCents += -d;
+        }
+      }
+      const closing = BigInt(sec?.closingBalanceCents ?? opening.toString());
+      return {
+        id: f.id,
+        name: f.name,
+        openingCents: opening,
+        incomeCents,
+        expenseCents,
+        closingCents: closing,
+      };
+    });
+  }
+
+  private buildGeneralCashFromStatement(
+    competenceYm: string,
+    general: StatementLedgerSection,
+  ): GeneralCashPdfSummary {
+    const openingYmd = lastDayBeforeCompetenceYm(competenceYm);
+    const closingYmd = lastDayOfCompetenceYm(competenceYm);
+    const bankSeed = BigInt(general.bankAccountsSeedCents ?? '0');
+    const openingCents = BigInt(general.openingBalanceCents);
+    const closingCents = BigInt(general.closingBalanceCents);
+    return {
+      openingYmd,
+      closingYmd,
+      openingCents,
+      closingCents,
+      bankSeedCents: bankSeed,
+      movementsOpeningCents: BigInt(
+        general.movementsOpeningBalanceCents ?? (openingCents - bankSeed).toString(),
+      ),
+    };
   }
 
   /**
@@ -541,6 +718,48 @@ export class MonthlyTransparencyPdfService {
   }
 
   /**
+   * Folha dedicada: administração e agrupamentos (separada do extrato financeiro).
+   */
+  private renderCondominioCadastroDedicatedPage(
+    doc: InstanceType<typeof PDFDocument>,
+    margin: number,
+    contentW: number,
+    administracao: AdministracaoPdf,
+    agrupamentosRows: AgrupamentosPdfRow[],
+  ): number {
+    doc.addPage();
+    doc.x = margin;
+    doc.y = margin;
+    let y = margin;
+    doc.font('Helvetica-Bold').fontSize(15).fillColor('#121820');
+    doc.text('Administração e agrupamentos', margin, y, { lineBreak: false });
+    y += 20;
+    doc.font('Helvetica').fontSize(9).fillColor('#5a6572');
+    const pageIntro =
+      'Dados cadastrais do condomínio: dirigentes no planejamento e unidades por agrupamento (configuração atual no sistema).';
+    const pageIntroLines = this.wrapWordsToLines(doc, pageIntro, contentW);
+    const pilh = doc.currentLineHeight(true) + 2.5;
+    y = this.drawTextLines(doc, margin, y, pageIntroLines, pilh, margin);
+    y += 14;
+    doc.fillColor('#111827');
+    y = this.renderAdministracaoSection(
+      doc,
+      administracao,
+      margin,
+      contentW,
+      y,
+    );
+    y = this.renderAgrupamentosConfiguredSection(
+      doc,
+      agrupamentosRows,
+      margin,
+      contentW,
+      y,
+    );
+    return y + 8;
+  }
+
+  /**
    * Agrupamentos configurados: cada tipo com lista de unidades e responsável
    * (antes da seção «Fundos e agrupamentos no rateio»).
    */
@@ -705,47 +924,67 @@ export class MonthlyTransparencyPdfService {
     return y + 2;
   }
 
-  /** Saldos inicial e final da competência: soma dos lançamentos com `fund_id` até cada data. */
+  /** Extrato por fundo: saldo anterior, movimentos do mês e saldo final. */
   private renderFundBalancesTable(
     doc: InstanceType<typeof PDFDocument>,
-    funds: FundPdfRow[],
-    fundReport: {
-      openingYmd: string;
-      closingYmd: string;
-      openingByFund: Map<string, bigint>;
-      closingByFund: Map<string, bigint>;
-    },
+    rows: FundExtratoPdfRow[],
+    competenceYmPtBr: string,
+    openingYmd: string,
+    closingYmd: string,
     margin: number,
     contentW: number,
     yStart: number,
   ): number {
     const accent = '#1a3a52';
-    const colNumW = 108;
-    const colFundW = contentW - colNumW * 2 - 24;
-    const colOpenX = margin + colFundW + 8;
-    const colCloseX = colOpenX + colNumW + 8;
+    const colGap = 5;
+    const colNumW = 68;
+    const colCount = 4;
+    const colFundW =
+      contentW - colNumW * colCount - colGap * (colCount + 1);
+    const colOpenX = margin + colFundW + colGap;
+    const colIncX = colOpenX + colNumW + colGap;
+    const colExpX = colIncX + colNumW + colGap;
+    const colCloseX = colExpX + colNumW + colGap;
+
+    const drawAmtRight = (
+      text: string,
+      colX: number,
+      yy: number,
+      fontSize = 8.5,
+    ): void => {
+      doc.font('Helvetica-Bold').fontSize(fontSize).fillColor('#0d1b26');
+      doc.text(text, colX + colNumW - 4 - doc.widthOfString(text), yy, {
+        lineBreak: false,
+      });
+    };
+
     let y = yStart;
     y = this.ensureSpace(doc, y, 80, margin);
 
     doc.font('Helvetica-Bold').fontSize(15).fillColor('#121820');
-    doc.text('Saldos dos fundos', margin, y, { lineBreak: false });
-    y += 24;
-    doc.font('Helvetica').fontSize(9).fillColor('#5a6572');
-    const openPt = this.formatYmdPtBr(fundReport.openingYmd);
-    const closePt = this.formatYmdPtBr(fundReport.closingYmd);
-    const sub = `Saldo período anterior em ${openPt} (fim do mês anterior à competência) e saldo em ${closePt} (fim desta competência). Valores obtidos pela soma dos lançamentos associados a cada fundo até essas datas (receitas somam; despesas e aplicações subtraem). Os montantes na tabela são apresentados em valor absoluto (sem sinal negativo).`;
+    doc.text(`Extrato dos fundos — ${competenceYmPtBr}`, margin, y, {
+      lineBreak: false,
+    });
+    y += 22;
+    doc.font('Helvetica').fontSize(8.5).fillColor('#5a6572');
+    const openPt = this.formatYmdPtBr(openingYmd);
+    const closePt = this.formatYmdPtBr(closingYmd);
+    const sub =
+      `Saldo anterior em ${openPt} (fim do mês anterior à competência). ` +
+      `Receitas e despesas/aplicações são os lançamentos do mês ${competenceYmPtBr} (igual ao extrato mensal do painel). ` +
+      `Saldo final em ${closePt}: saldo anterior + receitas - despesas do mês.`;
     const subLines = this.wrapWordsToLines(doc, sub, contentW);
-    const slh = doc.currentLineHeight(true) + 3.5;
+    const slh = doc.currentLineHeight(true) + 3;
     y = this.drawTextLines(doc, margin, y, subLines, slh, margin);
-    y += 16;
+    y += 12;
 
-    if (funds.length === 0) {
+    if (rows.length === 0) {
       doc.font('Helvetica').fontSize(9).fillColor('#888888');
       doc.text('Nenhum fundo cadastrado.', margin, y, { lineBreak: false });
       return y + 24;
     }
 
-    const headH = 48;
+    const headH = 40;
     y = this.ensureSpace(doc, y, headH + 6, margin);
     doc.save();
     doc
@@ -755,38 +994,47 @@ export class MonthlyTransparencyPdfService {
       .lineWidth(0.55)
       .stroke();
     doc.restore();
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(accent);
-    doc.text('Fundo / rateio', margin + 10, y + 10, { lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(accent);
-    const h0 = 'Saldo período anterior';
-    doc.text(h0, colOpenX + colNumW - 6 - doc.widthOfString(h0), y + 8, {
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(accent);
+    doc.text('Fundo', margin + 8, y + 14, { lineBreak: false });
+    const hOpen = 'Saldo ant.';
+    drawAmtRight(hOpen, colOpenX, y + 6, 8);
+    const hInc = '(+) Receitas';
+    drawAmtRight(hInc, colIncX, y + 6, 8);
+    const hExp = '(-) Despesas';
+    drawAmtRight(hExp, colExpX, y + 6, 8);
+    const hClose = 'Saldo final';
+    drawAmtRight(hClose, colCloseX, y + 6, 8);
+    doc.font('Helvetica').fontSize(6.5).fillColor('#5a6572');
+    doc.text('mês', colIncX + colNumW - 4 - doc.widthOfString('mês'), y + 22, {
       lineBreak: false,
     });
-    const h1 = 'Saldo na competência';
-    doc.text(h1, colCloseX + colNumW - 6 - doc.widthOfString(h1), y + 8, {
-      lineBreak: false,
-    });
-    doc.font('Helvetica').fontSize(7).fillColor('#5a6572');
-    doc.text(`(${openPt})`, colOpenX + colNumW - 6 - doc.widthOfString(`(${openPt})`), y + 24, {
-      lineBreak: false,
-    });
-    doc.text(`(${closePt})`, colCloseX + colNumW - 6 - doc.widthOfString(`(${closePt})`), y + 24, {
+    doc.text('mês', colExpX + colNumW - 4 - doc.widthOfString('mês'), y + 22, {
       lineBreak: false,
     });
     y += headH;
 
     let idx = 0;
-    for (const f of funds) {
-      doc.font('Helvetica').fontSize(8.5).fillColor('#5a6572');
-      const allocLines = this.wrapWordsToLines(
+    let totOpen = 0n;
+    let totInc = 0n;
+    let totExp = 0n;
+    let totClose = 0n;
+
+    for (const f of rows) {
+      const o = f.openingCents;
+      const c = f.closingCents;
+      totOpen += o;
+      totInc += f.incomeCents;
+      totExp += f.expenseCents;
+      totClose += c;
+
+      doc.font('Helvetica-Bold').fontSize(9).fillColor('#222222');
+      const nameLines = this.wrapWordsToLines(
         doc,
-        f.allocationSummary,
-        colFundW - 16,
+        f.name.trim() || '—',
+        colFundW - 14,
       );
-      const allocLineH = doc.currentLineHeight(true) + 2;
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#222222');
-      const nameLineH = doc.currentLineHeight(true) + 2;
-      const rowH = Math.max(44, 14 + nameLineH + allocLines.length * allocLineH + 12);
+      const nameLh = doc.currentLineHeight(true) + 1.5;
+      const rowH = Math.max(32, 12 + nameLines.length * nameLh);
 
       y = this.ensureSpace(doc, y, rowH + 4, margin);
       if (idx % 2 === 1) {
@@ -800,32 +1048,277 @@ export class MonthlyTransparencyPdfService {
       doc.restore();
 
       let ty = y + 10;
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#222222');
-      doc.text(f.name.trim() || '—', margin + 10, ty, { lineBreak: false });
-      ty += nameLineH;
-      doc.font('Helvetica').fontSize(8.5).fillColor('#5a6572');
-      for (const al of allocLines) {
-        doc.text(al, margin + 10, ty, { lineBreak: false });
-        ty += allocLineH;
+      for (const nl of nameLines) {
+        doc.text(nl, margin + 8, ty, { lineBreak: false });
+        ty += nameLh;
       }
-
-      const o = fundReport.openingByFund.get(f.id) ?? 0n;
-      const c = fundReport.closingByFund.get(f.id) ?? 0n;
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#0d1b26');
-      const amtY = y + Math.max(10, (rowH - 22) / 2);
-      const os = this.brlAbs(o);
-      doc.text(os, colOpenX + colNumW - 6 - doc.widthOfString(os), amtY, {
-        lineBreak: false,
-      });
-      const cs = this.brlAbs(c);
-      doc.text(cs, colCloseX + colNumW - 6 - doc.widthOfString(cs), amtY, {
-        lineBreak: false,
-      });
+      const amtY = y + Math.max(8, (rowH - 14) / 2);
+      drawAmtRight(this.brlSigned(o), colOpenX, amtY);
+      drawAmtRight(this.brl(f.incomeCents), colIncX, amtY);
+      drawAmtRight(this.brl(f.expenseCents), colExpX, amtY);
+      drawAmtRight(this.brlSigned(c), colCloseX, amtY);
       y += rowH;
       idx += 1;
     }
 
+    const totH = 34;
+    y = this.ensureSpace(doc, y, totH + 4, margin);
+    doc.save();
+    doc
+      .rect(margin, y, contentW, totH)
+      .fill('#eef2f7')
+      .strokeColor('#b8c4d4')
+      .lineWidth(0.45)
+      .stroke();
+    doc.restore();
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(accent);
+    doc.text('Total', margin + 8, y + 12, { lineBreak: false });
+    const totY = y + 10;
+    drawAmtRight(this.brlSigned(totOpen), colOpenX, totY);
+    drawAmtRight(this.brl(totInc), colIncX, totY);
+    drawAmtRight(this.brl(totExp), colExpX, totY);
+    drawAmtRight(this.brlSigned(totClose), colCloseX, totY);
+    y += totH;
+
     return y + 12;
+  }
+
+  /**
+   * Extrato por conta bancária cadastrada (saldo anterior, entradas/saídas do mês, saldo final).
+   */
+  private renderBankAccountsExtratoTable(
+    doc: InstanceType<typeof PDFDocument>,
+    accounts: BankAccountPdfRow[],
+    generalCash: GeneralCashPdfSummary,
+    competenceYmPtBr: string,
+    margin: number,
+    contentW: number,
+    yStart: number,
+  ): number {
+    const accent = '#1a3a52';
+    const colGap = 5;
+    const colNumW = 68;
+    const colCount = 4;
+    const colNameW =
+      contentW - colNumW * colCount - colGap * (colCount + 1);
+    const colOpenX = margin + colNameW + colGap;
+    const colIncX = colOpenX + colNumW + colGap;
+    const colOutX = colIncX + colNumW + colGap;
+    const colCloseX = colOutX + colNumW + colGap;
+
+    const drawAmtRight = (
+      text: string,
+      colX: number,
+      yy: number,
+      fontSize = 8.5,
+    ): void => {
+      doc.font('Helvetica-Bold').fontSize(fontSize).fillColor('#0d1b26');
+      doc.text(text, colX + colNumW - 4 - doc.widthOfString(text), yy, {
+        lineBreak: false,
+      });
+    };
+
+    let y = yStart;
+    y = this.ensureSpace(doc, y, 80, margin);
+
+    doc.font('Helvetica-Bold').fontSize(15).fillColor('#121820');
+    doc.text(`Extrato das contas bancárias — ${competenceYmPtBr}`, margin, y, {
+      lineBreak: false,
+    });
+    y += 22;
+    doc.font('Helvetica').fontSize(8.5).fillColor('#5a6572');
+    const openPt = this.formatYmdPtBr(generalCash.openingYmd);
+    const closePt = this.formatYmdPtBr(generalCash.closingYmd);
+    const sub =
+      `Saldo anterior em ${openPt} por conta cadastrada no sistema. ` +
+      `Entradas e saídas do mês ${competenceYmPtBr} incluem lançamentos financeiros e quitações de taxa sem receita vinculada na mesma conta. ` +
+      `Saldo final em ${closePt}.`;
+    const subLines = this.wrapWordsToLines(doc, sub, contentW);
+    const slh = doc.currentLineHeight(true) + 3;
+    y = this.drawTextLines(doc, margin, y, subLines, slh, margin);
+    y += 12;
+
+    if (accounts.length === 0) {
+      doc.font('Helvetica').fontSize(9).fillColor('#888888');
+      doc.text(
+        'Nenhuma conta bancária ativa cadastrada. Cadastre as contas no painel para que os saldos apareçam neste relatório.',
+        margin,
+        y,
+        { lineBreak: false, width: contentW },
+      );
+      y += 28;
+    } else {
+      const headH = 40;
+      y = this.ensureSpace(doc, y, headH + 6, margin);
+      doc.save();
+      doc
+        .rect(margin, y, contentW, headH)
+        .fill('#e8edf4')
+        .strokeColor('#b8c4d4')
+        .lineWidth(0.55)
+        .stroke();
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(8).fillColor(accent);
+      doc.text('Conta', margin + 8, y + 14, { lineBreak: false });
+      drawAmtRight('Saldo ant.', colOpenX, y + 6, 8);
+      drawAmtRight('(+) Entradas', colIncX, y + 6, 8);
+      drawAmtRight('(-) Saídas', colOutX, y + 6, 8);
+      drawAmtRight('Saldo final', colCloseX, y + 6, 8);
+      doc.font('Helvetica').fontSize(6.5).fillColor('#5a6572');
+      doc.text('mês', colIncX + colNumW - 4 - doc.widthOfString('mês'), y + 22, {
+        lineBreak: false,
+      });
+      doc.text('mês', colOutX + colNumW - 4 - doc.widthOfString('mês'), y + 22, {
+        lineBreak: false,
+      });
+      y += headH;
+
+      let idx = 0;
+      let totOpen = 0n;
+      let totInc = 0n;
+      let totOut = 0n;
+      let totClose = 0n;
+
+      for (const acc of accounts) {
+        totOpen += acc.openingCents;
+        totInc += acc.incomeCents;
+        totOut += acc.outflowCents;
+        totClose += acc.closingCents;
+
+        const label =
+          acc.bankLabel != null && acc.bankLabel.length > 0
+            ? `${acc.name} — ${acc.bankLabel}`
+            : acc.name;
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#222222');
+        const nameLines = this.wrapWordsToLines(doc, label, colNameW - 14);
+        const nameLh = doc.currentLineHeight(true) + 1.5;
+        const rowH = Math.max(32, 12 + nameLines.length * nameLh);
+
+        y = this.ensureSpace(doc, y, rowH + 4, margin);
+        if (idx % 2 === 1) {
+          doc.save();
+          doc.rect(margin, y, contentW, rowH).fill('#f5f7fa');
+          doc.restore();
+        }
+        doc.save();
+        doc.strokeColor('#e8ecf0').lineWidth(0.35);
+        doc
+          .moveTo(margin, y + rowH)
+          .lineTo(margin + contentW, y + rowH)
+          .stroke();
+        doc.restore();
+
+        let ty = y + 10;
+        for (const nl of nameLines) {
+          doc.text(nl, margin + 8, ty, { lineBreak: false });
+          ty += nameLh;
+        }
+        const amtY = y + Math.max(10, (rowH - 12) / 2);
+        drawAmtRight(this.brlSigned(acc.openingCents), colOpenX, amtY);
+        drawAmtRight(this.brl(acc.incomeCents), colIncX, amtY);
+        drawAmtRight(this.brl(acc.outflowCents), colOutX, amtY);
+        drawAmtRight(this.brlSigned(acc.closingCents), colCloseX, amtY);
+        y += rowH;
+        idx += 1;
+      }
+
+      const totH = 34;
+      y = this.ensureSpace(doc, y, totH + 4, margin);
+      doc.save();
+      doc
+        .rect(margin, y, contentW, totH)
+        .fill('#dce6f2')
+        .strokeColor('#b8c4d4')
+        .lineWidth(0.55)
+        .stroke();
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(accent);
+      doc.text('Total (contas ativas)', margin + 8, y + 12, { lineBreak: false });
+      const totY = y + 10;
+      drawAmtRight(this.brlSigned(totOpen), colOpenX, totY);
+      drawAmtRight(this.brl(totInc), colIncX, totY);
+      drawAmtRight(this.brl(totOut), colOutX, totY);
+      drawAmtRight(this.brlSigned(totClose), colCloseX, totY);
+      y += totH;
+    }
+
+    y += 16;
+    y = this.renderGeneralCashConsolidatedBox(
+      doc,
+      generalCash,
+      competenceYmPtBr,
+      margin,
+      contentW,
+      y,
+    );
+    return y + 8;
+  }
+
+  /** Resumo da conta geral (soma de todas as contas bancárias ativas). */
+  private renderGeneralCashConsolidatedBox(
+    doc: InstanceType<typeof PDFDocument>,
+    generalCash: GeneralCashPdfSummary,
+    competenceYmPtBr: string,
+    margin: number,
+    contentW: number,
+    yStart: number,
+  ): number {
+    const accent = '#1a3a52';
+    let y = yStart;
+    y = this.ensureSpace(doc, y, 100, margin);
+
+    doc.font('Helvetica-Bold').fontSize(13).fillColor('#121820');
+    doc.text(`Conta geral do condomínio — ${competenceYmPtBr}`, margin, y, {
+      lineBreak: false,
+    });
+    y += 20;
+    doc.font('Helvetica').fontSize(8.5).fillColor('#5a6572');
+    const intro =
+      'Consolidado de todas as contas bancárias ativas (equivalente ao extrato «Conta geral» no painel). ' +
+      'Reflete o caixa real do condomínio, incluindo movimentos sem fundo específico e taxas quitadas.';
+    const introLines = this.wrapWordsToLines(doc, intro, contentW);
+    const ilh = doc.currentLineHeight(true) + 2.5;
+    y = this.drawTextLines(doc, margin, y, introLines, ilh, margin);
+    y += 10;
+
+    const openPt = this.formatYmdPtBr(generalCash.openingYmd);
+    const closePt = this.formatYmdPtBr(generalCash.closingYmd);
+    const boxH = 72;
+    y = this.ensureSpace(doc, y, boxH + 8, margin);
+    doc.save();
+    doc
+      .roundedRect(margin, y, contentW, boxH, 4)
+      .fill('#f8fafc')
+      .strokeColor('#cbd5e1')
+      .lineWidth(0.5)
+      .stroke();
+    doc.restore();
+
+    const iy = y + 12;
+    doc.font('Helvetica').fontSize(8.5).fillColor('#64748b');
+    doc.text(`Saldo em ${openPt}`, margin + 12, iy, { lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(accent);
+    doc.text(this.brlSigned(generalCash.openingCents), margin + 12, iy + 14, {
+      lineBreak: false,
+    });
+
+    const midX = margin + contentW / 2;
+    doc.font('Helvetica').fontSize(8.5).fillColor('#64748b');
+    doc.text(`Saldo em ${closePt}`, midX, iy, { lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(accent);
+    doc.text(this.brlSigned(generalCash.closingCents), midX, iy + 14, {
+      lineBreak: false,
+    });
+
+    y += boxH + 10;
+    doc.font('Helvetica').fontSize(8).fillColor('#64748b');
+    const detail =
+      `Composição do saldo anterior: saldo inicial cadastrado nas contas (${this.brlSigned(generalCash.bankSeedCents)}) ` +
+      `+ movimentos e quitações até ${openPt} (${this.brlSigned(generalCash.movementsOpeningCents)}).`;
+    const detailLines = this.wrapWordsToLines(doc, detail, contentW);
+    y = this.drawTextLines(doc, margin, y, detailLines, ilh, margin);
+    doc.fillColor('#000000');
+    return y + 6;
   }
 
   private formatYmdPtBr(ymd: string): string {
@@ -906,7 +1399,7 @@ export class MonthlyTransparencyPdfService {
     let y = p.yStart;
     const boxPad = 10;
     const explain =
-      `Prestação de contas mensal do condomínio (competência ${p.competenceYmPtBr}): despesas do período, fundos, movimentos e, ao final, o extrato discriminado por unidade. ` +
+      `Prestação de contas mensal do condomínio (competência ${p.competenceYmPtBr}): extrato financeiro do período (conta geral e fundos) e, ao final, extrato de despesas e taxa por agrupamento — unidades com valor diferente do padrão do agrupamento aparecem em bloco próprio. ` +
       `Na tabela abaixo consta o valor da taxa condominial desta competência para cada unidade (a linha sombreada corresponde à unidade ${p.targetUnitIdentifier}).`;
     doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#0c4a6e');
     const titleLh = doc.currentLineHeight(true) + 2.5;
@@ -1422,44 +1915,663 @@ export class MonthlyTransparencyPdfService {
     }
   }
 
+  /** Capa curta (relatório geral ou slip sem PIX). */
+  private renderIdentificationCoverPage(
+    doc: InstanceType<typeof PDFDocument>,
+    p: {
+      margin: number;
+      contentW: number;
+      yStart: number;
+      managementLogoBuffer: Buffer | null;
+      condoName: string;
+      competenceYmPtBr: string;
+      periodLabel: string;
+      withUnitSlipContext: boolean;
+    },
+  ): number {
+    const accent = '#1a3a52';
+    const muted = '#5a6572';
+    let y = p.yStart;
+
+    y = drawDocumentHeaderLogo(
+      doc,
+      p.margin,
+      y,
+      p.managementLogoBuffer,
+      48,
+    );
+
+    doc.save();
+    doc.rect(p.margin, y, 4, 58).fill(accent);
+    doc.restore();
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(18)
+      .fillColor('#121820')
+      .text(
+        p.withUnitSlipContext
+          ? 'Prestação de contas do condomínio'
+          : 'Prestação de contas',
+        p.margin + 14,
+        y + 2,
+        { lineBreak: false },
+      );
+    doc
+      .font('Helvetica')
+      .fontSize(11)
+      .fillColor(muted)
+      .text(
+        p.withUnitSlipContext
+          ? `Competência ${p.competenceYmPtBr} — fechamento mensal (todas as unidades)`
+          : 'Taxa condominial — transparência',
+        p.margin + 14,
+        y + 32,
+        { lineBreak: false },
+      );
+    y += 68;
+
+    doc.font('Helvetica-Bold').fontSize(14).fillColor('#121820');
+    doc.text('Identificação do condomínio', p.margin, y, { lineBreak: false });
+    y += 22;
+    doc.font('Helvetica-Bold').fontSize(13).fillColor('#1a1a1a');
+    doc.text(p.condoName, p.margin, y, { lineBreak: false });
+    y += 22;
+    doc.font('Helvetica').fontSize(10.5).fillColor(muted);
+    doc.text(`Competência ${p.competenceYmPtBr}`, p.margin, y, {
+      lineBreak: false,
+    });
+    y += 18;
+    doc.text(`Período: ${p.periodLabel}`, p.margin, y, { lineBreak: false });
+    y += 24;
+    doc.save();
+    doc.strokeColor('#d4dbe3').lineWidth(0.9);
+    doc
+      .moveTo(p.margin, y)
+      .lineTo(p.margin + p.contentW, y)
+      .stroke();
+    doc.restore();
+    doc.fillColor('#000000');
+    return y + 20;
+  }
+
+  private movementLineTypeLabelPt(
+    lineType: string | undefined,
+    kind: string,
+    dueOnYmd?: string,
+    todayYmd?: string,
+  ): string {
+    switch (lineType) {
+      case 'fee_payment':
+        return 'Taxa paga';
+      case 'fee_overdue':
+        if (dueOnYmd?.trim() && todayYmd?.trim()) {
+          return openFeeLineTypeLabelPt(dueOnYmd, todayYmd);
+        }
+        return 'Taxa em atraso';
+      default:
+        return this.transactionKindLabelPt(kind);
+    }
+  }
+
+  private transactionKindLabelPt(kind: string): string {
+    switch (kind) {
+      case 'income':
+        return 'Receita';
+      case 'expense':
+        return 'Despesa';
+      case 'investment':
+        return 'Aplicação';
+      case 'yield':
+        return 'Rendimento';
+      default:
+        return kind;
+    }
+  }
+
+  private txPaymentStatusLabelPt(
+    status: string | undefined,
+    lineType?: string,
+    dueOnYmd?: string,
+    todayYmd?: string,
+  ): string {
+    if (lineType === 'fee_overdue' && dueOnYmd?.trim() && todayYmd?.trim()) {
+      return openFeeStatusLabelPt(dueOnYmd, todayYmd);
+    }
+    switch (status ?? 'pending') {
+      case 'pending':
+        return 'Aguardando';
+      case 'paid':
+        return 'Pago';
+      case 'cancelled':
+        return 'Cancelado';
+      case 'overdue':
+        return 'Em atraso';
+      default:
+        return 'Aguardando';
+    }
+  }
+
+  private brlSignedDelta(cents: bigint): string {
+    if (cents > 0n) {
+      return `+ ${this.brl(cents)}`;
+    }
+    if (cents < 0n) {
+      return `- ${this.brl(-cents)}`;
+    }
+    return this.brl(0n);
+  }
+
+  /**
+   * Quitações e taxas em atraso no PDF de transparência não expõem unidade nem agrupamento.
+   */
+  private movementDescriptionForTransparencyPdf(
+    row: StatementMovementRow,
+    anonymizeFeeMovements: boolean,
+  ): string {
+    if (
+      anonymizeFeeMovements &&
+      (row.lineType === 'fee_payment' || row.lineType === 'fee_overdue')
+    ) {
+      const todayYmd = formatDateOnlyYmdUtc(todayLocalCalendarAsUtcNoon());
+      return genericFeeMovementTitle(
+        row.lineType,
+        row.competenceYm,
+        row.occurredOn,
+        todayYmd,
+      );
+    }
+    return row.title.trim() || '—';
+  }
+
+  /** Linha de resumo (rótulo à esquerda, valor à direita). */
+  private drawLedgerSummaryLine(
+    doc: InstanceType<typeof PDFDocument>,
+    margin: number,
+    contentW: number,
+    y: number,
+    label: string,
+    cents: bigint,
+    opts?: { valueColor?: string; labelSize?: number },
+  ): void {
+    const accent = opts?.valueColor ?? '#1a3a52';
+    const labelSize = opts?.labelSize ?? 8;
+    doc.font('Helvetica').fontSize(labelSize).fillColor('#5a6572');
+    doc.text(label, margin + 10, y, {
+      lineBreak: false,
+      width: contentW - 120,
+    });
+    const valStr = this.brlSigned(cents);
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor(accent);
+    doc.text(valStr, margin + contentW - 10 - doc.widthOfString(valStr), y, {
+      lineBreak: false,
+    });
+    doc.fillColor('#000000');
+  }
+
+  private renderLedgerOpeningBlockPdf(
+    doc: InstanceType<typeof PDFDocument>,
+    section: StatementLedgerSection,
+    margin: number,
+    contentW: number,
+    yStart: number,
+    isGeneral: boolean,
+  ): number {
+    const lines: { label: string; cents: bigint }[] = [
+      { label: 'Saldo inicial', cents: BigInt(section.openingBalanceCents) },
+    ];
+    if (isGeneral && section.bankAccountsSeedCents != null) {
+      let bankLbl = 'Contas bancárias (referência)';
+      if (section.openingDerivedFromCurrentBalance) {
+        bankLbl = section.bankAccountsAsOfYmd
+          ? `Contas bancárias (saldo atual em ${this.formatYmdPtBr(section.bankAccountsAsOfYmd)})`
+          : 'Contas bancárias (saldo atual)';
+      }
+      lines.push({
+        label: bankLbl,
+        cents: BigInt(section.bankAccountsSeedCents),
+      });
+      if (section.movementsOpeningBalanceCents != null) {
+        lines.push({
+          label: section.openingDerivedFromCurrentBalance
+            ? 'Movimentos no período (deduzidos)'
+            : 'Movimentos anteriores',
+          cents: BigInt(section.movementsOpeningBalanceCents),
+        });
+      }
+    }
+    const lineH = 15;
+    const hint =
+      isGeneral && section.openingDerivedFromCurrentBalance
+        ? 'O saldo inicial do mês é o saldo atual nas contas menos os lançamentos listados abaixo até a data indicada.'
+        : null;
+    const hintLines = hint
+      ? this.wrapWordsToLines(doc, hint, contentW - 20)
+      : [];
+    const hintLh = doc.currentLineHeight(true) + 2;
+    const boxH =
+      12 + lines.length * lineH + (hintLines.length > 0 ? hintLines.length * hintLh + 6 : 0);
+
+    let y = this.ensureSpace(doc, yStart, boxH + 6, margin);
+    doc.save();
+    doc
+      .roundedRect(margin, y, contentW, boxH, 4)
+      .fill('#f0f6fc')
+      .strokeColor('#c5d4e8')
+      .lineWidth(0.45)
+      .stroke();
+    doc.restore();
+
+    let cy = y + 8;
+    for (const line of lines) {
+      this.drawLedgerSummaryLine(
+        doc,
+        margin,
+        contentW,
+        cy,
+        line.label,
+        line.cents,
+        { labelSize: line.label === 'Saldo inicial' ? 7.5 : 7 },
+      );
+      cy += lineH;
+    }
+    if (hintLines.length > 0) {
+      doc.font('Helvetica').fontSize(7).fillColor('#64748b');
+      for (const hl of hintLines) {
+        doc.text(hl, margin + 10, cy, { lineBreak: false, width: contentW - 20 });
+        cy += hintLh;
+      }
+      doc.fillColor('#000000');
+    }
+    return y + boxH + 10;
+  }
+
+  private renderLedgerClosingFooterPdf(
+    doc: InstanceType<typeof PDFDocument>,
+    section: StatementLedgerSection,
+    margin: number,
+    contentW: number,
+    yStart: number,
+    isGeneral: boolean,
+    hasOverdueInTable: boolean,
+  ): number {
+    let y = yStart + 6;
+    const lines: { label: string; cents: bigint; overdue?: boolean }[] = [
+      {
+        label: isGeneral ? 'Saldo de caixa' : 'Saldo final no período',
+        cents: BigInt(section.closingBalanceCents),
+      },
+    ];
+    if (isGeneral) {
+      const overdueTotal = BigInt(section.overdueFeesTotalCents ?? '0');
+      if (overdueTotal > 0n) {
+        lines.push({
+          label: 'Total taxas em atraso',
+          cents: overdueTotal,
+          overdue: true,
+        });
+      }
+      if (
+        hasOverdueInTable &&
+        section.projectedBalanceCents != null
+      ) {
+        lines.push({
+          label: 'Saldo previsto (caixa + atrasos)',
+          cents: BigInt(section.projectedBalanceCents),
+        });
+      }
+    }
+    const lineH = 16;
+    const boxH = 12 + lines.length * lineH;
+    y = this.ensureSpace(doc, y, boxH + 4, margin);
+    doc.save();
+    doc
+      .roundedRect(margin, y, contentW, boxH, 4)
+      .fill('#f8fafc')
+      .strokeColor('#cbd5e1')
+      .lineWidth(0.45)
+      .stroke();
+    doc.restore();
+    let cy = y + 8;
+    for (const line of lines) {
+      this.drawLedgerSummaryLine(
+        doc,
+        margin,
+        contentW,
+        cy,
+        line.label,
+        line.cents,
+        {
+          valueColor: line.overdue ? '#0d5c2e' : '#1a3a52',
+        },
+      );
+      cy += lineH;
+    }
+    return y + boxH + 6;
+  }
+
+  /**
+   * Extrato linha a linha de conta geral ou fundo (mesma lógica do painel Extrato mensal).
+   */
+  private renderStatementLedgerSectionPdf(
+    doc: InstanceType<typeof PDFDocument>,
+    section: StatementLedgerSection,
+    p: {
+      margin: number;
+      contentW: number;
+      yStart: number;
+      competenceYmPtBr: string;
+      isGeneral: boolean;
+      anonymizeFeeMovements: boolean;
+    },
+  ): number {
+    const accent = '#1a3a52';
+    const muted = '#5a6572';
+    const gutter = 4;
+    const colDateW = 46;
+    const colTypeW = 54;
+    const colStatusW = 48;
+    const colAmtW = 58;
+    const colBalW = 58;
+    const colDescW = Math.max(
+      80,
+      p.contentW -
+        colDateW -
+        colTypeW -
+        colStatusW -
+        colAmtW -
+        colBalW -
+        5 * gutter,
+    );
+    const xDate = p.margin;
+    const xType = xDate + colDateW + gutter;
+    const xStatus = xType + colTypeW + gutter;
+    const xDesc = xStatus + colStatusW + gutter;
+    const xAmt = xDesc + colDescW + gutter;
+    const xBal = xAmt + colAmtW + gutter;
+    const rowMinH = 16;
+    const headerH = 28;
+
+    const sectionTitle = p.isGeneral
+      ? 'Conta geral'
+      : (section.fundName?.trim() || 'Fundo');
+    const cashMovements = section.movements.filter(
+      (m) => m.lineType !== 'fee_overdue',
+    );
+    const overdueMovements = section.movements.filter(
+      (m) => m.lineType === 'fee_overdue',
+    );
+
+    let y = p.yStart;
+    y = this.ensureSpace(doc, y, 72, p.margin);
+
+    doc.font('Helvetica-Bold').fontSize(14).fillColor('#121820');
+    doc.text(sectionTitle, p.margin, y, { lineBreak: false });
+    y += 22;
+
+    y = this.renderLedgerOpeningBlockPdf(
+      doc,
+      section,
+      p.margin,
+      p.contentW,
+      y,
+      p.isGeneral,
+    );
+
+    const drawTableHeader = (): void => {
+      y = this.ensureSpace(doc, y, headerH + 4, p.margin);
+      doc.save();
+      doc
+        .rect(p.margin, y, p.contentW, headerH)
+        .fill('#e8edf4')
+        .strokeColor('#b8c4d4')
+        .lineWidth(0.45)
+        .stroke();
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(accent);
+      doc.text('Data', xDate + 2, y + 9, { lineBreak: false });
+      doc.text('Tipo', xType + 2, y + 9, { lineBreak: false });
+      doc.text('Estado', xStatus + 2, y + 9, { lineBreak: false });
+      doc.text('Descrição', xDesc + 2, y + 9, { lineBreak: false });
+      const valHdr = p.isGeneral ? 'Valor' : 'Valor no fundo';
+      doc.text(valHdr, xAmt + colAmtW - 2 - doc.widthOfString(valHdr), y + 9, {
+        lineBreak: false,
+      });
+      const balHdr =
+        overdueMovements.length > 0 && p.isGeneral ? 'Saldo / previsto' : 'Saldo após';
+      doc.text(balHdr, xBal + colBalW - 2 - doc.widthOfString(balHdr), y + 9, {
+        lineBreak: false,
+      });
+      y += headerH;
+      doc.fillColor('#000000');
+    };
+
+    const todayYmd = formatDateOnlyYmdUtc(todayLocalCalendarAsUtcNoon());
+
+    const drawMovementRow = (
+      row: StatementMovementRow,
+      projected: boolean,
+    ): void => {
+      const delta = BigInt(row.signedDeltaCents);
+      const balance = BigInt(row.runningAfterCents);
+      const descLines = this.wrapWordsToLines(
+        doc,
+        this.movementDescriptionForTransparencyPdf(
+          row,
+          p.anonymizeFeeMovements,
+        ),
+        colDescW - 4,
+      );
+      const descLh = doc.currentLineHeight(true) + 1.2;
+      const rowH = Math.max(rowMinH, 6 + descLines.length * descLh);
+
+      const yBefore = y;
+      y = this.ensureSpace(doc, y, rowH + 2, p.margin);
+      if (y <= p.margin && yBefore > p.margin + 4) {
+        drawTableHeader();
+      }
+      if (projected) {
+        doc.save();
+        doc.rect(p.margin, y, p.contentW, rowH).fill('#faf8f0');
+        doc.restore();
+      }
+      doc.save();
+      doc.strokeColor('#e8ecf0').lineWidth(0.3);
+      doc.moveTo(p.margin, y + rowH).lineTo(p.margin + p.contentW, y + rowH).stroke();
+      doc.restore();
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#333333');
+      doc.text(this.formatYmdPtBr(row.occurredOn), xDate + 2, y + 5, {
+        lineBreak: false,
+      });
+      doc.text(
+        this.movementLineTypeLabelPt(row.lineType, row.kind, row.occurredOn, todayYmd)
+          .slice(0, 18),
+        xType + 2,
+        y + 5,
+        { lineBreak: false },
+      );
+      doc.text(
+        this.txPaymentStatusLabelPt(
+          row.paymentStatus,
+          row.lineType,
+          row.occurredOn,
+          todayYmd,
+        ).slice(0, 14),
+        xStatus + 2,
+        y + 5,
+        { lineBreak: false },
+      );
+      let dy = y + 5;
+      for (const dl of descLines) {
+        doc.text(dl, xDesc + 2, dy, { lineBreak: false });
+        dy += descLh;
+      }
+      const amtStr = this.brlSignedDelta(delta);
+      doc.font('Helvetica-Bold').fontSize(7.5);
+      doc.fillColor(delta >= 0n ? '#0d5c2e' : '#8b1a1a');
+      doc.text(amtStr, xAmt + colAmtW - 2 - doc.widthOfString(amtStr), y + 5, {
+        lineBreak: false,
+      });
+      const balStr = this.brlSigned(balance);
+      doc.fillColor(balance < 0n ? '#8b1a1a' : '#0d1b26');
+      doc.text(balStr, xBal + colBalW - 2 - doc.widthOfString(balStr), y + 5, {
+        lineBreak: false,
+      });
+      doc.fillColor('#000000');
+      y += rowH;
+    };
+
+    if (cashMovements.length === 0 && overdueMovements.length === 0) {
+      doc.font('Helvetica').fontSize(9).fillColor('#6b7280');
+      doc.text(
+        p.isGeneral
+          ? 'Nenhum movimento na conta geral neste período.'
+          : 'Nenhum lançamento deste fundo no período.',
+        p.margin,
+        y,
+        { lineBreak: false },
+      );
+      y += 20;
+      doc.fillColor('#000000');
+      y = this.renderLedgerClosingFooterPdf(
+        doc,
+        section,
+        p.margin,
+        p.contentW,
+        y,
+        p.isGeneral,
+        false,
+      );
+      return y + 8;
+    } else {
+      drawTableHeader();
+      for (const row of cashMovements) {
+        drawMovementRow(row, false);
+      }
+      if (overdueMovements.length > 0) {
+        y = this.ensureSpace(doc, y, rowMinH + 14, p.margin);
+        doc.font('Helvetica-Bold').fontSize(8.5).fillColor(accent);
+        doc.text('Taxas previstas e em atraso', p.margin + 4, y, {
+          lineBreak: false,
+        });
+        doc.font('Helvetica').fontSize(7.5).fillColor(muted);
+        doc.text('— a receber; não entram no caixa', p.margin + 168, y, {
+          lineBreak: false,
+        });
+        y += 16;
+        doc.fillColor('#000000');
+        for (const row of overdueMovements) {
+          drawMovementRow(row, true);
+        }
+      }
+    }
+
+    y = this.renderLedgerClosingFooterPdf(
+      doc,
+      section,
+      p.margin,
+      p.contentW,
+      y,
+      p.isGeneral,
+      overdueMovements.length > 0,
+    );
+    doc.fillColor('#000000');
+    return y + 8;
+  }
+
+  private renderFinancialExtratoBody(
+    doc: InstanceType<typeof PDFDocument>,
+    ctx: {
+      margin: number;
+      contentW: number;
+      yStart: number;
+      competenceYmPtBr: string;
+      periodLabel: string;
+      statementGeneral: StatementLedgerSection;
+      statementFundSections: StatementLedgerSection[];
+      anonymizeFeeMovements: boolean;
+    },
+  ): number {
+    const muted = '#5a6572';
+    let y = ctx.yStart;
+
+    y = this.ensureSpace(doc, y, 60, ctx.margin);
+    doc.font('Helvetica-Bold').fontSize(15).fillColor('#121820');
+    doc.text('Extrato mensal', ctx.margin, y, { lineBreak: false });
+    y += 20;
+    doc.font('Helvetica').fontSize(9).fillColor(muted);
+    doc.text(ctx.competenceYmPtBr, ctx.margin, y, { lineBreak: false });
+    y += 14;
+    const intro = this.wrapWordsToLines(
+      doc,
+      `Período ${ctx.periodLabel}. Conta geral do condomínio e extrato de cada fundo, na mesma ordem e com os mesmos saldos do painel «Extrato mensal».`,
+      ctx.contentW,
+    );
+    const ilh = doc.currentLineHeight(true) + 2.5;
+    y = this.drawTextLines(doc, ctx.margin, y, intro, ilh, ctx.margin);
+    y += 16;
+    doc.fillColor('#000000');
+
+    y = this.renderStatementLedgerSectionPdf(doc, ctx.statementGeneral, {
+      margin: ctx.margin,
+      contentW: ctx.contentW,
+      yStart: y,
+      competenceYmPtBr: ctx.competenceYmPtBr,
+      isGeneral: true,
+      anonymizeFeeMovements: ctx.anonymizeFeeMovements,
+    });
+    y += 16;
+
+    for (let i = 0; i < ctx.statementFundSections.length; i++) {
+      const sec = ctx.statementFundSections[i]!;
+      if (i > 0) {
+        doc.addPage();
+        doc.x = ctx.margin;
+        doc.y = ctx.margin;
+        y = ctx.margin;
+      }
+      y = this.renderStatementLedgerSectionPdf(doc, sec, {
+        margin: ctx.margin,
+        contentW: ctx.contentW,
+        yStart: y,
+        competenceYmPtBr: ctx.competenceYmPtBr,
+        isGeneral: false,
+        anonymizeFeeMovements: ctx.anonymizeFeeMovements,
+      });
+      y += 12;
+    }
+
+    return y;
+  }
+
   private async renderPdf(ctx: {
     condoName: string;
     competenceYm: string;
     periodLabel: string;
-    unitCols: UnitCol[];
-    fixos: FinancialTransaction[];
-    variavel: FinancialTransaction[];
-    periodTransactions: FinancialTransaction[];
-    charges: CondominiumFeeCharge[];
     managementLogoBuffer: Buffer | null;
-    funds: FundPdfRow[];
-    agrupamentosDisplay: AgrupamentosPdfRow[];
-    administracao: AdministracaoPdf;
-    fundReport: {
-      openingYmd: string;
-      closingYmd: string;
-      openingByFund: Map<string, bigint>;
-      closingByFund: Map<string, bigint>;
-    };
-    /** Quando informado, destaca a unidade na tabela de taxas (mesmo PDF de transparência geral). */
+    competenceYmPtBr: string;
+    unitCols: UnitCol[];
     targetUnit: UnitCol | null;
     billingPixKey?: string | null;
     billingPixBeneficiaryName?: string | null;
     billingPixCity?: string | null;
     transparencyPdfIncludePixQrCode?: boolean;
     syndicWhatsappForReceipts?: string | null;
-    /**
-     * Cobranças em aberto desta unidade, para a capa PIX: soma paga e detalhamento
-     * (a competência do PDF de transparência pode ser só a mais recente, mas a quitação é total).
-     */
     openChargesForTargetPix: CondominiumFeeCharge[];
+    competenceCharges: CondominiumFeeCharge[];
+    fixos: FinancialTransaction[];
+    variavel: FinancialTransaction[];
+    fundMensalidadeTxs: FinancialTransaction[];
+    administracao: AdministracaoPdf;
+    agrupamentosRows: AgrupamentosPdfRow[];
+    statementGeneral: StatementLedgerSection;
+    statementFundSections: StatementLedgerSection[];
+    /** Oculta unidade/agrupamento em quitações e taxas em atraso (slip do condômino). */
+    anonymizeFeeMovements: boolean;
   }): Promise<Buffer> {
     const margin = 56;
     /** Faixa inferior para rodapé (logo meucondominio.cloud à direita + linha). */
     const footerReserve = 102;
-    const unitCols = ctx.unitCols;
-    const accent = '#1a3a52';
-    const muted = '#5a6572';
 
     const competenceYmPtBr = this.formatCompetenceYmPtBr(ctx.competenceYm);
 
@@ -1579,8 +2691,8 @@ export class MonthlyTransparencyPdfService {
           showOpenChargesBreakdown: isConsolidated,
           openChargeRows,
           hintLine: isConsolidated
-            ? 'O valor a pagar corresponde à quitação total de todas as taxas condominiais em aberto listadas abaixo (inclui competências anteriores à do relatório anexo, se aplicável). O QR e o PIX têm o montante agregado.'
-            : 'Slip de pagamento via PIX — específico para a unidade',
+            ? 'O valor a pagar corresponde à quitação total de todas as taxas condominiais em aberto listadas abaixo (inclui competências anteriores à do relatório anexo, se aplicável). O QR e o PIX têm o montante agregado. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.'
+            : 'Slip de pagamento via PIX — específico para a unidade. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.',
           pixKeyDisplay: (ctx.billingPixKey ?? pixKeySan).trim().slice(0, 64),
           beneficiaryDisplay: (
             ctx.billingPixBeneficiaryName?.trim() || ctx.condoName
@@ -1596,327 +2708,81 @@ export class MonthlyTransparencyPdfService {
         doc.y = margin;
       }
 
-      const readabilityW = Math.max(320, contentW - 140);
-      /** Resumo geral: só 2 colunas (cabe em retrato com qualquer N de unidades). */
-      const sumTotalW = 92;
-      const sumDescW = contentW - sumTotalW - 10;
-      const rowH = 20;
-      const headerH = 46;
-
       let y = margin;
 
-      y = drawDocumentHeaderLogo(
-        doc,
-        margin,
-        y,
-        ctx.managementLogoBuffer,
-        48,
-      );
-
-      doc.save();
-      doc.rect(margin, y, 4, 58).fill(accent);
-      doc.restore();
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(18)
-        .fillColor('#121820')
-        .text(
-          ctx.targetUnit
-            ? 'Prestação de contas do condomínio'
-            : 'Prestação de contas',
-          margin + 14,
-          y + 2,
-          { lineBreak: false },
-        );
-      doc
-        .font('Helvetica')
-        .fontSize(11)
-        .fillColor(muted)
-        .text(
-          ctx.targetUnit
-            ? `Competência ${competenceYmPtBr} — fechamento mensal (todas as unidades)`
-            : 'Taxa condominial — transparência',
-          margin + 14,
-          y + 32,
-          {
-            lineBreak: false,
-          },
-        );
-      y += 68;
-
-      doc.font('Helvetica-Bold').fontSize(14).fillColor('#121820');
-      doc.text('Identificação do condomínio', margin, y, {
-        lineBreak: false,
-      });
-      y += 22;
-      doc.fillColor('#000000');
-
-      doc.font('Helvetica-Bold').fontSize(13).fillColor('#1a1a1a');
-      doc.text(ctx.condoName, margin, y, { lineBreak: false });
-      y += 22;
-      doc.font('Helvetica').fontSize(10.5).fillColor(muted);
-      doc.text(`Competência ${competenceYmPtBr}`, margin, y, { lineBreak: false });
-      y += 18;
-      doc.text(`Período das despesas: ${ctx.periodLabel}`, margin, y, {
-        lineBreak: false,
-      });
-      y += 24;
-      doc.save();
-      doc.strokeColor('#d4dbe3').lineWidth(0.9);
-      doc.moveTo(margin, y).lineTo(margin + contentW, y).stroke();
-      doc.restore();
-      y += 20;
-      doc.fillColor('#000000');
-
       if (ctx.targetUnit) {
+        y = this.renderIdentificationCoverPage(doc, {
+          margin,
+          contentW,
+          yStart: y,
+          managementLogoBuffer: ctx.managementLogoBuffer,
+          condoName: ctx.condoName,
+          competenceYmPtBr,
+          periodLabel: ctx.periodLabel,
+          withUnitSlipContext: true,
+        });
         y = this.renderSlipFollowFeeContextSection(doc, {
           margin,
           contentW,
           yStart: y,
           competenceYmPtBr,
-          targetUnitIdentifier: ctx.targetUnit.identifier.trim() || '—',
-          unitCols,
-          charges: ctx.charges,
+          targetUnitIdentifier:
+            ctx.targetUnit.identifier.trim() || '—',
+          unitCols: ctx.unitCols,
+          charges: ctx.competenceCharges,
           highlightUnitId: ctx.targetUnit.unitId,
         });
-        y += 8;
+      } else if (!prependPixSlip) {
+        y = this.renderIdentificationCoverPage(doc, {
+          margin,
+          contentW,
+          yStart: y,
+          managementLogoBuffer: ctx.managementLogoBuffer,
+          condoName: ctx.condoName,
+          competenceYmPtBr,
+          periodLabel: ctx.periodLabel,
+          withUnitSlipContext: false,
+        });
       }
 
-      y = this.renderAdministracaoSection(
+      y = this.renderCondominioCadastroDedicatedPage(
         doc,
+        margin,
+        contentW,
         ctx.administracao,
+        ctx.agrupamentosRows,
+      );
+
+      y = this.renderFinancialExtratoBody(doc, {
         margin,
         contentW,
-        y,
-      );
-      y += 10;
-
-      y = this.renderAgrupamentosConfiguredSection(
-        doc,
-        ctx.agrupamentosDisplay,
-        margin,
-        contentW,
-        y,
-      );
-      y += 10;
-
-      y = this.renderFundsAgrupamentosSection(
-        doc,
-        ctx.funds,
-        margin,
-        contentW,
-        y,
-      );
-      y += 12;
-
-      const startNewSectionPage = (): number => {
-        doc.addPage();
-        doc.x = margin;
-        doc.y = margin;
-        return margin;
-      };
-
-      y = startNewSectionPage();
-      doc.font('Helvetica-Bold').fontSize(14).fillColor(accent);
-      doc.text('Despesas e saídas', margin, y, { lineBreak: false });
-      y += 22;
-      doc.fillColor('#000000');
-
-      const drawSummaryTableHeader = (yy: number): number => {
-        let x = margin;
-        doc.font('Helvetica-Bold').fontSize(8.5);
-        doc.lineWidth(0.4);
-        doc.rect(x, yy, sumDescW, headerH).fill('#eef2f7').stroke('#b8c4d4');
-        doc.fillColor('#1a1a1a');
-        doc.text('Descritivo', x + 8, yy + 10, { lineBreak: false });
-        x += sumDescW;
-        doc.rect(x, yy, sumTotalW, headerH).fill('#eef2f7').stroke('#b8c4d4');
-        doc.fillColor('#1a1a1a');
-        const totalLbl = 'Total';
-        doc.text(
-          totalLbl,
-          x + sumTotalW - 8 - doc.widthOfString(totalLbl),
-          yy + 16,
-          { lineBreak: false },
-        );
-        return yy + headerH;
-      };
-
-      const drawSection = (
-        title: string,
-        rows: FinancialTransaction[],
-        startY: number,
-      ): { y: number; sumTotal: bigint } => {
-        let cy = startY;
-        cy = this.ensureSpace(doc, cy, rowH + 28, margin);
-        doc.font('Helvetica-Bold').fontSize(11.5).fillColor(accent);
-        doc.text(title, margin, cy, { lineBreak: false });
-        cy += 22;
-        cy = drawSummaryTableHeader(cy);
-        let sumTotal = 0n;
-        for (const t of rows) {
-          cy = this.ensureSpace(doc, cy, rowH + 2, margin);
-          const { declared } = this.expenseRowAmountsForUnitTable(t, unitCols);
-          sumTotal += declared;
-          cy = this.drawSummaryTwoColumnRow(
-            doc,
-            margin,
-            cy,
-            rowH,
-            sumDescW,
-            sumTotalW,
-            this.displayTransactionTitleForPdf(t.title).slice(0, 200),
-            declared,
-          );
-        }
-        if (rows.length === 0) {
-          cy = this.ensureSpace(doc, cy, rowH + 2, margin);
-          doc.font('Helvetica').fontSize(9).fillColor('#6b7280');
-          doc.text('Sem lançamentos nesta categoria.', margin + 6, cy, {
-            lineBreak: false,
-          });
-          cy += rowH;
-          doc.fillColor('#000000');
-        }
-        return { y: cy + 18, sumTotal };
-      };
-
-      const rFix = drawSection(
-        'Despesas fixas (fundos permanentes)',
-        ctx.fixos,
-        y,
-      );
-      y = rFix.y;
-      const rVar = drawSection(
-        'Demais despesas (variáveis e fundos em prestações)',
-        ctx.variavel,
-        y,
-      );
-      y = rVar.y;
-
-      const grand = rFix.sumTotal + rVar.sumTotal;
-      y = this.ensureSpace(doc, y, rowH + 16, margin);
-      doc.save();
-      doc
-        .roundedRect(margin, y - 4, contentW, rowH + 18, 4)
-        .fill('#f0f4f9')
-        .strokeColor('#c5d3e3')
-        .lineWidth(0.5)
-        .stroke();
-      doc.restore();
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#0d1b26');
-      const subLbl = `Subtotal despesas no período: ${this.brl(grand)}`;
-      doc.text(subLbl, margin + 12, y + 6, { lineBreak: false });
-      y += rowH + 24;
-
-      y = startNewSectionPage();
-      doc.font('Helvetica-Bold').fontSize(14).fillColor(accent);
-      doc.text('Fundos e receitas', margin, y, { lineBreak: false });
-      y += 24;
-      doc.fillColor('#000000');
-
-      y = this.renderFundBalancesTable(
-        doc,
-        ctx.funds,
-        ctx.fundReport,
-        margin,
-        contentW,
-        y,
-      );
-
-      y += 24;
-      y = this.renderCashFlowDetailed(
-        doc,
-        ctx.periodTransactions,
-        ctx.periodLabel,
-        ctx.charges,
+        yStart: y,
         competenceYmPtBr,
-        margin,
-        contentW,
-        y,
-      );
+        periodLabel: ctx.periodLabel,
+        statementGeneral: ctx.statementGeneral,
+        statementFundSections: ctx.statementFundSections,
+        anonymizeFeeMovements: ctx.anonymizeFeeMovements,
+      });
 
-      y = startNewSectionPage();
-      y = this.renderUnitExtratoMensalSection(
-        doc,
+      y = this.renderExtratoPorAgrupamentoSection(doc, {
         margin,
         contentW,
-        y,
-        unitCols,
-        ctx.fixos,
-        ctx.variavel,
-        ctx.charges,
+        yStart: y,
+        unitCols: ctx.unitCols,
+        fixos: ctx.fixos,
+        variavel: ctx.variavel,
+        fundMensalidadeTxs: ctx.fundMensalidadeTxs,
+        charges: ctx.competenceCharges,
         competenceYmPtBr,
-      );
-
-      if (!ctx.targetUnit) {
-      y = startNewSectionPage();
-      doc.font('Helvetica-Bold').fontSize(14).fillColor(accent);
-      doc.text('Taxa condominial', margin, y, {
-        lineBreak: false,
+        highlightUnitId: ctx.targetUnit?.unitId ?? null,
       });
-      y += 22;
-      doc.fillColor('#000000');
 
-      y = this.ensureSpace(doc, y, rowH + 32, margin);
-      doc.font('Helvetica-Bold').fontSize(11.5).fillColor(accent);
-      doc.text('Taxa condominial (valor por unidade)', margin, y, {
-        lineBreak: false,
-      });
-      y += 22;
-      y = drawSummaryTableHeader(y);
-      const chargeByUnit = new Map<string, bigint>();
-      for (const c of ctx.charges) {
-        chargeByUnit.set(c.unitId, BigInt(String(c.amountDueCents)));
-      }
-      y = this.ensureSpace(doc, y, rowH + 2, margin);
-      let feeSum = 0n;
-      for (const u of unitCols) {
-        feeSum += chargeByUnit.get(u.unitId) ?? 0n;
-      }
-      y = this.drawSummaryTwoColumnRow(
-        doc,
-        margin,
-        y,
-        rowH,
-        sumDescW,
-        sumTotalW,
-        `Taxa ${competenceYmPtBr} — soma dos valores devidos por unidade (total condomínio)`,
-        feeSum,
-      );
-
-      if (ctx.charges.length === 0) {
-        doc.font('Helvetica').fontSize(9).fillColor('#6b7280');
-        const warnLines = this.wrapWordsToLines(
-          doc,
-          'Ainda não há cobranças geradas para esta competência. Execute o fechamento ou regenere as cobranças.',
-          contentW - 8,
-        );
-        const wlh = doc.currentLineHeight(true) + 1.5;
-        y = y + 6;
-        y = this.drawTextLines(doc, margin + 4, y, warnLines, wlh, margin);
-        y += 8;
-        doc.fillColor('#000000');
-      }
-
-      doc.font('Helvetica').fontSize(9).fillColor('#5a6572');
-      const hintExtrato = this.wrapWordsToLines(
-        doc,
-        'O detalhe da cota em cada despesa e o valor da taxa por unidade constam na seção «Extrato por unidade».',
-        contentW,
-      );
-      const hexLh = doc.currentLineHeight(true) + 2.5;
-      y += 10;
-      y = this.drawTextLines(doc, margin, y, hintExtrato, hexLh, margin);
-      doc.fillColor('#000000');
-      y += 12;
-
-      }
+      const readabilityW = Math.max(320, contentW - 140);
       y = this.ensureSpace(doc, y, 36, margin);
       doc.font('Helvetica').fontSize(7.5).fillColor('#666666');
       const footLines = this.wrapWordsToLines(
         doc,
-        'Documento gerado eletronicamente para fins de transparência perante os condôminos. Os valores por unidade decorrem do rateio registrado no sistema na data de emissão.',
+        'Documento gerado eletronicamente para fins de transparência financeira perante os condôminos. Extrato do período da competência conforme lançamentos registrados no sistema na data de emissão.',
         readabilityW,
       );
       const footLh = doc.currentLineHeight(true) + 1.5;
@@ -1967,7 +2833,7 @@ export class MonthlyTransparencyPdfService {
     doc.text('Movimentos do período por fundo', margin, y, { lineBreak: false });
     y += 22;
     doc.font('Helvetica').fontSize(9.5).fillColor('#5a6572');
-    const intro = `Lançamentos entre ${periodLabel}. Os saldos acumulados de cada fundo estão na tabela anterior. «Valor» é o montante do movimento (não o saldo). Em Receitas: aparecem as quitações da taxa condominial (competência ${competenceYmPtBr}) e as demais receitas registradas; se uma quitação tiver receita contábil vinculada, essa receita não é repetida abaixo.`;
+    const intro = `Lançamentos entre ${periodLabel}. O extrato resumido de cada fundo (saldo anterior, receitas e despesas do mês e saldo final) está na tabela anterior. Aqui, «Valor» é o montante de cada movimento (não o saldo). Em Receitas: quitações da taxa condominial (competência ${competenceYmPtBr}) e demais receitas; se a quitação tiver receita contábil vinculada, essa receita não é repetida abaixo.`;
     const introLines = this.wrapWordsToLines(doc, intro, contentW);
     const introLh = doc.currentLineHeight(true) + 3.5;
     y = this.drawTextLines(doc, margin, y, introLines, introLh, margin);
@@ -2327,6 +3193,8 @@ export class MonthlyTransparencyPdfService {
         return 'Despesa';
       case 'investment':
         return 'Aplicação';
+      case 'yield':
+        return 'Rendimento';
       default:
         return kind;
     }
@@ -2605,43 +3473,323 @@ export class MonthlyTransparencyPdfService {
     return y + rowH;
   }
 
+  /** Mensalidades automáticas de fundo da competência (cota por unidade na taxa). */
+  private async loadFundMensalidadeTransactionsForUnitExtrato(
+    condominiumId: string,
+    competenceYm: string,
+  ): Promise<FinancialTransaction[]> {
+    const accruals = await this.fundAccrualRepo.find({
+      where: { competenceYm },
+      relations: { fund: true },
+    });
+    const txIds = accruals
+      .filter((a) => a.fund?.condominiumId === condominiumId)
+      .map((a) => a.transactionId);
+    if (txIds.length === 0) {
+      return [];
+    }
+    const txs = await this.txRepo.find({
+      where: {
+        id: In(txIds),
+        condominiumId,
+        paymentStatus: Not('cancelled'),
+      },
+      relations: { unitShares: true, fund: true },
+    });
+    return txs.sort((a, b) =>
+      (a.fund?.name ?? a.title).localeCompare(b.fund?.name ?? b.title, 'pt', {
+        sensitivity: 'base',
+      }),
+    );
+  }
+
+  /** Fundo permanente tratado como reserva (nome contém «reserva»). */
+  private isReservaFundName(name: string | null | undefined): boolean {
+    const n = (name ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    return n.includes('reserva');
+  }
+
   /**
-   * Um bloco por unidade: cada despesa com a cota da unidade + taxa devida.
-   * Escala a qualquer número de unidades (sem colunas horizontais por unidade).
+   * Despesas/aplicações no extrato por agrupamento: conta geral e fundos permanentes
+   * (exceto reserva); sem transferências, gastos em fundos obra/reserva nem obra (timeline).
+   * As mensalidades de fundo vão em lista à parte (`fundMensalidadeTxs`).
    */
-  private renderUnitExtratoMensalSection(
+  private includeInUnitExtratoPdf(t: FinancialTransaction): boolean {
+    if (t.transferGroupId?.trim()) {
+      return false;
+    }
+    if (t.workId?.trim()) {
+      return false;
+    }
+    const titleNorm = (t.title ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    if (titleNorm.startsWith('transferencia:')) {
+      return false;
+    }
+    const fund = t.fund;
+    if (fund) {
+      if (!fund.isPermanent) {
+        return false;
+      }
+      if (this.isReservaFundName(fund.name)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Assinatura de cotas + taxa para comparar unidades dentro do agrupamento. */
+  private extratoProfileSignature(amounts: bigint[]): string {
+    return amounts.map((v) => v.toString()).join('|');
+  }
+
+  /** Monta perfil de cotas (despesas niveladas + taxa) por índice em `unitCols`. */
+  private buildExtratoProfilesByUnitIndex(
+    unitCols: UnitCol[],
+    expenseRows: FinancialTransaction[],
+    fundMensalidadeRows: FinancialTransaction[],
+    chargeByUnit: Map<string, bigint>,
+  ): bigint[][] {
+    const profiles: bigint[][] = unitCols.map(() => []);
+    const pushRowAmounts = (t: FinancialTransaction): void => {
+      const { declared, byUnit: rawByUnit } = this.expenseRowAmountsForUnitTable(
+        t,
+        unitCols,
+      );
+      const partIdx = this.participatingUnitIndicesForTx(t, unitCols);
+      const byUnit = this.equalizeExtratoRowShares(
+        unitCols,
+        declared,
+        rawByUnit,
+        partIdx,
+      );
+      for (let ui = 0; ui < unitCols.length; ui++) {
+        profiles[ui]!.push(byUnit[ui] ?? 0n);
+      }
+    };
+    for (const t of expenseRows) {
+      pushRowAmounts(t);
+    }
+    for (const t of fundMensalidadeRows) {
+      pushRowAmounts(t);
+    }
+    for (let ui = 0; ui < unitCols.length; ui++) {
+      profiles[ui]!.push(chargeByUnit.get(unitCols[ui]!.unitId) ?? 0n);
+    }
+    return profiles;
+  }
+
+  private unitExtratoRowLabel(
+    t: FinancialTransaction,
+    fundMensalidadeIds: Set<string>,
+  ): string {
+    if (fundMensalidadeIds.has(t.id)) {
+      const fundName = t.fund?.name?.trim();
+      const base = fundName
+        ? `Mensalidade — ${fundName}`
+        : this.displayTransactionTitleForPdf(t.title);
+      return base;
+    }
+    return `${this.kindLabelPt(t.kind)} · ${this.displayTransactionTitleForPdf(t.title)}`;
+  }
+
+  private buildExtratoDisplayBlocks(
+    unitCols: UnitCol[],
+    profiles: bigint[][],
+  ): Array<
+    | {
+        kind: 'grouping';
+        groupingName: string;
+        unitIdentifiers: string[];
+        amounts: bigint[];
+        highlight: boolean;
+      }
+    | {
+        kind: 'unit';
+        unitIndex: number;
+        amounts: bigint[];
+        differentFromGrouping: boolean;
+        highlight: boolean;
+      }
+  > {
+    const byGroupingKey = new Map<string, number[]>();
+    for (let ui = 0; ui < unitCols.length; ui++) {
+      const uc = unitCols[ui]!;
+      const k = groupingFeeEquivalenceKey(uc.groupingName, uc.groupingId);
+      const arr = byGroupingKey.get(k) ?? [];
+      arr.push(ui);
+      byGroupingKey.set(k, arr);
+    }
+
+    const blocks: Array<
+      | {
+          kind: 'grouping';
+          groupingName: string;
+          unitIdentifiers: string[];
+          amounts: bigint[];
+          highlight: boolean;
+        }
+      | {
+          kind: 'unit';
+          unitIndex: number;
+          amounts: bigint[];
+          differentFromGrouping: boolean;
+          highlight: boolean;
+        }
+    > = [];
+
+    const sortedKeys = [...byGroupingKey.keys()].sort((a, b) => {
+      const na = unitCols[byGroupingKey.get(a)![0]!]!.groupingName;
+      const nb = unitCols[byGroupingKey.get(b)![0]!]!.groupingName;
+      return na.localeCompare(nb, 'pt', { sensitivity: 'base' });
+    });
+
+    for (const gKey of sortedKeys) {
+      const indices = byGroupingKey.get(gKey)!;
+      indices.sort((a, b) =>
+        unitCols[a]!.identifier.localeCompare(unitCols[b]!.identifier, 'pt', {
+          sensitivity: 'base',
+        }),
+      );
+
+      const bySig = new Map<string, number[]>();
+      for (const ui of indices) {
+        const sig = this.extratoProfileSignature(profiles[ui]!);
+        const list = bySig.get(sig) ?? [];
+        list.push(ui);
+        bySig.set(sig, list);
+      }
+
+      let modelSig = '';
+      let modelCount = -1;
+      for (const [sig, list] of bySig.entries()) {
+        if (list.length > modelCount) {
+          modelCount = list.length;
+          modelSig = sig;
+        }
+      }
+      const modelIndices = bySig.get(modelSig) ?? indices;
+      const modelAmounts = profiles[modelIndices[0]!]!;
+
+      if (modelIndices.length === indices.length) {
+        blocks.push({
+          kind: 'grouping',
+          groupingName: unitCols[modelIndices[0]!]!.groupingName?.trim() || '—',
+          unitIdentifiers: modelIndices.map(
+            (i) => unitCols[i]!.identifier.trim() || '—',
+          ),
+          amounts: modelAmounts,
+          highlight: false,
+        });
+        continue;
+      }
+
+      blocks.push({
+        kind: 'grouping',
+        groupingName: unitCols[modelIndices[0]!]!.groupingName?.trim() || '—',
+        unitIdentifiers: modelIndices.map(
+          (i) => unitCols[i]!.identifier.trim() || '—',
+        ),
+        amounts: modelAmounts,
+        highlight: false,
+      });
+
+      for (const [sig, list] of bySig.entries()) {
+        if (sig === modelSig) {
+          continue;
+        }
+        for (const ui of list) {
+          blocks.push({
+            kind: 'unit',
+            unitIndex: ui,
+            amounts: profiles[ui]!,
+            differentFromGrouping: true,
+            highlight: false,
+          });
+        }
+      }
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Extrato de despesas e taxa: um bloco por agrupamento quando todas as unidades
+   * têm o mesmo perfil; bloco individual só para unidade com valor diferente.
+   */
+  private renderExtratoPorAgrupamentoSection(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     doc: any,
-    margin: number,
-    contentW: number,
-    yStart: number,
-    unitCols: UnitCol[],
-    fixos: FinancialTransaction[],
-    variavel: FinancialTransaction[],
-    charges: CondominiumFeeCharge[],
-    competenceYmPtBr: string,
+    p: {
+      margin: number;
+      contentW: number;
+      yStart: number;
+      unitCols: UnitCol[];
+      fixos: FinancialTransaction[];
+      variavel: FinancialTransaction[];
+      fundMensalidadeTxs: FinancialTransaction[];
+      charges: CondominiumFeeCharge[];
+      competenceYmPtBr: string;
+      highlightUnitId: string | null;
+    },
   ): number {
+    const { margin, contentW, competenceYmPtBr, unitCols, highlightUnitId } = p;
     const accent = '#1a3a52';
     const totalColW = 88;
     const descColW = contentW - totalColW - 8;
-    let y = yStart;
+    let y = p.yStart;
+
+    const expenseRows = [...p.fixos, ...p.variavel];
+    const fundMensalidadeRows = p.fundMensalidadeTxs;
+    const fundMensalidadeIds = new Set(fundMensalidadeRows.map((t) => t.id));
+    const extratoRows = [...expenseRows, ...fundMensalidadeRows];
+    if (extratoRows.length === 0 && p.charges.length === 0) {
+      return y;
+    }
 
     y = this.ensureSpace(doc, y, 72, margin);
     doc.font('Helvetica-Bold').fontSize(14).fillColor('#121820');
-    doc.text('Extrato por unidade', margin, y, { lineBreak: false });
+    doc.text('Extrato por agrupamento', margin, y, { lineBreak: false });
     y += 22;
     doc.font('Helvetica').fontSize(9.5).fillColor('#1e293b');
-    const intro = `Competência ${competenceYmPtBr}. Em cada lançamento, condôminos do mesmo agrupamento têm a mesma cota, tomada pelo maior valor entre eles; quando o rateio gera restos, o extrato prefere valores iguais ou ligeiramente superiores ao lançamento (nunca inferiores entre equivalentes). Inclui o valor da taxa condominial devido conforme cobrança.`;
+    const intro = `Competência ${competenceYmPtBr}. Inclui despesas e aplicações do período, as mensalidades de cada fundo (obra, reserva, permanentes, etc.) e a taxa condominial devida. Cotas niveladas por agrupamento quando equivalentes. Não inclui transferências entre contas nem gastos lançados diretamente em fundos de obra/reserva. Unidades com valor diferente do padrão do agrupamento aparecem em bloco próprio.`;
     const introLines = this.wrapWordsToLines(doc, intro, contentW);
     const ilh = doc.currentLineHeight(true) + 3;
     y = this.drawTextLines(doc, margin, y, introLines, ilh, margin);
     y += 18;
     doc.fillColor('#111827');
 
-    const expenseRows = [...fixos, ...variavel];
     const chargeByUnit = new Map<string, bigint>();
-    for (const c of charges) {
+    for (const c of p.charges) {
       chargeByUnit.set(c.unitId, BigInt(String(c.amountDueCents)));
+    }
+    const profiles = this.buildExtratoProfilesByUnitIndex(
+      unitCols,
+      expenseRows,
+      fundMensalidadeRows,
+      chargeByUnit,
+    );
+    let blocks = this.buildExtratoDisplayBlocks(unitCols, profiles);
+    if (highlightUnitId) {
+      blocks = blocks.map((b) => {
+        if (b.kind === 'grouping') {
+          const hit = unitCols.some(
+            (u) =>
+              u.unitId === highlightUnitId &&
+              b.unitIdentifiers.includes(u.identifier.trim() || '—'),
+          );
+          return { ...b, highlight: hit };
+        }
+        return {
+          ...b,
+          highlight: unitCols[b.unitIndex]?.unitId === highlightUnitId,
+        };
+      });
     }
 
     const miniHeaderH = 26;
@@ -2665,8 +3813,118 @@ export class MonthlyTransparencyPdfService {
       return yy + miniHeaderH;
     };
 
-    for (let ui = 0; ui < unitCols.length; ui++) {
-      const uc = unitCols[ui]!;
+    const drawAmountRows = (yy: number, amounts: bigint[]): number => {
+      let cy = yy;
+      for (let ri = 0; ri < extratoRows.length; ri++) {
+        const t = extratoRows[ri]!;
+        const part = amounts[ri] ?? 0n;
+        doc.fillColor('#111827');
+        doc.font('Helvetica').fontSize(8.5);
+        const rowLabel = this.unitExtratoRowLabel(t, fundMensalidadeIds);
+        const isFundFee = fundMensalidadeIds.has(t.id);
+        const titleLines = this.wrapWordsToLines(doc, rowLabel, descColW - 14);
+        const tlh = doc.currentLineHeight(true) + 1;
+        const rh = Math.max(22, 8 + titleLines.length * tlh);
+        cy = this.ensureSpace(doc, cy, rh + 2, margin);
+        if (isFundFee) {
+          doc.rect(margin, cy, descColW, rh).fill('#f8fafc').stroke('#e2e8f0');
+          doc
+            .rect(margin + descColW, cy, totalColW, rh)
+            .fill('#f8fafc')
+            .stroke('#e2e8f0');
+        } else {
+          doc.rect(margin, cy, descColW, rh).stroke('#e8ecf0');
+          doc.rect(margin + descColW, cy, totalColW, rh).stroke('#e8ecf0');
+        }
+        let ty = cy + 5;
+        for (const tl of titleLines) {
+          doc.fillColor('#111827');
+          doc.text(tl, margin + 6, ty, { lineBreak: false });
+          ty += tlh;
+        }
+        const cell = part === 0n ? '—' : this.brl(part);
+        const cellY = cy + Math.max(5, (rh - tlh) / 2);
+        doc.fillColor('#0f172a');
+        doc.font('Helvetica-Bold').fontSize(8.5);
+        doc.text(
+          cell,
+          margin + descColW + totalColW - 6 - doc.widthOfString(cell),
+          cellY,
+          { lineBreak: false },
+        );
+        doc.font('Helvetica');
+        cy += rh;
+      }
+
+      const taxRh = 22;
+      cy = this.ensureSpace(doc, cy, taxRh + 2, margin);
+      const due = amounts[extratoRows.length] ?? 0n;
+      doc.rect(margin, cy, descColW, taxRh).fill('#f0f7f2').stroke('#c5ddd0');
+      doc
+        .rect(margin + descColW, cy, totalColW, taxRh)
+        .fill('#f0f7f2')
+        .stroke('#c5ddd0');
+      doc.fillColor('#111827');
+      doc.font('Helvetica-Bold').fontSize(8.5);
+      doc.text(
+        `Taxa condominial ${competenceYmPtBr} (valor devido)`,
+        margin + 8,
+        cy + 6,
+        { lineBreak: false },
+      );
+      const taxS = due === 0n ? '—' : this.brl(due);
+      doc.fillColor('#0f172a');
+      doc.text(
+        taxS,
+        margin + descColW + totalColW - 6 - doc.widthOfString(taxS),
+        cy + 6,
+        { lineBreak: false },
+      );
+      doc.font('Helvetica');
+      return cy + taxRh + 20;
+    };
+
+    for (const block of blocks) {
+      if (block.kind === 'grouping') {
+        const unitsLabel =
+          block.unitIdentifiers.length <= 6
+            ? block.unitIdentifiers.join(', ')
+            : `${block.unitIdentifiers.length} unidades (${block.unitIdentifiers.slice(0, 4).join(', ')}…)`;
+        const subLines = this.wrapWordsToLines(
+          doc,
+          `Unidades: ${unitsLabel}`,
+          contentW - 24,
+        );
+        const subLh = doc.currentLineHeight(true) + 1.5;
+        const blockTopH = 36 + subLines.length * subLh + 8;
+        y = this.ensureSpace(doc, y, blockTopH + 48, margin);
+        const fill = block.highlight ? '#eff6ff' : '#f4f7fb';
+        const stroke = block.highlight ? '#93c5fd' : '#d8e0ea';
+        doc.save();
+        doc
+          .roundedRect(margin, y - 2, contentW, blockTopH - 2, 4)
+          .fill(fill)
+          .stroke(stroke);
+        doc.restore();
+        let cy = y + 6;
+        doc.font('Helvetica-Bold').fontSize(11).fillColor(accent);
+        doc.text(`Agrupamento ${block.groupingName}`, margin + 10, cy, {
+          lineBreak: false,
+        });
+        cy += 18;
+        doc.font('Helvetica').fontSize(9).fillColor('#1e293b');
+        for (const sl of subLines) {
+          doc.text(sl, margin + 10, cy, { lineBreak: false });
+          cy += subLh;
+        }
+        doc.fillColor('#111827');
+        y += blockTopH + 8;
+        y = drawMiniHeader(y);
+        y = drawAmountRows(y, block.amounts);
+        continue;
+      }
+
+      const uc = unitCols[block.unitIndex]!;
       const respRaw = uc.responsibleName?.trim() ?? '';
       doc.font('Helvetica').fontSize(9).fillColor('#1e293b');
       const respLines = respRaw.length
@@ -2676,17 +3934,26 @@ export class MonthlyTransparencyPdfService {
             contentW - 24,
           )
         : [];
+      const noteLines = block.differentFromGrouping
+        ? this.wrapWordsToLines(
+            doc,
+            'Valor diferente do padrão do agrupamento nesta competência.',
+            contentW - 24,
+          )
+        : [];
       const respLh = doc.currentLineHeight(true) + 1.5;
-      const respBlockH =
-        respLines.length > 0 ? 4 + respLines.length * respLh : 0;
-      const blockTopH = 40 + respBlockH + 8;
+      const extraH =
+        (respLines.length + noteLines.length) * respLh +
+        (noteLines.length > 0 ? 4 : 0);
+      const blockTopH = 40 + extraH + 8;
       y = this.ensureSpace(doc, y, blockTopH + 48, margin);
-
+      const fill = block.highlight ? '#eff6ff' : '#f4f7fb';
+      const stroke = block.highlight ? '#93c5fd' : '#d8e0ea';
       doc.save();
       doc
         .roundedRect(margin, y - 2, contentW, blockTopH - 2, 4)
-        .fill('#f4f7fb')
-        .stroke('#d8e0ea');
+        .fill(fill)
+        .stroke(stroke);
       doc.restore();
       let cy = y + 6;
       doc.font('Helvetica-Bold').fontSize(11).fillColor(accent);
@@ -2699,84 +3966,20 @@ export class MonthlyTransparencyPdfService {
         lineBreak: false,
       });
       cy += 16;
-      if (respLines.length > 0) {
-        doc.font('Helvetica').fontSize(9).fillColor('#1e293b');
-        for (const rl of respLines) {
-          doc.text(rl, margin + 10, cy, { lineBreak: false });
-          cy += respLh;
-        }
+      for (const nl of noteLines) {
+        doc.font('Helvetica-Oblique').fontSize(8.5).fillColor('#64748b');
+        doc.text(nl, margin + 10, cy, { lineBreak: false });
+        cy += respLh;
+      }
+      doc.font('Helvetica').fontSize(9).fillColor('#1e293b');
+      for (const rl of respLines) {
+        doc.text(rl, margin + 10, cy, { lineBreak: false });
+        cy += respLh;
       }
       doc.fillColor('#111827');
       y += blockTopH + 8;
-
       y = drawMiniHeader(y);
-
-      for (const t of expenseRows) {
-        const { declared, byUnit: rawByUnit } =
-          this.expenseRowAmountsForUnitTable(t, unitCols);
-        const partIdx = this.participatingUnitIndicesForTx(t, unitCols);
-        const byUnit = this.equalizeExtratoRowShares(
-          unitCols,
-          declared,
-          rawByUnit,
-          partIdx,
-        );
-        const part = byUnit[ui] ?? 0n;
-        doc.fillColor('#111827');
-        doc.font('Helvetica').fontSize(8.5);
-        const rowLabel = `${this.kindLabelPt(t.kind)} · ${this.displayTransactionTitleForPdf(t.title)}`;
-        const titleLines = this.wrapWordsToLines(doc, rowLabel, descColW - 14);
-        const tlh = doc.currentLineHeight(true) + 1;
-        const rh = Math.max(22, 8 + titleLines.length * tlh);
-        y = this.ensureSpace(doc, y, rh + 2, margin);
-        doc.rect(margin, y, descColW, rh).stroke('#e8ecf0');
-        doc.rect(margin + descColW, y, totalColW, rh).stroke('#e8ecf0');
-        let ty = y + 5;
-        for (const tl of titleLines) {
-          doc.fillColor('#111827');
-          doc.text(tl, margin + 6, ty, { lineBreak: false });
-          ty += tlh;
-        }
-        const cell = part === 0n ? '—' : this.brl(part);
-        const cellY = y + Math.max(5, (rh - tlh) / 2);
-        doc.fillColor('#0f172a');
-        doc.font('Helvetica-Bold').fontSize(8.5);
-        doc.text(
-          cell,
-          margin + descColW + totalColW - 6 - doc.widthOfString(cell),
-          cellY,
-          { lineBreak: false },
-        );
-        doc.font('Helvetica');
-        y += rh;
-      }
-
-      const taxRh = 22;
-      y = this.ensureSpace(doc, y, taxRh + 2, margin);
-      const due = chargeByUnit.get(uc.unitId) ?? 0n;
-      doc.rect(margin, y, descColW, taxRh).fill('#f0f7f2').stroke('#c5ddd0');
-      doc
-        .rect(margin + descColW, y, totalColW, taxRh)
-        .fill('#f0f7f2')
-        .stroke('#c5ddd0');
-      doc.fillColor('#111827');
-      doc.font('Helvetica-Bold').fontSize(8.5);
-      doc.text(
-        `Taxa condominial ${competenceYmPtBr} (valor devido)`,
-        margin + 8,
-        y + 6,
-        { lineBreak: false },
-      );
-      const taxS = due === 0n ? '—' : this.brl(due);
-      doc.fillColor('#0f172a');
-      doc.text(
-        taxS,
-        margin + descColW + totalColW - 6 - doc.widthOfString(taxS),
-        y + 6,
-        { lineBreak: false },
-      );
-      doc.font('Helvetica');
-      y += taxRh + 20;
+      y = drawAmountRows(y, block.amounts);
     }
 
     return y;
@@ -2798,5 +4001,13 @@ export class MonthlyTransparencyPdfService {
   private brlAbs(cents: bigint): string {
     const v = cents < 0n ? -cents : cents;
     return this.brl(v);
+  }
+
+  /** Saldo com sinal (negativo quando o fundo está deficitário). Usa hífen ASCII: Helvetica do PDF não desenha U+2212. */
+  private brlSigned(cents: bigint): string {
+    if (cents < 0n) {
+      return `- ${this.brl(-cents)}`;
+    }
+    return this.brl(cents);
   }
 }

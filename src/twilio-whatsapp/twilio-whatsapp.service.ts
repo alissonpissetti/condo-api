@@ -407,7 +407,7 @@ export class TwilioWhatsappService {
     } catch (err) {
       this.logger.error('Twilio WhatsApp slip (media)', err);
       throw new BadGatewayException(
-        'Não foi possível enviar o slip pelo WhatsApp. Verifique Twilio, URL pública do PDF (PUBLIC_BASE_URL) e políticas de conteúdo na Meta.',
+        'Não foi possível enviar o slip pelo WhatsApp. Verifique Twilio, link público do PDF no armazenamento (Nextcloud) e políticas de conteúdo na Meta.',
       );
     }
   }

@@ -146,7 +146,7 @@ export class CondominiumsController {
 
   @Get(':id/management-logo')
   @ApiOperation({
-    summary: 'Descarregar logo da gestão (pré-visualização autenticada)',
+    summary: 'Baixar logo da gestão (pré-visualização autenticada)',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   async getManagementLogoFile(
