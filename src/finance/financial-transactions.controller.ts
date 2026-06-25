@@ -20,6 +20,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { BulkAssignWorkDto } from './dto/bulk-assign-work.dto';
+import { BulkAssignMaintenanceDto } from './dto/bulk-assign-maintenance.dto';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateRecurringSeriesDto } from './dto/update-recurring-series.dto';
@@ -60,6 +61,7 @@ export class FinancialTransactionsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('workId') workId?: string,
+    @Query('maintenanceId') maintenanceId?: string,
   ) {
     return this.txService.findAll(
       condominiumId,
@@ -68,6 +70,7 @@ export class FinancialTransactionsController {
       from,
       to,
       workId,
+      maintenanceId,
     );
   }
 
@@ -82,6 +85,19 @@ export class FinancialTransactionsController {
     @Body() dto: BulkAssignWorkDto,
   ) {
     return this.txService.bulkAssignWork(condominiumId, userId, dto);
+  }
+
+  @Patch('bulk/maintenance')
+  @ApiOperation({
+    summary:
+      'Vincular ou desvincular transações a uma manutenção em massa (ignora transferências)',
+  })
+  bulkAssignMaintenance(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() dto: BulkAssignMaintenanceDto,
+  ) {
+    return this.txService.bulkAssignMaintenance(condominiumId, userId, dto);
   }
 
   @Post('transfers')

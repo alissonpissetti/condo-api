@@ -58,6 +58,50 @@ export class SuppliersService {
     return s;
   }
 
+  /**
+   * Garante fornecedor no cadastro geral pelo nome (cria só com o nome em «Outros»
+   * se ainda não existir no condomínio). Comparação sem diferenciar maiúsculas.
+   */
+  async ensureByName(
+    condominiumId: string,
+    userId: string,
+    rawName: string,
+  ): Promise<Supplier> {
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
+    const name = rawName.trim();
+    if (!name) {
+      throw new BadRequestException('Nome do fornecedor inválido.');
+    }
+    const existing = await this.supplierRepo
+      .createQueryBuilder('s')
+      .where('s.condominium_id = :condominiumId', { condominiumId })
+      .andWhere('LOWER(s.name) = LOWER(:name)', { name })
+      .getOne();
+    if (existing) {
+      return existing;
+    }
+    const outrosCategory = await this.categoriesService.findGlobalByName('Outros');
+    if (!outrosCategory) {
+      throw new BadRequestException(
+        'Categoria padrão «Outros» não encontrada no sistema.',
+      );
+    }
+    const row = this.supplierRepo.create({
+      condominiumId,
+      categoryId: outrosCategory.id,
+      name,
+      legalName: null,
+      documentCnpjCpf: null,
+      pixKeyType: null,
+      pixKeyValue: null,
+      phone: null,
+      email: null,
+      notes: null,
+      addressLine: null,
+    });
+    return this.supplierRepo.save(row);
+  }
+
   async create(
     condominiumId: string,
     userId: string,
@@ -97,11 +141,12 @@ export class SuppliersService {
   ): Promise<Supplier> {
     const s = await this.findOne(condominiumId, supplierId, userId);
     if (dto.categoryId !== undefined) {
-      await this.categoriesService.assertCategorySelectable(
+      const category = await this.categoriesService.assertCategorySelectable(
         dto.categoryId,
         userId,
       );
-      s.categoryId = dto.categoryId;
+      s.categoryId = category.id;
+      s.category = category;
     }
     if (dto.name !== undefined) {
       const n = dto.name.trim();

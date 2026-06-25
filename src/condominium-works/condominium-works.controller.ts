@@ -302,6 +302,31 @@ export class CondominiumWorksController {
     );
   }
 
+  @Delete(':workId/timeline/:entryId/attachments/:attachmentId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Remover anexo da timeline' })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiParam({ name: 'workId', format: 'uuid' })
+  @ApiParam({ name: 'entryId', format: 'uuid' })
+  @ApiParam({ name: 'attachmentId', format: 'uuid' })
+  async removeTimelineAttachment(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('workId', ParseUUIDPipe) workId: string,
+    @Param('entryId', ParseUUIDPipe) entryId: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    await this.works.removeTimelineAttachment(
+      condominiumId,
+      workId,
+      entryId,
+      attachmentId,
+      userId,
+    );
+    res.status(HttpStatus.NO_CONTENT).send();
+  }
+
   @Get(':workId/timeline/:entryId/attachments/:attachmentId/file')
   @ApiOperation({ summary: 'Download de anexo da timeline' })
   async downloadTimelineAttachment(

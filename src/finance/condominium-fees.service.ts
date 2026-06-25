@@ -10,7 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository, Between } from 'typeorm';
 import {
   drawDocumentHeaderLogo,
   installPlatformWatermarkUnderAllContent,
@@ -28,7 +28,7 @@ import {
   type CondominiumFeeChargePaymentLogAction,
 } from './entities/condominium-fee-charge-payment-log.entity';
 import { FinancialTransaction } from './entities/financial-transaction.entity';
-import { TransactionUnitShare } from './entities/transaction-unit-share.entity';
+import { FundMonthlyAccrual } from './entities/fund-monthly-accrual.entity';
 import { Unit } from '../units/unit.entity';
 import { FundAccrualService } from './fund-accrual.service';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -43,6 +43,11 @@ import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.servic
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
 import { SendFeeSlipsWhatsappDto } from './dto/send-fee-slips-whatsapp.dto';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
+import {
+  isExpenseIncludedInCondominiumFee,
+  sumEqualizedFeeSharesByUnit,
+  type FeeUnitRef,
+} from './condominium-fee-shares.util';
 import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import {
   dueDateForCompetenceYm,
@@ -112,10 +117,10 @@ export class CondominiumFeesService {
     private readonly chargeRepo: Repository<CondominiumFeeCharge>,
     @InjectRepository(CondominiumFeeChargePaymentLog)
     private readonly feePaymentLogRepo: Repository<CondominiumFeeChargePaymentLog>,
-    @InjectRepository(TransactionUnitShare)
-    private readonly shareRepo: Repository<TransactionUnitShare>,
     @InjectRepository(FinancialTransaction)
     private readonly txRepo: Repository<FinancialTransaction>,
+    @InjectRepository(FundMonthlyAccrual)
+    private readonly fundAccrualRepo: Repository<FundMonthlyAccrual>,
     @InjectRepository(Unit)
     private readonly unitRepo: Repository<Unit>,
     private readonly condominiumsService: CondominiumsService,
@@ -1128,27 +1133,82 @@ export class CondominiumFeesService {
     condominiumId: string,
     competenceYm: string,
   ): Promise<Map<string, bigint>> {
+    const unitRows = await this.getUnitsWithGrouping(condominiumId);
+    const unitRefs: FeeUnitRef[] = await this.loadFeeUnitRefs(condominiumId);
     const from = firstDayOfCompetenceYm(competenceYm);
     const to = lastDayOfCompetenceYm(competenceYm);
-    const raw = await this.shareRepo
-      .createQueryBuilder('s')
-      .innerJoin('s.transaction', 't')
-      .where('t.condominium_id = :cid', { cid: condominiumId })
-      /* Taxa condominial: somar rateios de transações da competência que entram no mês —
-       * «aguardando» e já «pagas». Canceladas ficam de fora (desactivadas). */
-      .andWhere('t.payment_status IN (:...ps)', { ps: ['pending', 'paid'] })
-      .andWhere('t.occurred_on >= :from', { from })
-      .andWhere('t.occurred_on <= :to', { to })
-      .select('s.unit_id', 'unitId')
-      .addSelect('SUM(s.share_cents)', 'sumCents')
-      .groupBy('s.unit_id')
-      .getRawMany<{ unitId: string; sumCents: string | null }>();
+
+    const [expenseTxs, fundMensalidadeTxs] = await Promise.all([
+      this.txRepo.find({
+        where: {
+          condominiumId,
+          occurredOn: Between(
+            parseDateOnlyFromApi(from),
+            parseDateOnlyFromApi(to),
+          ),
+          paymentStatus: In(['pending', 'paid']),
+          kind: In(['expense', 'investment']),
+        },
+        relations: { unitShares: true, fund: true },
+        order: { occurredOn: 'ASC', createdAt: 'ASC' },
+      }),
+      this.loadFundMensalidadeTransactions(condominiumId, competenceYm),
+    ]);
+
+    const eligibleExpenses = expenseTxs.filter((t) =>
+      isExpenseIncludedInCondominiumFee(t),
+    );
+    const transactions = [...eligibleExpenses, ...fundMensalidadeTxs];
+    const byUnit = sumEqualizedFeeSharesByUnit(transactions, unitRefs);
 
     const map = new Map<string, bigint>();
-    for (const r of raw) {
-      const v = r.sumCents ?? '0';
-      map.set(r.unitId, BigInt(String(v)));
+    for (const { unitId } of unitRows) {
+      map.set(unitId, byUnit.get(unitId) ?? 0n);
     }
     return map;
+  }
+
+  private async loadFeeUnitRefs(
+    condominiumId: string,
+  ): Promise<FeeUnitRef[]> {
+    const units = await this.unitRepo.find({
+      where: { grouping: { condominiumId } },
+      relations: { grouping: true },
+      order: { id: 'ASC' },
+    });
+    return units.map((u) => ({
+      unitId: u.id,
+      groupingId: u.groupingId,
+      groupingName: u.grouping?.name ?? '',
+      feeEquivalenceKey: groupingFeeEquivalenceKey(
+        u.grouping?.name,
+        u.groupingId,
+      ),
+    }));
+  }
+
+  private async loadFundMensalidadeTransactions(
+    condominiumId: string,
+    competenceYm: string,
+  ): Promise<FinancialTransaction[]> {
+    const accruals = await this.fundAccrualRepo.find({
+      where: { competenceYm },
+      relations: { fund: true },
+    });
+    const txIds = accruals
+      .filter((a) => a.fund?.condominiumId === condominiumId)
+      .map((a) => a.transactionId);
+    if (txIds.length === 0) {
+      return [];
+    }
+    return this.txRepo.find({
+      where: {
+        id: In(txIds),
+        condominiumId,
+        paymentStatus: Not('cancelled'),
+      },
+      relations: { unitShares: true, fund: true },
+      order: { occurredOn: 'ASC', createdAt: 'ASC' },
+    });
   }
 }

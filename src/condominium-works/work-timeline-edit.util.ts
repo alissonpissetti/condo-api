@@ -75,6 +75,7 @@ export function buildBudgetUpdateAuditBody(input: {
   supplierName: string;
   previous: {
     supplierName: string;
+    title: string | null;
     amountCents: number;
     validUntil: string | null;
     scheduledAt: Date | null;
@@ -83,6 +84,7 @@ export function buildBudgetUpdateAuditBody(input: {
   };
   next: {
     supplierName?: string;
+    title?: string | null;
     amountCents?: number;
     validUntil?: string | null;
     scheduledAt?: Date | null;
@@ -101,6 +103,21 @@ export function buildBudgetUpdateAuditBody(input: {
     lines.push(
       `Fornecedor alterado de «${p.supplierName.trim()}» para «${n.supplierName.trim()}».`,
     );
+  }
+  if (n.title !== undefined) {
+    const oldTitle = (p.title ?? '').trim();
+    const newTitle = (n.title ?? '').trim();
+    if (oldTitle !== newTitle) {
+      if (!oldTitle && newTitle) {
+        lines.push(`Referência definida como «${newTitle}».`);
+      } else if (oldTitle && !newTitle) {
+        lines.push(`Referência «${oldTitle}» removida.`);
+      } else {
+        lines.push(
+          `Referência alterada de «${oldTitle}» para «${newTitle}».`,
+        );
+      }
+    }
   }
   if (n.amountCents !== undefined && n.amountCents !== p.amountCents) {
     lines.push(

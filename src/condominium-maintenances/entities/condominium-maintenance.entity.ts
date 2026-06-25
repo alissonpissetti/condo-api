@@ -10,12 +10,11 @@ import {
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
 import { User } from '../../users/user.entity';
-import { WorkStatus } from '../enums/work-status.enum';
-import type { AllocationRule } from '../../finance/allocation.types';
-import { CondominiumWorkTimelineEntry } from './condominium-work-timeline-entry.entity';
+import { MaintenanceStatus } from '../enums/maintenance-status.enum';
+import { CondominiumMaintenanceTimelineEntry } from './condominium-maintenance-timeline-entry.entity';
 
-@Entity('condominium_works')
-export class CondominiumWork {
+@Entity('condominium_maintenances')
+export class CondominiumMaintenance {
   @PrimaryColumn({ type: 'varchar', length: 36 })
   id: string;
 
@@ -32,16 +31,22 @@ export class CondominiumWork {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  /** Local ou equipamento (ex.: portão eletrônico). */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  location: string | null;
+
+  /** Peças ou itens trocados (referência de garantia). */
+  @Column({ name: 'replaced_parts', type: 'text', nullable: true })
+  replacedParts: string | null;
+
+  @Column({ name: 'supplier_id', type: 'varchar', length: 36, nullable: true })
+  supplierId: string | null;
+
+  @Column({ name: 'supplier_name', type: 'varchar', length: 255, nullable: true })
+  supplierName: string | null;
+
   @Column({ type: 'varchar', length: 32 })
-  status: WorkStatus;
-
-  /** Ordem de execução entre obras planejadas / em andamento (menor = mais prioritária). */
-  @Column({ name: 'queue_order', type: 'int', default: 0 })
-  queueOrder: number;
-
-  /** Critério de rateio para transações vinculadas à obra. */
-  @Column({ name: 'allocation_rule', type: 'json', nullable: true })
-  allocationRule: AllocationRule | null;
+  status: MaintenanceStatus;
 
   @Column({ name: 'created_by_user_id', type: 'varchar', length: 36 })
   createdByUserId: string;
@@ -56,6 +61,6 @@ export class CondominiumWork {
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 
-  @OneToMany(() => CondominiumWorkTimelineEntry, (e) => e.work)
-  timelineEntries: CondominiumWorkTimelineEntry[];
+  @OneToMany(() => CondominiumMaintenanceTimelineEntry, (e) => e.maintenance)
+  timelineEntries: CondominiumMaintenanceTimelineEntry[];
 }

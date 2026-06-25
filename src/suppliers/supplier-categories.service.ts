@@ -56,6 +56,19 @@ export class SupplierCategoriesService {
     return this.categoryRepo.save(row);
   }
 
+  /** Categoria global do seed (ex.: «Outros»), `created_by_user_id` nulo. */
+  async findGlobalByName(name: string): Promise<SupplierCategory | null> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return null;
+    }
+    return this.categoryRepo
+      .createQueryBuilder('c')
+      .where('c.created_by_user_id IS NULL')
+      .andWhere('LOWER(c.name) = LOWER(:name)', { name: trimmed })
+      .getOne();
+  }
+
   async assertCategorySelectable(
     categoryId: string,
     userId: string,

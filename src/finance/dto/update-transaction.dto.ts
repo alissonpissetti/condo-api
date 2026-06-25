@@ -71,6 +71,16 @@ export class UpdateTransactionDto {
   @ApiPropertyOptional({
     format: 'uuid',
     nullable: true,
+    description: 'Manutenção associada; use null para remover.',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsUUID()
+  maintenanceId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
     description: 'Fornecedor associado; use null para remover.',
   })
   @IsOptional()

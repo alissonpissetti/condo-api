@@ -10,6 +10,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
@@ -74,11 +75,31 @@ export class CreateTransactionDto {
   @ApiPropertyOptional({
     format: 'uuid',
     description:
+      'Manutenção associada; o lançamento aparecerá na timeline da manutenção.',
+  })
+  @IsOptional()
+  @IsUUID()
+  maintenanceId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
       'Fornecedor do condomínio (cadastro em Fornecedores). Opcional; útil para exibir chave PIX ao pagar.',
   })
   @IsOptional()
   @IsUUID()
   supplierId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Nome do fornecedor; cria ou reutiliza cadastro se supplierId não for informado.',
+    example: 'Construtora ABC',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  supplierName?: string | null;
 
   @ApiPropertyOptional({
     description:

@@ -4,9 +4,11 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CondominiumsModule } from '../condominiums/condominiums.module';
 import { CondominiumWorksModule } from '../condominium-works/condominium-works.module';
+import { CondominiumMaintenancesModule } from '../condominium-maintenances/condominium-maintenances.module';
 import { PlanningModule } from '../planning/planning.module';
 import { UsersModule } from '../users/users.module';
 import { TwilioWhatsappModule } from '../twilio-whatsapp/twilio-whatsapp.module';
+import { SuppliersModule } from '../suppliers/suppliers.module';
 import { Grouping } from '../groupings/grouping.entity';
 import { CondominiumParticipant } from '../planning/entities/condominium-participant.entity';
 import { Unit } from '../units/unit.entity';
@@ -55,9 +57,11 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     ]),
     CondominiumsModule,
     CondominiumWorksModule,
+    CondominiumMaintenancesModule,
     PlanningModule,
     UsersModule,
     TwilioWhatsappModule,
+    SuppliersModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -71,6 +71,9 @@ import { CondominiumSuppliers1751550000000 } from '../migrations/1751550000000-c
 import { SupplierCategories1751560000000 } from '../migrations/1751560000000-supplier-categories';
 import { SupplierContactName1751570000000 } from '../migrations/1751570000000-supplier-contact-name';
 import { WorkBudgetScheduledAt1751580000000 } from '../migrations/1751580000000-work-budget-scheduled-at';
+import { WorkBudgetTitle1751810000000 } from '../migrations/1751810000000-work-budget-title';
+import { CondominiumMaintenances1751820000000 } from '../migrations/1751820000000-condominium-maintenances';
+import { CondominiumWorkAllocationRule1751830000000 } from '../migrations/1751830000000-condominium-work-allocation-rule';
 import { PlanningPollQuestions1751590000000 } from '../migrations/1751590000000-planning-poll-questions';
 import { PlanningPollAbstentions1751610000000 } from '../migrations/1751610000000-planning-poll-abstentions';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
@@ -102,6 +105,9 @@ import { CondominiumSupplier } from '../condominium-works/entities/condominium-s
 import { CondominiumWorkBudget } from '../condominium-works/entities/condominium-work-budget.entity';
 import { CondominiumWorkTimelineEntry } from '../condominium-works/entities/condominium-work-timeline-entry.entity';
 import { CondominiumWorkTimelineAttachment } from '../condominium-works/entities/condominium-work-timeline-attachment.entity';
+import { CondominiumMaintenance } from '../condominium-maintenances/entities/condominium-maintenance.entity';
+import { CondominiumMaintenanceTimelineEntry } from '../condominium-maintenances/entities/condominium-maintenance-timeline-entry.entity';
+import { CondominiumMaintenanceTimelineAttachment } from '../condominium-maintenances/entities/condominium-maintenance-timeline-attachment.entity';
 import { SupplierCategory } from '../suppliers/entities/supplier-category.entity';
 import { Supplier } from '../suppliers/entities/supplier.entity';
 import { ConstructionProjectUpdate } from '../works/entities/construction-project-update.entity';
@@ -143,6 +149,9 @@ export const AppDataSource = new DataSource({
     CondominiumWorkBudget,
     CondominiumWorkTimelineEntry,
     CondominiumWorkTimelineAttachment,
+    CondominiumMaintenance,
+    CondominiumMaintenanceTimelineEntry,
+    CondominiumMaintenanceTimelineAttachment,
     ConstructionProject,
     ConstructionProjectUpdate,
     SaasCondominiumBilling,
@@ -230,6 +239,9 @@ export const AppDataSource = new DataSource({
     SupplierCategories1751560000000,
     SupplierContactName1751570000000,
     WorkBudgetScheduledAt1751580000000,
+    WorkBudgetTitle1751810000000,
+    CondominiumMaintenances1751820000000,
+    CondominiumWorkAllocationRule1751830000000,
     PlanningPollQuestions1751590000000,
     PlanningPollAbstentions1751610000000,
   ],

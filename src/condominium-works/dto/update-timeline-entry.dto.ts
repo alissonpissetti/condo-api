@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -10,6 +11,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { WorkBudgetStatus } from '../enums/work-budget-status.enum';
 
 export class UpdateTimelineEntryDto {
   @ApiPropertyOptional({
@@ -49,6 +51,15 @@ export class UpdateTimelineEntryDto {
   supplierName?: string;
 
   @ApiPropertyOptional({
+    description: 'O que o orçamento cobre (ex.: mão de obra, materiais).',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  title?: string | null;
+
+  @ApiPropertyOptional({
     description:
       'Agendamento da visita (YYYY-MM-DDTHH:mm, horário de São Paulo).',
     nullable: true,
@@ -57,4 +68,9 @@ export class UpdateTimelineEntryDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @Matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/)
   scheduledAt?: string | null;
+
+  @ApiPropertyOptional({ enum: WorkBudgetStatus })
+  @IsOptional()
+  @IsEnum(WorkBudgetStatus)
+  status?: WorkBudgetStatus;
 }

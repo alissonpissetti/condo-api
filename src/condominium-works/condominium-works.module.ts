@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Person } from '../people/person.entity';
 import { PlanningModule } from '../planning/planning.module';
+import { SuppliersModule } from '../suppliers/suppliers.module';
 import { User } from '../users/user.entity';
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
+import { Supplier } from '../suppliers/entities/supplier.entity';
 import { CondominiumWorksController } from './condominium-works.controller';
 import { CondominiumWorksService } from './condominium-works.service';
 import { CondominiumSuppliersService } from './condominium-suppliers.service';
@@ -28,8 +30,10 @@ import { WorkTransactionLinkService } from './work-transaction-link.service';
       FinancialTransaction,
       Person,
       User,
+      Supplier,
     ]),
     PlanningModule,
+    SuppliersModule,
   ],
   controllers: [CondominiumWorksController],
   providers: [

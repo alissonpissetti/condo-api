@@ -45,6 +45,9 @@ import {
 import { isAllocationRule } from './allocation.types';
 import { distributePositiveCents } from './distribute-cents';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
+import {
+  isExpenseIncludedInCondominiumFee,
+} from './condominium-fee-shares.util';
 import { resolveUnitFinancialResponsibleDisplayName } from '../units/unit-financial-responsible.util';
 import {
   FinanceStatementService,
@@ -258,7 +261,7 @@ export class MonthlyTransparencyPdfService {
     ]);
     const agrupamentosRows = this.buildAgrupamentosPdfRows(allUnitCols);
     const unitExtratoTxs = periodExpenseTxs.filter((t) =>
-      this.includeInUnitExtratoPdf(t),
+      isExpenseIncludedInCondominiumFee(t),
     );
     const fixos = unitExtratoTxs.filter((t) => t.recurringSeriesId != null);
     const variavel = unitExtratoTxs.filter((t) => t.recurringSeriesId == null);
@@ -3501,46 +3504,6 @@ export class MonthlyTransparencyPdfService {
         sensitivity: 'base',
       }),
     );
-  }
-
-  /** Fundo permanente tratado como reserva (nome contém «reserva»). */
-  private isReservaFundName(name: string | null | undefined): boolean {
-    const n = (name ?? '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-    return n.includes('reserva');
-  }
-
-  /**
-   * Despesas/aplicações no extrato por agrupamento: conta geral e fundos permanentes
-   * (exceto reserva); sem transferências, gastos em fundos obra/reserva nem obra (timeline).
-   * As mensalidades de fundo vão em lista à parte (`fundMensalidadeTxs`).
-   */
-  private includeInUnitExtratoPdf(t: FinancialTransaction): boolean {
-    if (t.transferGroupId?.trim()) {
-      return false;
-    }
-    if (t.workId?.trim()) {
-      return false;
-    }
-    const titleNorm = (t.title ?? '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-    if (titleNorm.startsWith('transferencia:')) {
-      return false;
-    }
-    const fund = t.fund;
-    if (fund) {
-      if (!fund.isPermanent) {
-        return false;
-      }
-      if (this.isReservaFundName(fund.name)) {
-        return false;
-      }
-    }
-    return true;
   }
 
   /** Assinatura de cotas + taxa para comparar unidades dentro do agrupamento. */

@@ -12,6 +12,8 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { CondominiumSupplier } from './entities/condominium-supplier.entity';
 import { CondominiumWorkBudget } from './entities/condominium-work-budget.entity';
 import { SUPPLIER_CATEGORY_GLOBAL_SCOPE_ID } from './supplier-category.constants';
+import { Supplier } from '../suppliers/entities/supplier.entity';
+import { SuppliersService } from '../suppliers/suppliers.service';
 
 export type SupplierView = {
   id: string;
@@ -34,8 +36,11 @@ export class CondominiumSuppliersService {
     private readonly supplierRepo: Repository<CondominiumSupplier>,
     @InjectRepository(CondominiumWorkBudget)
     private readonly budgetRepo: Repository<CondominiumWorkBudget>,
+    @InjectRepository(Supplier)
+    private readonly catalogSupplierRepo: Repository<Supplier>,
     private readonly governance: GovernanceService,
     private readonly categories: CondominiumSupplierCategoriesService,
+    private readonly catalogSuppliers: SuppliersService,
   ) {}
 
   async findAll(
@@ -137,6 +142,7 @@ export class CondominiumSuppliersService {
     if (!name) {
       throw new BadRequestException('Nome do fornecedor inválido.');
     }
+    await this.catalogSuppliers.ensureByName(condominiumId, userId, name);
     const existing = await this.supplierRepo
       .createQueryBuilder('s')
       .where('s.condominium_id = :condominiumId', { condominiumId })
@@ -167,6 +173,34 @@ export class CondominiumSuppliersService {
       throw new NotFoundException('Fornecedor não encontrado.');
     }
     return row;
+  }
+
+  /**
+   * Resolve o fornecedor de um orçamento: aceita ID do cadastro de obras
+   * (`condominium_suppliers`) ou do catálogo geral (`suppliers`).
+   */
+  async resolveForBudgetLink(
+    condominiumId: string,
+    userId: string,
+    supplierId: string,
+  ): Promise<CondominiumSupplier> {
+    const trimmedId = supplierId.trim();
+    if (!trimmedId) {
+      throw new NotFoundException('Fornecedor não encontrado.');
+    }
+    const obraSupplier = await this.supplierRepo.findOne({
+      where: { id: trimmedId, condominiumId },
+    });
+    if (obraSupplier) {
+      return obraSupplier;
+    }
+    const catalogSupplier = await this.catalogSupplierRepo.findOne({
+      where: { id: trimmedId, condominiumId },
+    });
+    if (!catalogSupplier) {
+      throw new NotFoundException('Fornecedor não encontrado.');
+    }
+    return this.ensureByName(condominiumId, userId, catalogSupplier.name);
   }
 
   private async resolveCategoryInput(

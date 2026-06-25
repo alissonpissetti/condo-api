@@ -66,6 +66,10 @@ export function parseCreateWorkBudgetBody(
     typeof body.notes === 'string' && body.notes.trim()
       ? body.notes.trim()
       : undefined;
+  const title =
+    typeof body.title === 'string' && body.title.trim()
+      ? body.title.trim()
+      : undefined;
   let recordedOn: string | undefined;
   if (typeof body.recordedOn === 'string' && body.recordedOn.trim()) {
     recordedOn = body.recordedOn.trim();
@@ -82,6 +86,7 @@ export function parseCreateWorkBudgetBody(
     scheduledAt,
     status,
     notes,
+    title,
     recordedOn,
   };
 }

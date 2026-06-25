@@ -51,6 +51,12 @@ import {
 import { FinancialTransaction } from '../finance/entities/financial-transaction.entity';
 import { WorkTimelineKind } from './enums/work-timeline-kind.enum';
 import {
+  DEFAULT_WORK_ALLOCATION_RULE,
+  getWorkAllocationRule,
+  parseWorkAllocationRuleInput,
+} from './work-allocation.util';
+import type { AllocationRule } from '../finance/allocation.types';
+import {
   buildBudgetUpdateAuditBody,
   buildTimelineEntryUpdateAuditBody,
   buildWorkCreateAuditBody,
@@ -70,6 +76,7 @@ export type WorkBudgetDto = {
   id: string;
   supplierId: string | null;
   supplierName: string;
+  title: string | null;
   amountCents: number;
   validUntil: string | null;
   scheduledAt: string | null;
@@ -107,6 +114,7 @@ export type WorkListItemDto = {
   description: string | null;
   status: WorkStatus;
   queueOrder: number;
+  allocationRule: AllocationRule;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;
@@ -269,6 +277,9 @@ export class CondominiumWorksService {
     const queueOrder = isActiveWorkStatus(status)
       ? await this.nextQueueOrder(condominiumId)
       : 0;
+    const allocationRule = dto.allocationRule
+      ? parseWorkAllocationRuleInput(dto.allocationRule)
+      : DEFAULT_WORK_ALLOCATION_RULE;
     const work = this.workRepo.create({
       id: randomUUID(),
       condominiumId,
@@ -276,6 +287,7 @@ export class CondominiumWorksService {
       description: (dto.description ?? '').trim() || null,
       status,
       queueOrder,
+      allocationRule,
       createdByUserId: userId,
     });
     await this.workRepo.save(work);
@@ -341,6 +353,9 @@ export class CondominiumWorksService {
       if (!wasActive && willBeActive) {
         work.queueOrder = await this.nextQueueOrder(condominiumId);
       }
+    }
+    if (dto.allocationRule !== undefined) {
+      work.allocationRule = parseWorkAllocationRuleInput(dto.allocationRule);
     }
     await this.workRepo.save(work);
     if (auditBody) {
@@ -497,6 +512,7 @@ export class CondominiumWorksService {
       workId,
       supplierId: supplierFields.supplierId,
       supplierName: supplierFields.supplierName,
+      title: (dto.title ?? '').trim() || null,
       amountCents: dto.amountCents ?? 0,
       validUntil: dto.validUntil ?? null,
       scheduledAt: resolveBudgetScheduledAt(dto.scheduledAt),
@@ -511,6 +527,7 @@ export class CondominiumWorksService {
       budget.amountCents,
       budget.status,
       (cents) => this.formatCents(cents),
+      budget.title,
     );
     const entry = this.entryRepo.create({
       id: randomUUID(),
@@ -569,6 +586,70 @@ export class CondominiumWorksService {
     return await this.mapEntry(condominiumId, entry, entry.budget ?? null);
   }
 
+  async removeTimelineAttachment(
+    condominiumId: string,
+    workId: string,
+    entryId: string,
+    attachmentId: string,
+    userId: string,
+  ): Promise<WorkTimelineEntryDto> {
+    await this.governance.assertManagement(condominiumId, userId);
+    await this.findWorkOrThrow(condominiumId, workId);
+    const entry = await this.entryRepo.findOne({
+      where: { id: entryId, workId },
+      relations: { attachments: true, budget: true },
+    });
+    if (!entry) {
+      throw new NotFoundException('Registro não encontrado.');
+    }
+    if (
+      entry.kind !== WorkTimelineKind.Note &&
+      entry.kind !== WorkTimelineKind.Budget &&
+      entry.kind !== WorkTimelineKind.Legal
+    ) {
+      throw new BadRequestException(
+        'Só é possível remover anexos de comentários, registros jurídicos ou orçamentos.',
+      );
+    }
+    const att = await this.timelineAttachmentRepo.findOne({
+      where: { id: attachmentId, entryId },
+    });
+    if (!att) {
+      throw new NotFoundException('Anexo não encontrado.');
+    }
+    const remaining = (entry.attachments ?? []).filter(
+      (a) => a.id !== attachmentId,
+    ).length;
+    if (entry.kind === WorkTimelineKind.Legal && remaining < 1) {
+      throw new BadRequestException(
+        'O registro jurídico precisa de ao menos um documento anexado.',
+      );
+    }
+    if (entry.kind === WorkTimelineKind.Note) {
+      const hasBody = (entry.body ?? '').trim().length > 0;
+      if (!hasBody && remaining < 1) {
+        throw new BadRequestException(
+          'O comentário precisa de texto ou ao menos um anexo.',
+        );
+      }
+    }
+    await this.workStorage.deleteWorkDocument(condominiumId, att.storageKey);
+    await this.timelineAttachmentRepo.delete({ id: att.id });
+    const reloaded = await this.entryRepo.findOne({
+      where: { id: entryId, workId },
+      relations: { attachments: true, budget: true },
+    });
+    if (!reloaded) {
+      throw new NotFoundException('Registro não encontrado.');
+    }
+    await this.touchWork(workId);
+    return await this.mapEntry(
+      condominiumId,
+      reloaded,
+      reloaded.budget ?? null,
+    );
+  }
+
   async updateBudget(
     condominiumId: string,
     workId: string,
@@ -586,6 +667,7 @@ export class CondominiumWorksService {
     }
     const previous = {
       supplierName: budget.supplierName,
+      title: budget.title,
       amountCents: budget.amountCents,
       validUntil: budget.validUntil,
       scheduledAt: budget.scheduledAt,
@@ -598,6 +680,8 @@ export class CondominiumWorksService {
       next: {
         supplierName:
           dto.supplierName !== undefined ? dto.supplierName.trim() : undefined,
+        title:
+          dto.title !== undefined ? (dto.title ?? '').trim() || null : undefined,
         amountCents: dto.amountCents,
         validUntil: dto.validUntil,
         scheduledAt:
@@ -621,6 +705,9 @@ export class CondominiumWorksService {
     }
     if (dto.scheduledAt !== undefined) {
       budget.scheduledAt = resolveBudgetScheduledAt(dto.scheduledAt ?? undefined);
+    }
+    if (dto.title !== undefined) {
+      budget.title = (dto.title ?? '').trim() || null;
     }
     if (dto.status !== undefined) {
       const nextStatus = dto.status;
@@ -739,7 +826,9 @@ export class CondominiumWorksService {
       dto.amountCents !== undefined ||
       dto.supplierId !== undefined ||
       dto.supplierName !== undefined ||
-      dto.scheduledAt !== undefined;
+      dto.scheduledAt !== undefined ||
+      dto.status !== undefined ||
+      dto.title !== undefined;
     if (!hasBody && !hasRecordedOn && !hasBudgetFields) {
       throw new BadRequestException(
         'Informe ao menos um campo para atualizar.',
@@ -809,6 +898,7 @@ export class CondominiumWorksService {
       const budget = entry.budget;
       const previousBudget = {
         supplierName: budget.supplierName,
+        title: budget.title,
         amountCents: budget.amountCents,
         validUntil: budget.validUntil,
         scheduledAt: budget.scheduledAt,
@@ -828,6 +918,11 @@ export class CondominiumWorksService {
             dto.scheduledAt !== undefined
               ? resolveBudgetScheduledAt(dto.scheduledAt ?? undefined)
               : undefined,
+          status: dto.status,
+          title:
+            dto.title !== undefined
+              ? (dto.title ?? '').trim() || null
+              : undefined,
         },
         formatCents: (cents) => this.formatCents(cents),
       });
@@ -843,12 +938,31 @@ export class CondominiumWorksService {
       if (dto.scheduledAt !== undefined) {
         budget.scheduledAt = resolveBudgetScheduledAt(dto.scheduledAt ?? undefined);
       }
+      if (dto.status !== undefined) {
+        const nextStatus = dto.status;
+        if (
+          nextStatus === WorkBudgetStatus.UnderReview &&
+          budget.status === WorkBudgetStatus.AwaitingBudget
+        ) {
+          const cents = dto.amountCents ?? budget.amountCents;
+          if (cents <= 0) {
+            throw new BadRequestException(
+              'Informe o valor do orçamento recebido.',
+            );
+          }
+        }
+        budget.status = nextStatus;
+      }
+      if (dto.title !== undefined) {
+        budget.title = (dto.title ?? '').trim() || null;
+      }
       await this.budgetRepo.save(budget);
       entry.body = formatBudgetTimelineSummary(
         budget.supplierName,
         budget.amountCents,
         budget.status,
         (cents) => this.formatCents(cents),
+        budget.title,
       );
     }
 
@@ -946,6 +1060,7 @@ export class CondominiumWorksService {
       budget.amountCents,
       budget.status,
       (cents) => this.formatCents(cents),
+      budget.title,
     );
     if (entry.body !== summary) {
       entry.body = summary;
@@ -1138,6 +1253,7 @@ export class CondominiumWorksService {
       description: w.description,
       status: w.status,
       queueOrder: w.queueOrder ?? 0,
+      allocationRule: getWorkAllocationRule(w),
       createdAt: w.createdAt.toISOString(),
       updatedAt: w.updatedAt.toISOString(),
       lastActivityAt: lastActivityAt?.toISOString() ?? null,
@@ -1196,8 +1312,9 @@ export class CondominiumWorksService {
   ): Promise<{ supplierId: string | null; supplierName: string }> {
     const supplierId = input.supplierId?.trim();
     if (supplierId) {
-      const supplier = await this.suppliers.findOneInCondominium(
+      const supplier = await this.suppliers.resolveForBudgetLink(
         condominiumId,
+        userId,
         supplierId,
       );
       return { supplierId: supplier.id, supplierName: supplier.name };
@@ -1266,6 +1383,7 @@ export class CondominiumWorksService {
       id: b.id,
       supplierId: b.supplierId,
       supplierName: b.supplierName,
+      title: b.title,
       amountCents: b.amountCents,
       validUntil: b.validUntil,
       scheduledAt: b.scheduledAt?.toISOString() ?? null,

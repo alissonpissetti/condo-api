@@ -26,6 +26,16 @@ export class CreateWorkBudgetDto {
   supplierName?: string;
 
   @ApiPropertyOptional({
+    description: 'O que o orçamento cobre (ex.: mão de obra, materiais).',
+    example: 'Mão de obra',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  title?: string;
+
+  @ApiPropertyOptional({
     description:
       'Valor em centavos (BRL). Opcional ao agendar visita (`awaiting_budget`).',
     example: 1500000,

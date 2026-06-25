@@ -27,6 +27,15 @@ export class UpdateWorkBudgetDto {
   @MaxLength(255)
   supplierName?: string;
 
+  @ApiPropertyOptional({
+    description: 'O que o orçamento cobre (ex.: mão de obra, materiais).',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  title?: string | null;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()

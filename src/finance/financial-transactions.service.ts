@@ -6,14 +6,19 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { Supplier } from '../suppliers/entities/supplier.entity';
+import { SuppliersService } from '../suppliers/suppliers.service';
 import { WorkTransactionLinkService } from '../condominium-works/work-transaction-link.service';
+import { getWorkAllocationRule } from '../condominium-works/work-allocation.util';
+import { MaintenanceTransactionLinkService } from '../condominium-maintenances/maintenance-transaction-link.service';
 import { CondominiumsService } from '../condominiums/condominiums.service';
 import { isAllocationRule } from './allocation.types';
+import type { AllocationRule } from './allocation.types';
 import { AllocationResolverService } from './allocation-resolver.service';
 import { distributePositiveCents } from './distribute-cents';
 import { BulkAssignWorkDto } from './dto/bulk-assign-work.dto';
+import { BulkAssignMaintenanceDto } from './dto/bulk-assign-maintenance.dto';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { SettleTransactionDto } from './dto/settle-transaction.dto';
@@ -52,6 +57,8 @@ export class FinancialTransactionsService {
     private readonly bankAccounts: CondominiumBankAccountsService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
     private readonly workTxLink: WorkTransactionLinkService,
+    private readonly maintenanceTxLink: MaintenanceTransactionLinkService,
+    private readonly suppliersService: SuppliersService,
   ) {}
 
   private async isFundMonthlyAccrualTransaction(
@@ -81,6 +88,7 @@ export class FinancialTransactionsService {
     occurredFromYmd?: string,
     occurredToYmd?: string,
     workId?: string,
+    maintenanceId?: string,
   ): Promise<Array<FinancialTransaction & { runningBalanceCents?: string }>> {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
     const fromYmd = normalizeYmdFilterParam(occurredFromYmd);
@@ -96,6 +104,7 @@ export class FinancialTransactionsService {
       .leftJoinAndSelect('t.bankAccount', 'bankAccount')
       .leftJoinAndSelect('t.supplier', 'supplier')
       .leftJoinAndSelect('t.work', 'work')
+      .leftJoinAndSelect('t.maintenance', 'maintenance')
       .leftJoinAndSelect('t.unitShares', 'shares')
       .leftJoinAndSelect('shares.unit', 'unit')
       .where('t.condominium_id = :condominiumId', { condominiumId })
@@ -108,6 +117,16 @@ export class FinancialTransactionsService {
     if (workFilter) {
       await this.workTxLink.assertWorkInCondominium(condominiumId, workFilter);
       qb.andWhere('t.work_id = :workId', { workId: workFilter });
+    }
+    const maintenanceFilter = maintenanceId?.trim();
+    if (maintenanceFilter) {
+      await this.maintenanceTxLink.assertMaintenanceInCondominium(
+        condominiumId,
+        maintenanceFilter,
+      );
+      qb.andWhere('t.maintenance_id = :maintenanceId', {
+        maintenanceId: maintenanceFilter,
+      });
     }
     /* Strings YYYY-MM-DD: evita comparar coluna `date` com Date (meio-dia UTC), que
        exclui o primeiro dia do mês no MySQL (`2026-06-01 00:00` < `2026-06-01 12:00`). */
@@ -164,14 +183,22 @@ export class FinancialTransactionsService {
     dto: CreateTransactionDto,
   ): Promise<FinancialTransaction> {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
-    this.validateAllocationForKind(dto.kind, dto.allocationRule);
+    let allocationRule = dto.allocationRule;
+    if (dto.workId?.trim()) {
+      const work = await this.workTxLink.assertWorkInCondominium(
+        condominiumId,
+        dto.workId.trim(),
+      );
+      allocationRule = getWorkAllocationRule(work);
+    }
+    this.validateAllocationForKind(dto.kind, allocationRule);
     this.validateYieldKindConstraints(
       dto.kind,
-      dto.allocationRule,
+      allocationRule,
       dto.fundId ?? null,
       dto.workId,
     );
-    if (!isAllocationRule(dto.allocationRule)) {
+    if (!isAllocationRule(allocationRule)) {
       throw new BadRequestException('Invalid allocation rule');
     }
     if (dto.fundId) {
@@ -187,25 +214,54 @@ export class FinancialTransactionsService {
         dto.receiptStorageKey,
       );
     }
-    if (dto.workId?.trim()) {
-      await this.workTxLink.assertWorkInCondominium(condominiumId, dto.workId.trim());
+    if (dto.maintenanceId?.trim()) {
+      await this.maintenanceTxLink.assertMaintenanceInCondominium(
+        condominiumId,
+        dto.maintenanceId.trim(),
+      );
     }
     const createDocumentKeys = this.resolveCreateDocumentKeys(dto);
     await this.assertDocumentKeysExist(condominiumId, createDocumentKeys);
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
-      dto.allocationRule,
+      allocationRule,
     );
     const shares = this.buildShares(dto.kind, dto.amountCents, unitIds);
+    const resolvedSupplierId = await this.resolveSupplierIdForCreate(
+      condominiumId,
+      userId,
+      dto.supplierId,
+      dto.supplierName,
+    );
+    const persistDto = {
+      ...dto,
+      allocationRule,
+      supplierId: resolvedSupplierId,
+    };
     const id = await this.persistTransaction(
       condominiumId,
-      dto,
+      persistDto,
       shares,
       bankAccountId,
     );
     const saved = await this.findOne(condominiumId, id, userId);
     await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
+    await this.maintenanceTxLink.syncAfterSave(condominiumId, userId, saved);
     return saved;
+  }
+
+  async bulkAssignMaintenance(
+    condominiumId: string,
+    userId: string,
+    dto: BulkAssignMaintenanceDto,
+  ): Promise<{ updated: number; skippedTransferIds: string[] }> {
+    await this.condominiumsService.findOneForManagement(condominiumId, userId);
+    return this.maintenanceTxLink.bulkAssign(
+      condominiumId,
+      userId,
+      dto.transactionIds,
+      dto.maintenanceId ?? null,
+    );
   }
 
   async bulkAssignWork(
@@ -214,12 +270,86 @@ export class FinancialTransactionsService {
     dto: BulkAssignWorkDto,
   ): Promise<{ updated: number; skippedTransferIds: string[] }> {
     await this.condominiumsService.findOneForManagement(condominiumId, userId);
-    return this.workTxLink.bulkAssign(
-      condominiumId,
-      userId,
-      dto.transactionIds,
-      dto.workId ?? null,
-    );
+
+    const ids = [
+      ...new Set(dto.transactionIds.map((id) => id.trim()).filter(Boolean)),
+    ];
+    if (ids.length === 0) {
+      throw new BadRequestException('Informe pelo menos uma transação.');
+    }
+
+    const targetWorkId = dto.workId?.trim() || null;
+    let workAllocation: AllocationRule | null = null;
+    if (targetWorkId) {
+      const work = await this.workTxLink.assertWorkInCondominium(
+        condominiumId,
+        targetWorkId,
+      );
+      workAllocation = getWorkAllocationRule(work);
+    }
+
+    const txs = await this.txRepo.find({
+      where: { condominiumId, id: In(ids) },
+    });
+    if (txs.length !== ids.length) {
+      throw new NotFoundException('Uma ou mais transações não foram encontradas.');
+    }
+
+    const skippedTransferIds: string[] = [];
+    let updated = 0;
+
+    for (const tx of txs) {
+      if (tx.transferGroupId?.trim()) {
+        skippedTransferIds.push(tx.id);
+        continue;
+      }
+
+      tx.workId = targetWorkId;
+
+      const canReallocate =
+        targetWorkId &&
+        workAllocation &&
+        tx.paymentStatus === 'pending' &&
+        (tx.kind === 'expense' ||
+          tx.kind === 'investment' ||
+          tx.kind === 'income');
+
+      if (canReallocate) {
+        this.validateAllocationForKind(tx.kind, workAllocation!);
+        tx.allocationRule = workAllocation!;
+        const unitIds = await this.allocationResolver.resolveUnitIds(
+          condominiumId,
+          workAllocation!,
+        );
+        const shares = this.buildShares(
+          tx.kind,
+          Number(tx.amountCents),
+          unitIds,
+        );
+        await this.dataSource.transaction(async (manager) => {
+          await manager.delete(TransactionUnitShare, {
+            transactionId: tx.id,
+          });
+          await manager.save(tx);
+          for (const row of shares) {
+            await manager.save(
+              manager.create(TransactionUnitShare, {
+                transactionId: tx.id,
+                unitId: row.unitId,
+                shareCents: row.shareCents,
+              }),
+            );
+          }
+        });
+      } else {
+        await this.txRepo.save(tx);
+      }
+
+      await this.workTxLink.syncAfterSave(condominiumId, userId, tx);
+      updated += 1;
+    }
+
+    return { updated, skippedTransferIds };
   }
 
   /**
@@ -465,15 +595,22 @@ export class FinancialTransactionsService {
     }
     const kind = dto.kind ?? existing.kind;
     const amountCents = dto.amountCents ?? Number(existing.amountCents);
-    const allocationRule = dto.allocationRule ?? existing.allocationRule;
+    const resolvedWorkId =
+      dto.workId !== undefined ? dto.workId?.trim() || null : existing.workId;
+    let allocationRule = dto.allocationRule ?? existing.allocationRule;
+    if (resolvedWorkId) {
+      const work = await this.workTxLink.assertWorkInCondominium(
+        condominiumId,
+        resolvedWorkId,
+      );
+      allocationRule = getWorkAllocationRule(work);
+    }
     if (dto.allocationRule !== undefined && !isAllocationRule(allocationRule)) {
       throw new BadRequestException('Invalid allocation rule');
     }
     this.validateAllocationForKind(kind, allocationRule);
     const resolvedFundId =
       dto.fundId !== undefined ? dto.fundId : existing.fundId;
-    const resolvedWorkId =
-      dto.workId !== undefined ? dto.workId : existing.workId;
     this.validateYieldKindConstraints(
       kind,
       allocationRule,
@@ -541,6 +678,15 @@ export class FinancialTransactionsService {
         );
       }
     }
+    if (dto.maintenanceId !== undefined) {
+      this.maintenanceTxLink.assertNotTransfer(existing);
+      if (dto.maintenanceId?.trim()) {
+        await this.maintenanceTxLink.assertMaintenanceInCondominium(
+          condominiumId,
+          dto.maintenanceId.trim(),
+        );
+      }
+    }
     const unitIds = await this.allocationResolver.resolveUnitIds(
       condominiumId,
       allocationRule,
@@ -573,6 +719,9 @@ export class FinancialTransactionsService {
       if (dto.workId !== undefined) {
         existing.workId = dto.workId?.trim() || null;
       }
+      if (dto.maintenanceId !== undefined) {
+        existing.maintenanceId = dto.maintenanceId?.trim() || null;
+      }
       if (dto.supplierId !== undefined) {
         existing.supplierId = resolvedSupplierId ?? null;
       }
@@ -589,6 +738,7 @@ export class FinancialTransactionsService {
     });
     const saved = await this.findOne(condominiumId, existing.id, userId);
     await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
+    await this.maintenanceTxLink.syncAfterSave(condominiumId, userId, saved);
     return saved;
   }
 
@@ -612,6 +762,7 @@ export class FinancialTransactionsService {
     }
     await this.storage.deleteReceipt(condominiumId, t.receiptStorageKey);
     await this.workTxLink.removeForTransactionId(transactionId);
+    await this.maintenanceTxLink.removeForTransactionId(transactionId);
     await this.txRepo.delete(transactionId);
   }
 
@@ -885,6 +1036,9 @@ export class FinancialTransactionsService {
     if (saved.workId) {
       await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
     }
+    if (saved.maintenanceId) {
+      await this.maintenanceTxLink.syncAfterSave(condominiumId, userId, saved);
+    }
     return saved;
   }
 
@@ -905,6 +1059,9 @@ export class FinancialTransactionsService {
     if (saved.workId) {
       await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
     }
+    if (saved.maintenanceId) {
+      await this.maintenanceTxLink.syncAfterSave(condominiumId, userId, saved);
+    }
     return saved;
   }
 
@@ -924,6 +1081,9 @@ export class FinancialTransactionsService {
     const saved = await this.findOne(condominiumId, transactionId, userId);
     if (saved.workId) {
       await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
+    }
+    if (saved.maintenanceId) {
+      await this.maintenanceTxLink.syncAfterSave(condominiumId, userId, saved);
     }
     return saved;
   }
@@ -1096,6 +1256,7 @@ export class FinancialTransactionsService {
         recurrenceId: opts?.recurrenceId ?? null,
         paymentStatus,
         workId: dto.workId?.trim() || null,
+        maintenanceId: dto.maintenanceId?.trim() || null,
       });
       const saved = await manager.save(tx);
       for (const row of shares) {
@@ -1131,5 +1292,32 @@ export class FinancialTransactionsService {
       );
     }
     return sid;
+  }
+
+  private async resolveSupplierIdForCreate(
+    condominiumId: string,
+    userId: string,
+    supplierId?: string | null,
+    supplierName?: string | null,
+  ): Promise<string | null> {
+    const id = supplierId?.trim() || '';
+    const name = supplierName?.trim() || '';
+    if (id && name) {
+      throw new BadRequestException(
+        'Informe o fornecedor pelo cadastro ou pelo nome, não ambos.',
+      );
+    }
+    if (id) {
+      return this.resolveSupplierIdForCondominium(condominiumId, id);
+    }
+    if (name) {
+      const supplier = await this.suppliersService.ensureByName(
+        condominiumId,
+        userId,
+        name,
+      );
+      return supplier.id;
+    }
+    return null;
   }
 }

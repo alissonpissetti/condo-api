@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Condominium } from '../../condominiums/condominium.entity';
 import { CondominiumWork } from '../../condominium-works/entities/condominium-work.entity';
+import { CondominiumMaintenance } from '../../condominium-maintenances/entities/condominium-maintenance.entity';
 import { Supplier } from '../../suppliers/entities/supplier.entity';
 import type { AllocationRule } from '../allocation.types';
 import { CondominiumBankAccount } from './condominium-bank-account.entity';
@@ -68,6 +69,14 @@ export class FinancialTransaction {
   @ManyToOne(() => CondominiumWork, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'work_id' })
   work: CondominiumWork | null;
+
+  /** Manutenção associada; quando preenchido, gera entrada na timeline da manutenção. */
+  @Column({ name: 'maintenance_id', type: 'varchar', length: 36, nullable: true })
+  maintenanceId: string | null;
+
+  @ManyToOne(() => CondominiumMaintenance, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'maintenance_id' })
+  maintenance: CondominiumMaintenance | null;
 
   /**
    * expense | income | investment (aplicação de capital; rateio como despesa) |

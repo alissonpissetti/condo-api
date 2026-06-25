@@ -425,6 +425,16 @@ export class PlanningDocumentsService {
     });
   }
 
+  /** Normaliza texto simples para blocos de parágrafo no PDF (`\n\n` entre parágrafos). */
+  private normalizePlainTextBlocks(text: string): string {
+    return String(text)
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   /**
    * Tabela estilo ata residencial: Nome completo | Unidade | Assinatura (título de secção é
    * desenhado pelo chamador).
@@ -492,9 +502,9 @@ export class PlanningDocumentsService {
       .fillColor(ink)
       .text(
         'Preenchimento no ato da reunião. A coluna Unidade traz a identificação cadastrada no sistema. Acrescente linhas ou anexo se for necessário.',
-        { width: contentWidth, align: 'left', lineGap: 1.2 },
+        { width: contentWidth, align: 'justify', lineGap: 2.5, paragraphGap: 0 },
       );
-    doc.moveDown(0.55);
+    doc.moveDown(0.75);
     if (unitLabels.length === 0) {
       doc
         .font('Helvetica-Oblique')
@@ -653,8 +663,8 @@ export class PlanningDocumentsService {
 
   /**
    * Ata (rascunho) a partir da pauta, alinhada ao modelo «ata de reunião de condomínio»
-   * (texto introdutório, ordem do dia, deliberações, encerramento, linhas Síndico/Secretário;
-   * lista Nome / Unidade / Assinatura ao final).
+   * (texto introdutório, ordem do dia, pauta original, deliberações, encerramento,
+   * linhas Síndico/Secretário; lista Nome / Unidade / Assinatura em página apartada).
    */
   private async buildPollAssemblyMinutesPdf(
     condominiumName: string,
@@ -675,12 +685,21 @@ export class PlanningDocumentsService {
       : 'sob a presidência do síndico ________________________________.';
     const nomeLavreiAta = syndicName ?? '_______________________________';
     const textoNadaMais = `Nada mais havendo a tratar, a reunião foi encerrada ${fraseHoraEncerramento}. Eu, ${nomeLavreiAta}, lavrei a presente ata, que após lida e aprovada, segue assinada.`;
-    const linhaSindico = syndicName
-      ? `Síndico: ${syndicName} — assinatura: ______________________________`
-      : 'Síndico: ________________________________________________';
+    const pautaOriginalPlain = stripPollBodyToPlainText(poll.body);
+    const discussionsFromMinutes = extractHtmlSectionByHeading(
+      poll.minutesBody,
+      /discuss[oõ]es\s+e\s+delibera[cç][oõ]es/i,
+    );
+    const minutesBodyPlain = stripPollBodyToPlainText(poll.minutesBody);
+    const deliberationsPlain =
+      discussionsFromMinutes?.trim() ||
+      (minutesBodyPlain && minutesBodyPlain !== pautaOriginalPlain
+        ? minutesBodyPlain
+        : '');
+
     return new Promise((resolve, reject) => {
-      const margin = 56;
-      const bottom = 72;
+      const margin = 62;
+      const bottom = 78;
       const doc = new PDFDocument({
         size: 'A4',
         bufferPages: true,
@@ -695,10 +714,18 @@ export class PlanningDocumentsService {
       const pageW = doc.page.width;
       const contentWidth = pageW - margin * 2;
       const ink = '#1a1a1a';
+      const headingInk = '#1e293b';
+      const muted = '#5c5c5c';
+      const accent = '#2563eb';
+      const ruleInk = '#e2e8f0';
       const lineTable = '#111111';
       const lineGrid = '#cccccc';
+      const bodySize = 11;
+      const bodyLineGap = 4;
+      const bodyParagraphGap = 11;
       const asDate = (x: Date | string): Date =>
         x instanceof Date ? x : new Date(String(x));
+      const maxY = () => doc.page.height - bottom;
 
       doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -716,158 +743,323 @@ export class PlanningDocumentsService {
       const totalMarks = Object.values(counts).reduce((a, b) => a + b, 0);
       const ordemDia = this.buildOrdemDiaLines(poll);
 
-      const drawSection = (title: string) => {
-        doc.moveDown(0.9);
+      const resetX = (): void => {
+        doc.x = margin;
+      };
+
+      const ensureSpace = (needed: number): void => {
+        if (doc.y + needed > maxY()) {
+          doc.addPage();
+          doc.x = margin;
+          doc.y = margin;
+        }
+      };
+
+      const drawBodyText = (
+        text: string,
+        opts?: { bold?: boolean; italic?: boolean; justify?: boolean; size?: number },
+      ): void => {
+        const normalized = this.normalizePlainTextBlocks(text);
+        if (!normalized) {
+          return;
+        }
+        resetX();
+        const font = opts?.bold
+          ? 'Helvetica-Bold'
+          : opts?.italic
+            ? 'Helvetica-Oblique'
+            : 'Helvetica';
+        doc
+          .font(font)
+          .fontSize(opts?.size ?? bodySize)
+          .fillColor(ink)
+          .text(normalized, {
+            width: contentWidth,
+            align: opts?.justify === false ? 'left' : 'justify',
+            lineGap: bodyLineGap,
+            paragraphGap: bodyParagraphGap,
+          });
+        resetX();
+      };
+
+      const drawPlaceholder = (message: string): void => {
+        ensureSpace(44);
+        doc.moveDown(0.2);
+        resetX();
+        const boxTop = doc.y;
+        const boxPad = 10;
+        doc
+          .font('Helvetica-Oblique')
+          .fontSize(10)
+          .fillColor(muted);
+        const textH = doc.heightOfString(message, {
+          width: contentWidth - boxPad * 2,
+          lineGap: 2.5,
+        });
+        const boxH = textH + boxPad * 2;
+        doc.save();
+        doc
+          .roundedRect(margin, boxTop, contentWidth, boxH, 4)
+          .fillAndStroke('#f8fafc', ruleInk);
+        doc.restore();
+        doc.text(message, margin + boxPad, boxTop + boxPad, {
+          width: contentWidth - boxPad * 2,
+          align: 'left',
+          lineGap: 2.5,
+        });
+        doc.y = boxTop + boxH + 4;
+        doc.fillColor(ink);
+        resetX();
+      };
+
+      const drawSectionHeading = (title: string): void => {
+        ensureSpace(40);
+        doc.moveDown(1.1);
+        resetX();
+        const y0 = doc.y;
+        doc.save();
+        doc.rect(margin, y0, 3, 15).fill(accent);
+        doc.restore();
         doc
           .font('Helvetica-Bold')
-          .fontSize(11)
-          .fillColor(ink)
-          .text(title, { width: contentWidth, align: 'left' });
-        doc.moveDown(0.4);
+          .fontSize(11.2)
+          .fillColor(headingInk)
+          .text(title, margin + 11, y0 + 1, {
+            width: contentWidth - 11,
+            align: 'left',
+          });
+        const ruleY = y0 + 20;
+        doc
+          .moveTo(margin, ruleY)
+          .lineTo(margin + contentWidth, ruleY)
+          .strokeColor(ruleInk)
+          .lineWidth(0.6)
+          .stroke();
+        doc.y = ruleY + 12;
+        resetX();
+      };
+
+      const drawNumberedList = (lines: string[]): void => {
+        const numCol = 26;
+        for (const line of lines) {
+          const match = line.match(/^(\d+)\.\s*(.+)$/s);
+          const num = match?.[1] ?? '•';
+          const body = (match?.[2] ?? line).trim();
+          ensureSpace(28);
+          resetX();
+          const y0 = doc.y;
+          doc
+            .font('Helvetica-Bold')
+            .fontSize(bodySize)
+            .fillColor(headingInk)
+            .text(`${num}.`, margin, y0, { width: numCol, align: 'right' });
+          doc
+            .font('Helvetica')
+            .fontSize(bodySize)
+            .fillColor(ink)
+            .text(body, margin + numCol + 6, y0, {
+              width: contentWidth - numCol - 6,
+              align: 'justify',
+              lineGap: bodyLineGap,
+            });
+          doc.moveDown(0.75);
+          resetX();
+        }
+      };
+
+      const drawVoteTallyTable = (): void => {
+        const rowH = 20;
+        const wLabel = contentWidth * 0.78;
+        const wVotes = contentWidth - wLabel;
+        const options = allPollOptions(poll);
+
+        const drawHeader = (): void => {
+          ensureSpace(rowH + 8);
+          const y0 = doc.y;
+          doc.save();
+          doc
+            .rect(margin, y0, contentWidth, rowH)
+            .fillAndStroke('#f3f4f6', lineTable);
+          doc
+            .moveTo(margin + wLabel, y0)
+            .lineTo(margin + wLabel, y0 + rowH)
+            .strokeColor(lineTable)
+            .lineWidth(0.45)
+            .stroke();
+          doc.restore();
+          doc
+            .font('Helvetica-Bold')
+            .fontSize(9)
+            .fillColor(ink)
+            .text('Opção', margin + 6, y0 + 6, { width: wLabel - 10 });
+          doc.text('Votos', margin + wLabel + 4, y0 + 6, {
+            width: wVotes - 8,
+            align: 'right',
+          });
+          doc.y = y0 + rowH;
+          resetX();
+        };
+
+        drawHeader();
+        let i = 0;
+        for (const o of options) {
+          ensureSpace(rowH + 4);
+          const y0 = doc.y;
+          doc.save();
+          doc
+            .rect(margin, y0, contentWidth, rowH)
+            .strokeColor(lineGrid)
+            .lineWidth(0.35)
+            .stroke();
+          doc
+            .moveTo(margin + wLabel, y0)
+            .lineTo(margin + wLabel, y0 + rowH)
+            .stroke();
+          doc.restore();
+          doc
+            .font('Helvetica')
+            .fontSize(9.2)
+            .fillColor(ink)
+            .text(`${i + 1}. ${o.label}`, margin + 6, y0 + 6, {
+              width: wLabel - 10,
+              lineGap: 1,
+            });
+          doc
+            .font('Helvetica-Bold')
+            .text(String(counts[o.id] ?? 0), margin + wLabel + 4, y0 + 6, {
+              width: wVotes - 8,
+              align: 'right',
+            });
+          doc.y = y0 + rowH;
+          resetX();
+          i += 1;
+        }
+        doc.moveDown(0.5);
+      };
+
+      const drawSignatureField = (
+        role: string,
+        nameLine?: string | null,
+      ): void => {
+        ensureSpace(78);
+        doc.moveDown(1.1);
+        resetX();
+        const lineW = contentWidth * 0.62;
+        if (nameLine?.trim()) {
+          doc
+            .font('Helvetica')
+            .fontSize(bodySize)
+            .fillColor(ink)
+            .text(nameLine.trim(), margin, doc.y, {
+              width: lineW,
+              align: 'left',
+              lineGap: bodyLineGap,
+            });
+          doc.moveDown(0.35);
+        }
+        const sigLineY = doc.y + 36;
+        doc
+          .moveTo(margin, sigLineY)
+          .lineTo(margin + lineW, sigLineY)
+          .strokeColor('#888888')
+          .lineWidth(0.55)
+          .stroke();
+        doc
+          .font('Helvetica')
+          .fontSize(9)
+          .fillColor(muted)
+          .text(role, margin, sigLineY + 7, { width: lineW });
+        doc.y = sigLineY + 24;
+        resetX();
       };
 
       doc.x = margin;
       doc.y = margin;
       doc
         .font('Helvetica-Bold')
-        .fontSize(14)
-        .fillColor(ink)
-        .text('ATA DE REUNIÃO DE CONDOMÍNIO', {
+        .fontSize(16)
+        .fillColor(headingInk)
+        .text('ATA DE REUNIÃO DE CONDOMÍNIO', margin, doc.y, {
           width: contentWidth,
           align: 'center',
         });
-      doc.moveDown(0.75);
+      doc.moveDown(0.35);
+      resetX();
       doc
         .font('Helvetica')
         .fontSize(10.5)
-        .fillColor(ink)
-        .text(
-          `${this.formatAosDiasDoMesEAnoLine(poll)}, às ${this.formatHoraAberturaPoll(poll)} horas, nas dependências do ${condominiumName}, realizou-se reunião de condomínio, ${frasePresidencia}`,
-          { width: contentWidth, align: 'left', lineGap: 1.45 },
-        );
-      doc.moveDown(0.5);
-      doc.text(
+        .fillColor(muted)
+        .text(poll.title.trim(), {
+          width: contentWidth,
+          align: 'center',
+          lineGap: 2,
+        });
+      doc.moveDown(0.55);
+      resetX();
+      const titleRuleY = doc.y;
+      doc
+        .moveTo(margin + contentWidth * 0.2, titleRuleY)
+        .lineTo(margin + contentWidth * 0.8, titleRuleY)
+        .strokeColor(ruleInk)
+        .lineWidth(0.75)
+        .stroke();
+      doc.y = titleRuleY + 16;
+      resetX();
+
+      drawBodyText(
+        `${this.formatAosDiasDoMesEAnoLine(poll)}, às ${this.formatHoraAberturaPoll(poll)} horas, nas dependências do ${condominiumName}, realizou-se reunião de condomínio, ${frasePresidencia}`,
+      );
+      doc.moveDown(0.55);
+      drawBodyText(
         'Estiveram presentes os condôminos conforme a lista de presença apresentada ao final deste documento.',
-        { width: contentWidth, align: 'left', lineGap: 1.2 },
       );
-      doc.moveDown(0.65);
-      doc.font('Helvetica-Bold').fontSize(10.5).text('Ordem do dia:');
-      doc.moveDown(0.3);
-      doc.font('Helvetica').fontSize(10.5);
-      for (const line of ordemDia) {
-        doc.text(line, { width: contentWidth, lineGap: 1.3 });
-      }
-      doc.moveDown(0.55);
-      doc.font('Helvetica-Bold').fontSize(10.5).text('Discussões e deliberações:');
-      doc.moveDown(0.35);
-      doc.font('Helvetica').fontSize(10.5);
-      const discussionsFromMinutes = extractHtmlSectionByHeading(
-        poll.minutesBody,
-        /discuss[oõ]es\s+e\s+delibera[cç][oõ]es/i,
-      );
-      if (discussionsFromMinutes?.trim()) {
-        doc.text(discussionsFromMinutes, {
-          width: contentWidth,
-          align: 'left',
-          lineGap: 1.45,
-        });
-        doc.moveDown(0.4);
-      } else if (poll.body) {
-        const plain = stripPollBodyToPlainText(poll.body);
-        if (plain) {
-          doc.text(plain, { width: contentWidth, align: 'left', lineGap: 1.45 });
-          doc.moveDown(0.4);
-        }
-      }
-      if (poll.assemblyType === AssemblyType.Ata) {
-        doc.text(
-          'Pauta de registo de assuntos sem votação eletrónica por opções no sistema; consignem-se as deliberações na presente ata e em documentos de suporte, nos termos estatutários.',
-          { width: contentWidth, align: 'left', lineGap: 1.35 },
-        );
-        doc.moveDown(0.4);
+
+      drawSectionHeading('ORDEM DO DIA');
+      drawNumberedList(ordemDia);
+
+      drawSectionHeading('PAUTA ORIGINAL');
+      if (pautaOriginalPlain) {
+        drawBodyText(pautaOriginalPlain);
       } else {
-        doc.text(
-          `O escrutínio no sistema: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Registo no sistema: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
-          { width: contentWidth, align: 'left', lineGap: 1.3 },
-        );
-        doc.moveDown(0.45);
-        if (decidedOption) {
-          doc
-            .font('Helvetica-Bold')
-            .text(`Opção vencedora: «${decidedOption.label}».`);
-          doc.moveDown(0.45);
-        }
-        doc.font('Helvetica');
-        const colLabel = margin + 4;
-        const colVotes = margin + contentWidth * 0.66;
-        const rowH = 15;
-        const tableTop = doc.y;
-        let y = tableTop;
-        doc.save();
-        doc
-          .rect(margin, y, contentWidth, rowH)
-          .strokeColor(lineTable)
-          .lineWidth(0.45)
-          .stroke();
-        doc.restore();
-        doc.font('Helvetica-Bold').fontSize(8.2).text('Apuração (sistema)', margin, y + 3, {
-          width: contentWidth,
-        });
-        doc.y = y + rowH;
-        let i = 0;
-        for (const o of allPollOptions(poll)) {
-          const c = counts[o.id] ?? 0;
-          y = doc.y;
-          doc.save();
-          doc
-            .rect(margin, y, contentWidth, rowH)
-            .strokeColor(lineGrid)
-            .lineWidth(0.3)
-            .stroke();
-          doc.restore();
-          doc
-            .font('Helvetica')
-            .fontSize(8.8)
-            .text(`${i + 1}. ${o.label}`, colLabel, y + 3, {
-              width: colVotes - colLabel - 4,
-            });
-          doc
-            .font('Helvetica-Bold')
-            .text(String(c), colVotes, y + 3, {
-              width: margin + contentWidth - colVotes - 6,
-              align: 'right',
-            });
-          doc.y = y + rowH;
-          i += 1;
-        }
-        const tableBottom = doc.y;
-        doc.save();
-        doc
-          .rect(margin, tableTop, contentWidth, tableBottom - tableTop)
-          .strokeColor(lineTable)
-          .lineWidth(0.4)
-          .stroke();
-        doc.restore();
-        doc.moveDown(0.45);
+        drawPlaceholder('Sem texto de pauta original registado no sistema.');
       }
-      doc.font('Helvetica').fontSize(10.3);
-      doc.moveDown(0.5);
-      doc.text(
-        textoNadaMais,
-        { width: contentWidth, align: 'left', lineGap: 1.35 },
-      );
-      doc.moveDown(1.0);
-      doc.text(linhaSindico);
-      doc.moveDown(0.9);
-      doc.text(
-        'Secretário: ________________________________________________',
-      );
-      doc.moveDown(0.55);
+
+      drawSectionHeading('DISCUSSÕES E DELIBERAÇÕES');
+      if (deliberationsPlain) {
+        drawBodyText(deliberationsPlain);
+      } else {
+        drawPlaceholder(
+          'Sem rascunho de ata registado. Utilize o modo reunião para gerar o texto com IA ou preencha manualmente antes de gerar o PDF.',
+        );
+      }
+
+      if (poll.assemblyType === AssemblyType.Ata) {
+        doc.moveDown(0.65);
+        drawBodyText(
+          'Pauta de registo de assuntos sem votação eletrónica por opções no sistema; consignem-se as deliberações na presente ata e em documentos de suporte, nos termos estatutários.',
+        );
+      } else {
+        drawSectionHeading('APURAÇÃO NO SISTEMA');
+        drawBodyText(
+          `Modo de voto: ${voteMode}. Unidades com voto: ${unitsVoted}. Total de marcações nas opções: ${totalMarks}. Período de registo: de ${this.formatDateTimePtBr(asDate(poll.opensAt))} a ${this.formatDateTimePtBr(asDate(poll.closesAt))}.`,
+        );
+        if (decidedOption) {
+          doc.moveDown(0.45);
+          drawBodyText(`Opção vencedora: «${decidedOption.label}».`, { bold: true });
+        }
+        doc.moveDown(0.45);
+        drawVoteTallyTable();
+      }
+
+      drawSectionHeading('ENCERRAMENTO');
+      drawBodyText(textoNadaMais);
+      drawSignatureField('Síndico', syndicName);
+      drawSignatureField('Secretário');
 
       doc.addPage();
       doc.x = margin;
       doc.y = margin;
-      drawSection('LISTA DE PRESENÇA');
+      drawSectionHeading('LISTA DE PRESENÇA');
       this.drawPollAttendanceListTable(
         doc,
         margin,

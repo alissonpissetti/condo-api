@@ -34,6 +34,10 @@ export class CondominiumWorkBudget {
   @Column({ name: 'supplier_name', type: 'varchar', length: 255 })
   supplierName: string;
 
+  /** O que o orçamento cobre (ex.: mão de obra, materiais). */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  title: string | null;
+
   @Column({ name: 'amount_cents', type: 'int' })
   amountCents: number;
 
