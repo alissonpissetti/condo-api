@@ -650,6 +650,95 @@ export class CondominiumWorksService {
     );
   }
 
+  async replaceTimelineAttachment(
+    condominiumId: string,
+    workId: string,
+    entryId: string,
+    attachmentId: string,
+    userId: string,
+    file: Express.Multer.File,
+  ): Promise<WorkTimelineEntryDto> {
+    await this.governance.assertManagement(condominiumId, userId);
+    await this.findWorkOrThrow(condominiumId, workId);
+    const entry = await this.entryRepo.findOne({
+      where: { id: entryId, workId },
+      relations: { attachments: true, budget: true },
+    });
+    if (!entry) {
+      throw new NotFoundException('Registro não encontrado.');
+    }
+    if (
+      entry.kind !== WorkTimelineKind.Note &&
+      entry.kind !== WorkTimelineKind.Budget &&
+      entry.kind !== WorkTimelineKind.Legal
+    ) {
+      throw new BadRequestException(
+        'Só é possível substituir anexos de comentários, registros jurídicos ou orçamentos.',
+      );
+    }
+    const att = await this.timelineAttachmentRepo.findOne({
+      where: { id: attachmentId, entryId },
+    });
+    if (!att) {
+      throw new NotFoundException('Anexo não encontrado.');
+    }
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Envie um arquivo.');
+    }
+    if (usesLocalDiskOnly(this.config)) {
+      const db = this.config.get<string>('DATABASE_URL') ?? '';
+      const likelyRemoteDb =
+        /@[^/]+:\d+\//.test(db) &&
+        !/localhost|127\.0\.0\.1/i.test(db);
+      if (likelyRemoteDb) {
+        throw new BadRequestException(
+          'Anexos de obras não podem ser gravados só no disco desta máquina enquanto a API usa base de dados remota. No .env da API, configure STORAGE_DRIVER=nextcloud (NEXTCLOUD_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_APP_PASSWORD) ou STORAGE_API_* para o mesmo storage usado em produção.',
+        );
+      }
+    }
+
+    const previousStorageKey = att.storageKey;
+    const originalFilename = encodeUploadOriginalFilename(
+      file.originalname || 'anexo',
+    ).slice(0, 255);
+    const storageKey = await this.workStorage.saveWorkDocument(
+      condominiumId,
+      workId,
+      file.buffer,
+      file.mimetype || 'application/octet-stream',
+      originalFilename,
+    );
+
+    att.storageKey = storageKey;
+    att.originalFilename = originalFilename;
+    att.mimeType = file.mimetype;
+    att.sizeBytes = file.size;
+    await this.timelineAttachmentRepo.save(att);
+
+    try {
+      await this.workStorage.deleteWorkDocument(
+        condominiumId,
+        previousStorageKey,
+      );
+    } catch {
+      /* blob antigo pode já não existir (link quebrado) */
+    }
+
+    const reloaded = await this.entryRepo.findOne({
+      where: { id: entryId, workId },
+      relations: { attachments: true, budget: true },
+    });
+    if (!reloaded) {
+      throw new NotFoundException('Registro não encontrado.');
+    }
+    await this.touchWork(workId);
+    return await this.mapEntry(
+      condominiumId,
+      reloaded,
+      reloaded.budget ?? null,
+    );
+  }
+
   async updateBudget(
     condominiumId: string,
     workId: string,

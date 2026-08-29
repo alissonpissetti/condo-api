@@ -74,6 +74,8 @@ import { WorkBudgetScheduledAt1751580000000 } from '../migrations/1751580000000-
 import { WorkBudgetTitle1751810000000 } from '../migrations/1751810000000-work-budget-title';
 import { CondominiumMaintenances1751820000000 } from '../migrations/1751820000000-condominium-maintenances';
 import { CondominiumWorkAllocationRule1751830000000 } from '../migrations/1751830000000-condominium-work-allocation-rule';
+import { UnitFeeCreditEntries1751840000000 } from '../migrations/1751840000000-unit-fee-credit-entries';
+import { UnitFeeCreditFinancialTransaction1751850000000 } from '../migrations/1751850000000-unit-fee-credit-financial-transaction';
 import { PlanningPollQuestions1751590000000 } from '../migrations/1751590000000-planning-poll-questions';
 import { PlanningPollAbstentions1751610000000 } from '../migrations/1751610000000-planning-poll-abstentions';
 import { SupportTickets1751220000000 } from '../migrations/1751220000000-support-tickets';
@@ -99,6 +101,7 @@ import { TransactionUnitShare } from '../finance/entities/transaction-unit-share
 import { FundMonthlyAccrual } from '../finance/entities/fund-monthly-accrual.entity';
 import { CondominiumBankAccount } from '../finance/entities/condominium-bank-account.entity';
 import { CondominiumFeeCharge } from '../finance/entities/condominium-fee-charge.entity';
+import { UnitFeeCreditEntry } from '../finance/entities/unit-fee-credit-entry.entity';
 import { CondominiumWork } from '../condominium-works/entities/condominium-work.entity';
 import { CondominiumSupplierCategory } from '../condominium-works/entities/condominium-supplier-category.entity';
 import { CondominiumSupplier } from '../condominium-works/entities/condominium-supplier.entity';
@@ -143,6 +146,7 @@ export const AppDataSource = new DataSource({
     FundMonthlyAccrual,
     CondominiumBankAccount,
     CondominiumFeeCharge,
+    UnitFeeCreditEntry,
     CondominiumWork,
     CondominiumSupplier,
     CondominiumSupplierCategory,
@@ -242,6 +246,8 @@ export const AppDataSource = new DataSource({
     WorkBudgetTitle1751810000000,
     CondominiumMaintenances1751820000000,
     CondominiumWorkAllocationRule1751830000000,
+    UnitFeeCreditEntries1751840000000,
+    UnitFeeCreditFinancialTransaction1751850000000,
     PlanningPollQuestions1751590000000,
     PlanningPollAbstentions1751610000000,
   ],

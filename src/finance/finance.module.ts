@@ -31,6 +31,9 @@ import { FinanceMonthCronService } from './finance-month-cron.service';
 import { FinanceStatementController } from './finance-statement.controller';
 import { FinanceStatementService } from './finance-statement.service';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
+import { CondominiumClearanceDeclarationPdfService } from './condominium-clearance-declaration-pdf.service';
+import { UnitFeeCreditEntry } from './entities/unit-fee-credit-entry.entity';
+import { UnitFeeCreditService } from './unit-fee-credit.service';
 import { FinancialFundsController } from './financial-funds.controller';
 import { FinancialFundsService } from './financial-funds.service';
 import { FinancialTransactionsController } from './financial-transactions.controller';
@@ -48,6 +51,7 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
       FundMonthlyAccrual,
       CondominiumFeeCharge,
       CondominiumFeeChargePaymentLog,
+      UnitFeeCreditEntry,
       CondominiumBankAccount,
       Unit,
       UnitResponsiblePerson,
@@ -92,6 +96,8 @@ import { TransactionReceiptsController } from './transaction-receipts.controller
     FundBalanceService,
     CondominiumFeesService,
     MonthlyTransparencyPdfService,
+    CondominiumClearanceDeclarationPdfService,
+    UnitFeeCreditService,
     FinanceMonthCronService,
   ],
 })

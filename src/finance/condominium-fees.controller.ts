@@ -33,6 +33,12 @@ import { SettleFeeChargeDto } from './dto/settle-fee-charge.dto';
 import { SendFeeSlipsWhatsappDto } from './dto/send-fee-slips-whatsapp.dto';
 import { UpdateFeeChargesDueDateDto } from './dto/update-fee-charges-due-date.dto';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
+import { CondominiumClearanceDeclarationPdfService } from './condominium-clearance-declaration-pdf.service';
+import { RegisterUnitFeeAdvanceDto } from './dto/register-unit-fee-advance.dto';
+import {
+  UnitFeeCreditService,
+  type UnitFeeCreditEntryView,
+} from './unit-fee-credit.service';
 
 @ApiTags('Financeiro — taxas condominiais')
 @ApiBearerAuth('JWT')
@@ -42,6 +48,8 @@ export class CondominiumFeesController {
   constructor(
     private readonly feesService: CondominiumFeesService,
     private readonly monthlyTransparencyPdf: MonthlyTransparencyPdfService,
+    private readonly clearancePdfService: CondominiumClearanceDeclarationPdfService,
+    private readonly unitFeeCredit: UnitFeeCreditService,
   ) {}
 
   @Get()
@@ -149,6 +157,91 @@ export class CondominiumFeesController {
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="transparencia-condominial-${ym || 'mes'}${unitSuffix}.pdf"`,
+    });
+    return new StreamableFile(pdf);
+  }
+
+  @Post('unit-credit/advance')
+  @ApiOperation({
+    summary:
+      'Registrar adiantamento justificado por unidade (crédito para próximas taxas)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  registerUnitFeeAdvance(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Body() body: RegisterUnitFeeAdvanceDto,
+  ): Promise<UnitFeeCreditEntryView> {
+    return this.unitFeeCredit.registerAdvancePayment(condominiumId, userId, {
+      unitId: body.unitId,
+      amountCents: body.amountCents,
+      justification: body.justification,
+      bankAccountId: body.bankAccountId,
+      paymentReceiptStorageKey: body.paymentReceiptStorageKey,
+    });
+  }
+
+  @Get('unit-credit/balances')
+  @ApiOperation({
+    summary: 'Unidades com saldo de crédito de adiantamento (taxas)',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  unitCreditBalances(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+  ) {
+    return this.unitFeeCredit.listUnitsWithPositiveCreditBalance(
+      condominiumId,
+      userId,
+    );
+  }
+
+  @Get('unit-credit/history')
+  @ApiOperation({ summary: 'Histórico e saldo de crédito de taxa por unidade' })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiQuery({ name: 'unitId', required: true, format: 'uuid' })
+  unitCreditHistory(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Query('unitId') unitId: string,
+  ) {
+    return this.unitFeeCredit.listUnitCreditHistory(
+      condominiumId,
+      userId,
+      unitId?.trim() ?? '',
+    );
+  }
+
+  @Get('clearance-declaration-pdf')
+  @ApiOperation({
+    summary:
+      'Declaração de quitação de débitos condominiais (CND) por unidade — PDF para imobiliárias e interessados',
+    description:
+      'Atesta a inexistência de cobranças em aberto da unidade nos registros do condomínio. Exige `unitId`. Bloqueado se houver taxa condominial em aberto para a unidade.',
+  })
+  @ApiParam({ name: 'condominiumId', format: 'uuid' })
+  @ApiQuery({
+    name: 'unitId',
+    required: true,
+    format: 'uuid',
+    description: 'Unidade para a qual emitir a declaração de quitação.',
+  })
+  async clearanceDeclarationPdf(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Query('unitId') unitId: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const normalizedUnitId = unitId?.trim() ?? '';
+    const pdf = await this.clearancePdfService.buildClearanceDeclarationPdf(
+      condominiumId,
+      userId,
+      normalizedUnitId,
+    );
+    const unitTag = normalizedUnitId.slice(0, 8) || 'unidade';
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="declaracao-quitacao-${unitTag}.pdf"`,
     });
     return new StreamableFile(pdf);
   }
@@ -273,6 +366,7 @@ export class CondominiumFeesController {
       chargeId,
       body?.incomeTransactionId,
       body?.paymentReceiptStorageKey ?? null,
+      body?.bankAccountId ?? null,
     );
   }
 

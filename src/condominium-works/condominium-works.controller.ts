@@ -12,11 +12,12 @@ import {
   Post,
   Query,
   Res,
+  UploadedFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FilesInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -299,6 +300,37 @@ export class CondominiumWorksController {
       budgetId,
       userId,
       dto,
+    );
+  }
+
+  @Patch(':workId/timeline/:entryId/attachments/:attachmentId')
+  @ApiOperation({
+    summary: 'Substituir anexo da timeline (novo upload no storage)',
+  })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 100 * 1024 * 1024 },
+    }),
+  )
+  replaceTimelineAttachment(
+    @CurrentUser() userId: string,
+    @Param('condominiumId', ParseUUIDPipe) condominiumId: string,
+    @Param('workId', ParseUUIDPipe) workId: string,
+    @Param('entryId', ParseUUIDPipe) entryId: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Envie um arquivo.');
+    }
+    return this.works.replaceTimelineAttachment(
+      condominiumId,
+      workId,
+      entryId,
+      attachmentId,
+      userId,
+      file,
     );
   }
 

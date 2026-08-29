@@ -159,7 +159,7 @@ export class FinancialTransactionsController {
   @Post(':transactionId/settle')
   @ApiOperation({
     summary:
-      'Quitar transação (status pago). Comprovante opcional, como nas taxas condominiais.',
+      'Quitar transação (status pago). Comprovante opcional. Pode indicar unidade pagadora para gerar crédito nas taxas.',
   })
   settle(
     @CurrentUser() userId: string,

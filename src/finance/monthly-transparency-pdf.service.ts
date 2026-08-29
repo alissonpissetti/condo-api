@@ -67,6 +67,7 @@ import {
   sanitizePixName,
 } from './pix-br-code.util';
 import * as QRCode from 'qrcode';
+import { UnitFeeCreditService } from './unit-fee-credit.service';
 
 type UnitCol = {
   unitId: string;
@@ -151,6 +152,7 @@ export class MonthlyTransparencyPdfService {
     private readonly fundBalance: FundBalanceService,
     private readonly financeStatement: FinanceStatementService,
     @Inject(RECEIPT_STORAGE) private readonly storage: ReceiptStoragePort,
+    private readonly unitFeeCredit: UnitFeeCreditService,
   ) {}
 
   async buildClosingTransparencyPdf(
@@ -226,12 +228,26 @@ export class MonthlyTransparencyPdfService {
 
     /** Quando o PDF é pedido com `unitId`, o slip PIX deve refletir todas as taxas em aberto (soma e detalhe), não só a competência do relatório. */
     let openChargesForTargetPix: CondominiumFeeCharge[] = [];
+    let pixTotalNetCents: bigint | null = null;
+    let pixTotalCreditCents: bigint | null = null;
     if (targetUnitId) {
       openChargesForTargetPix = await this.chargeRepo.find({
         where: { condominiumId, unitId: targetUnitId, status: 'open' },
         relations: { unit: { grouping: true } },
         order: { competenceYm: 'ASC' },
       });
+      if (openChargesForTargetPix.length > 0) {
+        const balance = await this.unitFeeCredit.getUnitBalanceCents(
+          condominiumId,
+          targetUnitId,
+        );
+        const totals = this.unitFeeCredit.computePixNetTotalCents(
+          openChargesForTargetPix,
+          balance,
+        );
+        pixTotalNetCents = totals.totalNetCents;
+        pixTotalCreditCents = totals.totalCreditCents;
+      }
     }
 
     const [
@@ -281,6 +297,8 @@ export class MonthlyTransparencyPdfService {
         condo.transparencyPdfIncludePixQrCode !== false,
       syndicWhatsappForReceipts: condo.syndicWhatsappForReceipts,
       openChargesForTargetPix,
+      pixTotalNetCents,
+      pixTotalCreditCents,
       competenceCharges,
       fixos,
       variavel,
@@ -2561,6 +2579,8 @@ export class MonthlyTransparencyPdfService {
     transparencyPdfIncludePixQrCode?: boolean;
     syndicWhatsappForReceipts?: string | null;
     openChargesForTargetPix: CondominiumFeeCharge[];
+    pixTotalNetCents: bigint | null;
+    pixTotalCreditCents: bigint | null;
     competenceCharges: CondominiumFeeCharge[];
     fixos: FinancialTransaction[];
     variavel: FinancialTransaction[];
@@ -2580,15 +2600,20 @@ export class MonthlyTransparencyPdfService {
 
     const pixOpenCharges = ctx.openChargesForTargetPix;
     const pixKeySan = sanitizePixKey(ctx.billingPixKey);
-    const prependPixSlip =
-      ctx.targetUnit != null &&
-      pixOpenCharges.length > 0 &&
-      pixKeySan.length > 0;
 
     let totalOpenCents = 0n;
     for (const c of pixOpenCharges) {
       totalOpenCents += BigInt(String(c.amountDueCents));
     }
+    const pixPayCents =
+      ctx.pixTotalNetCents != null ? ctx.pixTotalNetCents : totalOpenCents;
+    const pixCreditCents = ctx.pixTotalCreditCents ?? 0n;
+
+    const prependPixSlip =
+      ctx.targetUnit != null &&
+      pixOpenCharges.length > 0 &&
+      pixKeySan.length > 0 &&
+      pixPayCents > 0n;
 
     let pixBrPayload: string | null = null;
     let pixQrPng: Buffer | null = null;
@@ -2606,7 +2631,7 @@ export class MonthlyTransparencyPdfService {
           pixOpenCharges,
           ctx.condoName,
         );
-        const amt = Number(totalOpenCents) / 100;
+        const amt = Number(pixPayCents) / 100;
         pixBrPayload = buildPixBrCode({
           key: pixKeySan,
           name: benName || sanitizePixName(ctx.condoName, 25),
@@ -2656,7 +2681,11 @@ export class MonthlyTransparencyPdfService {
         const isConsolidated = n > 1;
         const firstC = pixOpenCharges[0]!;
         const lastC = pixOpenCharges[n - 1]!;
-        const totalBrl = this.brl(totalOpenCents);
+        const totalBrl = this.brl(pixPayCents);
+        const creditHint =
+          pixCreditCents > 0n
+            ? `Crédito de adiantamento aplicado: ${this.brl(pixCreditCents)}. Valor bruto em aberto: ${this.brl(totalOpenCents)}.`
+            : null;
         const openChargeRows = pixOpenCharges.map((c) => ({
           competencia: this.formatCompetenceYmPtBr(c.competenceYm),
           vencimento: this.formatDateBr(c.dueOn),
@@ -2693,9 +2722,14 @@ export class MonthlyTransparencyPdfService {
           referenceLine: refLine,
           showOpenChargesBreakdown: isConsolidated,
           openChargeRows,
-          hintLine: isConsolidated
-            ? 'O valor a pagar corresponde à quitação total de todas as taxas condominiais em aberto listadas abaixo (inclui competências anteriores à do relatório anexo, se aplicável). O QR e o PIX têm o montante agregado. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.'
-            : 'Slip de pagamento via PIX — específico para a unidade. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.',
+          hintLine: [
+            isConsolidated
+              ? 'O valor a pagar corresponde à quitação total de todas as taxas condominiais em aberto listadas abaixo (inclui competências anteriores à do relatório anexo, se aplicável). O QR e o PIX têm o montante agregado. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.'
+              : 'Slip de pagamento via PIX — específico para a unidade. Nas páginas seguintes: extrato mensal (conta geral e fundos), igual ao painel do condomínio.',
+            creditHint,
+          ]
+            .filter(Boolean)
+            .join(' '),
           pixKeyDisplay: (ctx.billingPixKey ?? pixKeySan).trim().slice(0, 64),
           beneficiaryDisplay: (
             ctx.billingPixBeneficiaryName?.trim() || ctx.condoName

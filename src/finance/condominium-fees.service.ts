@@ -41,6 +41,7 @@ import {
 import { normalizeBrCellphone } from '../lib/phone-br';
 import { TwilioWhatsappService } from '../twilio-whatsapp/twilio-whatsapp.service';
 import { MonthlyTransparencyPdfService } from './monthly-transparency-pdf.service';
+import { UnitFeeCreditService } from './unit-fee-credit.service';
 import { SendFeeSlipsWhatsappDto } from './dto/send-fee-slips-whatsapp.dto';
 import { groupingFeeEquivalenceKey } from './fee-equivalence.util';
 import {
@@ -90,6 +91,9 @@ export interface CondominiumFeeChargeView {
    * sem designação.
    */
   financialResponsibleName: string | null;
+  unitCreditBalanceCents: string;
+  creditAppliedCents: string;
+  netDueCents: string;
 }
 
 export interface FeeSlipWhatsappSkip {
@@ -131,6 +135,7 @@ export class CondominiumFeesService {
     private readonly config: ConfigService,
     private readonly twilioWhatsapp: TwilioWhatsappService,
     private readonly monthlyTransparencyPdf: MonthlyTransparencyPdfService,
+    private readonly unitFeeCredit: UnitFeeCreditService,
   ) {}
 
   async listCharges(
@@ -176,7 +181,24 @@ export class CondominiumFeesService {
         }
       }
     }
-    return rows.map((c) => this.toView(c));
+    const balances = await this.unitFeeCredit.getBalancesForUnits(
+      condominiumId,
+      uids,
+    );
+    const openByUnit = await this.unitFeeCredit.loadOpenChargesByUnit(
+      condominiumId,
+      uids,
+    );
+    return rows.map((c) => {
+      const balance = balances.get(c.unitId) ?? 0n;
+      const openCharges = openByUnit.get(c.unitId) ?? [];
+      const credit = this.unitFeeCredit.buildChargeCreditEnrichment(
+        c,
+        balance,
+        openCharges,
+      );
+      return this.toView(c, credit);
+    });
   }
 
   /**
@@ -529,6 +551,7 @@ export class CondominiumFeesService {
     chargeId: string,
     incomeTransactionId?: string,
     paymentReceiptStorageKey?: string | null,
+    bankAccountId?: string | null,
   ): Promise<CondominiumFeeChargeView> {
     await this.governance.assertManagement(condominiumId, userId);
     const charge = await this.chargeRepo.findOne({
@@ -548,50 +571,72 @@ export class CondominiumFeesService {
     }
 
     const txId = incomeTransactionId?.trim();
+    const bankId = bankAccountId?.trim() || null;
 
-    if (txId) {
-      const tx = await this.txRepo.findOne({
-        where: { id: txId, condominiumId },
-        relations: { unitShares: true },
-      });
-      if (!tx) {
-        throw new NotFoundException('Transaction not found');
-      }
-      if (tx.paymentStatus === 'cancelled') {
-        throw new BadRequestException('Income transaction is cancelled');
-      }
-      if (tx.kind !== 'income') {
-        throw new BadRequestException('Transaction must be income');
-      }
-      const share = tx.unitShares?.find((s) => s.unitId === charge.unitId);
-      if (!share) {
-        throw new BadRequestException(
-          'Income transaction has no allocation for this unit',
-        );
-      }
-      const shareAbs = -BigInt(share.shareCents);
-      const due = BigInt(charge.amountDueCents);
-      if (shareAbs !== due) {
-        throw new BadRequestException(
-          'Income amount allocated to this unit does not match charge',
-        );
+    let creditApplied = 0n;
+    await this.chargeRepo.manager.transaction(async (mgr) => {
+      creditApplied = await this.unitFeeCredit.applyCreditOnSettle(
+        mgr,
+        condominiumId,
+        userId,
+        charge,
+      );
+      const netDue =
+        BigInt(charge.amountDueCents) - creditApplied > 0n
+          ? BigInt(charge.amountDueCents) - creditApplied
+          : 0n;
+
+      if (txId) {
+        const tx = await mgr.getRepository(FinancialTransaction).findOne({
+          where: { id: txId, condominiumId },
+          relations: { unitShares: true },
+        });
+        if (!tx) {
+          throw new NotFoundException('Transaction not found');
+        }
+        if (tx.paymentStatus === 'cancelled') {
+          throw new BadRequestException('Income transaction is cancelled');
+        }
+        if (tx.kind !== 'income') {
+          throw new BadRequestException('Transaction must be income');
+        }
+        const share = tx.unitShares?.find((s) => s.unitId === charge.unitId);
+        if (!share) {
+          throw new BadRequestException(
+            'Income transaction has no allocation for this unit',
+          );
+        }
+        const shareAbs = -BigInt(share.shareCents);
+        const due = BigInt(charge.amountDueCents);
+        if (shareAbs !== due) {
+          throw new BadRequestException(
+            'Income amount allocated to this unit does not match charge',
+          );
+        }
+
+        charge.status = 'paid';
+        charge.incomeTransactionId = tx.id;
+        charge.paidAt =
+          tx.occurredOn instanceof Date
+            ? tx.occurredOn
+            : parseDateOnlyFromApi(String(tx.occurredOn));
+        charge.bankAccountId = tx.bankAccountId ?? bankId;
+      } else {
+        if (netDue > 0n && !bankId) {
+          throw new BadRequestException(
+            'bankAccountId is required when the charge has a remaining balance after credit',
+          );
+        }
+        charge.status = 'paid';
+        charge.incomeTransactionId = null;
+        charge.paidAt = todayLocalCalendarAsUtcNoon();
+        charge.bankAccountId = bankId;
       }
 
-      charge.status = 'paid';
-      charge.incomeTransactionId = tx.id;
-      charge.paidAt =
-        tx.occurredOn instanceof Date
-          ? tx.occurredOn
-          : parseDateOnlyFromApi(String(tx.occurredOn));
-    } else {
-      charge.status = 'paid';
-      charge.incomeTransactionId = null;
-      charge.paidAt = todayLocalCalendarAsUtcNoon();
-    }
+      charge.paymentReceiptStorageKey = receiptKey;
+      await mgr.save(charge);
+    });
 
-    charge.paymentReceiptStorageKey = receiptKey;
-
-    await this.chargeRepo.save(charge);
     const fresh = await this.chargeRepo.findOne({
       where: { id: charge.id, condominiumId },
       relations: { unit: UNIT_REL_FOR_FEE_VIEW },
@@ -599,7 +644,20 @@ export class CondominiumFeesService {
     if (!fresh) {
       throw new NotFoundException('Charge not found');
     }
-    return this.toView(fresh);
+    const balance = await this.unitFeeCredit.getUnitBalanceCents(
+      condominiumId,
+      fresh.unitId,
+    );
+    const openByUnit = await this.unitFeeCredit.loadOpenChargesByUnit(
+      condominiumId,
+      [fresh.unitId],
+    );
+    const credit = this.unitFeeCredit.buildChargeCreditEnrichment(
+      fresh,
+      balance,
+      openByUnit.get(fresh.unitId) ?? [],
+    );
+    return this.toView(fresh, credit);
   }
 
   /**
@@ -637,6 +695,12 @@ export class CondominiumFeesService {
     };
 
     await this.chargeRepo.manager.transaction(async (mgr) => {
+      await this.unitFeeCredit.restoreCreditOnReopen(
+        mgr,
+        condominiumId,
+        userId,
+        charge.id,
+      );
       await mgr.save(
         mgr.create(CondominiumFeeChargePaymentLog, {
           chargeId: charge.id,
@@ -649,6 +713,7 @@ export class CondominiumFeesService {
       charge.paidAt = null;
       charge.incomeTransactionId = null;
       charge.paymentReceiptStorageKey = null;
+      charge.bankAccountId = null;
       await mgr.save(charge);
     });
 
@@ -659,7 +724,20 @@ export class CondominiumFeesService {
     if (!fresh) {
       throw new NotFoundException('Cobrança não encontrada.');
     }
-    return this.toView(fresh);
+    const balance = await this.unitFeeCredit.getUnitBalanceCents(
+      condominiumId,
+      fresh.unitId,
+    );
+    const openByUnit = await this.unitFeeCredit.loadOpenChargesByUnit(
+      condominiumId,
+      [fresh.unitId],
+    );
+    const credit = this.unitFeeCredit.buildChargeCreditEnrichment(
+      fresh,
+      balance,
+      openByUnit.get(fresh.unitId) ?? [],
+    );
+    return this.toView(fresh, credit);
   }
 
   /**
@@ -727,7 +805,7 @@ export class CondominiumFeesService {
     if (!fresh) {
       throw new NotFoundException('Cobrança não encontrada.');
     }
-    return this.toView(fresh);
+    return this.enrichAndToView(fresh);
   }
 
   async listPaymentHistory(
@@ -803,7 +881,7 @@ export class CondominiumFeesService {
       where: uniqueIds.map((id) => ({ id, condominiumId })),
       relations: { unit: UNIT_REL_FOR_FEE_VIEW },
     });
-    return fresh.map((c) => this.toView(c));
+    return this.enrichManyToView(condominiumId, fresh);
   }
 
   async getPaymentReceiptFile(
@@ -1040,7 +1118,57 @@ export class CondominiumFeesService {
     return false;
   }
 
-  private toView(c: CondominiumFeeCharge): CondominiumFeeChargeView {
+  private async enrichAndToView(
+    c: CondominiumFeeCharge,
+  ): Promise<CondominiumFeeChargeView> {
+    const balance = await this.unitFeeCredit.getUnitBalanceCents(
+      c.condominiumId,
+      c.unitId,
+    );
+    const openByUnit = await this.unitFeeCredit.loadOpenChargesByUnit(
+      c.condominiumId,
+      [c.unitId],
+    );
+    const credit = this.unitFeeCredit.buildChargeCreditEnrichment(
+      c,
+      balance,
+      openByUnit.get(c.unitId) ?? [],
+    );
+    return this.toView(c, credit);
+  }
+
+  private async enrichManyToView(
+    condominiumId: string,
+    charges: CondominiumFeeCharge[],
+  ): Promise<CondominiumFeeChargeView[]> {
+    const uids = [...new Set(charges.map((c) => c.unitId))];
+    const balances = await this.unitFeeCredit.getBalancesForUnits(
+      condominiumId,
+      uids,
+    );
+    const openByUnit = await this.unitFeeCredit.loadOpenChargesByUnit(
+      condominiumId,
+      uids,
+    );
+    return charges.map((c) => {
+      const balance = balances.get(c.unitId) ?? 0n;
+      const credit = this.unitFeeCredit.buildChargeCreditEnrichment(
+        c,
+        balance,
+        openByUnit.get(c.unitId) ?? [],
+      );
+      return this.toView(c, credit);
+    });
+  }
+
+  private toView(
+    c: CondominiumFeeCharge,
+    credit?: {
+      unitCreditBalanceCents: string;
+      creditAppliedCents: string;
+      netDueCents: string;
+    },
+  ): CondominiumFeeChargeView {
     const u = c.unit;
     const due = formatDateOnlyYmdUtc(c.dueOn);
     const paid =
@@ -1052,6 +1180,20 @@ export class CondominiumFeesService {
           responsibleDisplayName: u.responsibleDisplayName ?? null,
         })
       : null;
+    const amountDue = BigInt(String(c.amountDueCents));
+    const defaultCredit =
+      c.status === 'open'
+        ? {
+            unitCreditBalanceCents: '0',
+            creditAppliedCents: '0',
+            netDueCents: amountDue.toString(),
+          }
+        : {
+            unitCreditBalanceCents: '0',
+            creditAppliedCents: '0',
+            netDueCents: '0',
+          };
+    const cInfo = credit ?? defaultCredit;
     return {
       id: c.id,
       competenceYm: c.competenceYm,
@@ -1065,6 +1207,9 @@ export class CondominiumFeesService {
       incomeTransactionId: c.incomeTransactionId,
       hasPaymentReceipt: !!c.paymentReceiptStorageKey,
       financialResponsibleName,
+      unitCreditBalanceCents: cInfo.unitCreditBalanceCents,
+      creditAppliedCents: cInfo.creditAppliedCents,
+      netDueCents: cInfo.netDueCents,
     };
   }
 

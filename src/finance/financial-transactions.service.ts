@@ -37,6 +37,7 @@ import {
 import { CondominiumBankAccountsService } from './condominium-bank-accounts.service';
 import { FinancialFundsService } from './financial-funds.service';
 import { FundBalanceService } from './fund-balance.service';
+import { UnitFeeCreditService } from './unit-fee-credit.service';
 import type { ReceiptStoragePort } from '../storage/receipt-storage.port';
 import { RECEIPT_STORAGE } from '../storage/storage.tokens';
 
@@ -59,6 +60,7 @@ export class FinancialTransactionsService {
     private readonly workTxLink: WorkTransactionLinkService,
     private readonly maintenanceTxLink: MaintenanceTransactionLinkService,
     private readonly suppliersService: SuppliersService,
+    private readonly unitFeeCredit: UnitFeeCreditService,
   ) {}
 
   private async isFundMonthlyAccrualTransaction(
@@ -1022,16 +1024,55 @@ export class FinancialTransactionsService {
     if (t.paymentStatus !== 'pending') {
       throw new BadRequestException('Transaction is not pending settlement');
     }
+
+    const paidByUnitId = dto.paidByUnitId?.trim() || null;
+    if (paidByUnitId) {
+      if (t.kind !== 'expense' && t.kind !== 'investment') {
+        throw new BadRequestException(
+          'paidByUnitId only applies to expenses and investments',
+        );
+      }
+      if (BigInt(String(t.amountCents)) <= 0n) {
+        throw new BadRequestException('Transaction amount must be positive');
+      }
+    }
+
     const key = dto.receiptStorageKey?.trim();
     if (key) {
       await this.storage.assertReceiptExists(condominiumId, key);
-      if (t.receiptStorageKey && t.receiptStorageKey !== key) {
-        await this.storage.deleteReceipt(condominiumId, t.receiptStorageKey);
-      }
-      t.receiptStorageKey = key;
     }
-    t.paymentStatus = 'paid';
-    await this.txRepo.save(t);
+
+    await this.dataSource.transaction(async (mgr) => {
+      const txRepo = mgr.getRepository(FinancialTransaction);
+      const row = await txRepo.findOne({
+        where: { id: transactionId, condominiumId },
+      });
+      if (!row || row.paymentStatus !== 'pending') {
+        throw new BadRequestException('Transaction is not pending settlement');
+      }
+      if (key) {
+        if (row.receiptStorageKey && row.receiptStorageKey !== key) {
+          await this.storage.deleteReceipt(condominiumId, row.receiptStorageKey);
+        }
+        row.receiptStorageKey = key;
+      }
+      row.paymentStatus = 'paid';
+      await txRepo.save(row);
+
+      if (paidByUnitId) {
+        await this.unitFeeCredit.registerCreditFromExpenseSettledByUnit(mgr, {
+          condominiumId,
+          userId,
+          unitId: paidByUnitId,
+          amountCents: BigInt(String(row.amountCents)),
+          transactionId: row.id,
+          transactionTitle: row.title,
+          bankAccountId: row.bankAccountId,
+          paymentReceiptStorageKey: row.receiptStorageKey,
+        });
+      }
+    });
+
     const saved = await this.findOne(condominiumId, transactionId, userId);
     if (saved.workId) {
       await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
@@ -1076,8 +1117,27 @@ export class FinancialTransactionsService {
         'Only paid transactions can be reopened',
       );
     }
-    t.paymentStatus = 'pending';
-    await this.txRepo.save(t);
+
+    await this.dataSource.transaction(async (mgr) => {
+      const txRepo = mgr.getRepository(FinancialTransaction);
+      const row = await txRepo.findOne({
+        where: { id: transactionId, condominiumId },
+      });
+      if (!row || row.paymentStatus !== 'paid') {
+        throw new BadRequestException(
+          'Only paid transactions can be reopened',
+        );
+      }
+      row.paymentStatus = 'pending';
+      await txRepo.save(row);
+      await this.unitFeeCredit.restoreCreditOnTransactionReopen(
+        mgr,
+        condominiumId,
+        userId,
+        transactionId,
+      );
+    });
+
     const saved = await this.findOne(condominiumId, transactionId, userId);
     if (saved.workId) {
       await this.workTxLink.syncAfterSave(condominiumId, userId, saved);
